@@ -161,6 +161,71 @@ pub fn reload_hotkeys(app: tauri::AppHandle) -> Result<(), String> {
     crate::hotkeys::reload_hotkeys(&app).map_err(|e| e.to_string())
 }
 
+/// Check if FFmpeg is installed.
+#[tauri::command]
+pub fn check_ffmpeg() -> Result<(), String> {
+    screen_core::record::check_ffmpeg().map_err(|e| e.to_string())
+}
+
+/// Start recording. Returns the output file path.
+#[tauri::command]
+pub fn start_recording(
+    state: tauri::State<'_, crate::recording::RecordingState>,
+    display: usize,
+    region_x: Option<i32>,
+    region_y: Option<i32>,
+    region_w: Option<u32>,
+    region_h: Option<u32>,
+) -> Result<String, String> {
+    let config = screen_core::config::AppConfig::load()
+        .map_err(|e| e.to_string())?;
+
+    let region = match (region_x, region_y, region_w, region_h) {
+        (Some(x), Some(y), Some(w), Some(h)) => {
+            Some(screen_core::types::Rect { x, y, width: w, height: h })
+        }
+        _ => None,
+    };
+
+    let output_path = config.recording_file_path();
+    let record_config = screen_core::record::RecordConfig {
+        display,
+        region,
+        output_path: output_path.clone(),
+        format: config.recording.format,
+        fps: config.recording.fps,
+        quality: config.recording.quality,
+    };
+
+    let handle = screen_core::record::ffmpeg::start_recording(record_config)
+        .map_err(|e| e.to_string())?;
+
+    let mut guard = state.handle.lock().map_err(|e| e.to_string())?;
+    *guard = Some(handle);
+
+    Ok(output_path.display().to_string())
+}
+
+/// Stop recording.
+#[tauri::command]
+pub fn stop_recording(
+    state: tauri::State<'_, crate::recording::RecordingState>,
+) -> Result<(), String> {
+    let mut guard = state.handle.lock().map_err(|e| e.to_string())?;
+    if let Some(handle) = guard.take() {
+        handle.stop().map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+/// Check if currently recording.
+#[tauri::command]
+pub fn is_recording(
+    state: tauri::State<'_, crate::recording::RecordingState>,
+) -> bool {
+    state.is_recording()
+}
+
 /// Save a screenshot of the last remembered region.
 pub fn save_last_region() -> Result<String, String> {
     let config = screen_core::config::AppConfig::load()

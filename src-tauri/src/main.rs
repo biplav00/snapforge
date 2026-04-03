@@ -2,6 +2,7 @@
 
 mod commands;
 mod hotkeys;
+mod recording;
 mod tray;
 
 use std::sync::Mutex;
@@ -15,6 +16,7 @@ fn main() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .manage(PreCapturedScreen(Mutex::new(None)))
+        .manage(recording::RecordingState::new())
         .invoke_handler(tauri::generate_handler![
             commands::get_pre_captured_screen,
             commands::capture_screen,
@@ -26,6 +28,10 @@ fn main() {
             commands::save_config,
             commands::open_save_folder,
             commands::reload_hotkeys,
+            commands::check_ffmpeg,
+            commands::start_recording,
+            commands::stop_recording,
+            commands::is_recording,
         ])
         .setup(|app| {
             // Hide dock icon on macOS — tray-only app
@@ -75,6 +81,60 @@ pub fn trigger_last_region(app: &AppHandle) {
         }
     }
     let _ = app;
+}
+
+/// Toggle recording. If not recording, start fullscreen recording and show indicator.
+/// If recording, stop and close indicator.
+pub fn trigger_recording(app: &AppHandle) {
+    let state = app.state::<recording::RecordingState>();
+    if state.is_recording() {
+        // Stop recording
+        if let Ok(mut guard) = state.handle.lock() {
+            if let Some(handle) = guard.take() {
+                let _ = handle.stop();
+            }
+        }
+        // Close indicator window
+        if let Some(window) = app.get_webview_window("recording-indicator") {
+            let _ = window.close();
+        }
+    } else {
+        // Start fullscreen recording
+        let config = screen_core::config::AppConfig::load().unwrap_or_default();
+        let output_path = config.recording_file_path();
+        let record_config = screen_core::record::RecordConfig {
+            display: 0,
+            region: None,
+            output_path,
+            format: config.recording.format,
+            fps: config.recording.fps,
+            quality: config.recording.quality,
+        };
+
+        match screen_core::record::ffmpeg::start_recording(record_config) {
+            Ok(handle) => {
+                if let Ok(mut guard) = state.handle.lock() {
+                    *guard = Some(handle);
+                }
+                // Open indicator window
+                let _ = WebviewWindowBuilder::new(
+                    app,
+                    "recording-indicator",
+                    WebviewUrl::App("recording.html".into()),
+                )
+                .title("Recording")
+                .inner_size(200.0, 50.0)
+                .resizable(false)
+                .decorations(false)
+                .always_on_top(true)
+                .transparent(true)
+                .build();
+            }
+            Err(e) => {
+                eprintln!("Recording failed: {}", e);
+            }
+        }
+    }
 }
 
 /// Open preferences window (or focus if already open).
