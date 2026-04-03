@@ -1,6 +1,6 @@
 // src/lib/annotation/tools/types.ts
 
-export type ToolType = "arrow" | "rect" | "line" | "freehand" | "text";
+export type ToolType = "arrow" | "rect" | "line" | "freehand" | "text" | "circle" | "highlight" | "steps" | "blur" | "colorpicker" | "measure";
 
 export interface BaseAnnotation {
   id: string;
@@ -46,12 +46,64 @@ export interface TextAnnotation extends BaseAnnotation {
   fontSize: number;
 }
 
+export interface CircleAnnotation extends BaseAnnotation {
+  tool: "circle";
+  cx: number;
+  cy: number;
+  rx: number;
+  ry: number;
+}
+
+export interface HighlightAnnotation extends BaseAnnotation {
+  tool: "highlight";
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+export interface StepAnnotation extends BaseAnnotation {
+  tool: "steps";
+  x: number;
+  y: number;
+  number: number;
+}
+
+export interface BlurAnnotation extends BaseAnnotation {
+  tool: "blur";
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  intensity: number;
+}
+
+export interface MeasureAnnotation extends BaseAnnotation {
+  tool: "measure";
+  startX: number;
+  startY: number;
+  endX: number;
+  endY: number;
+}
+
+export interface ColorPickerAnnotation extends BaseAnnotation {
+  tool: "colorpicker";
+  x: number;
+  y: number;
+}
+
 export type Annotation =
   | ArrowAnnotation
   | RectAnnotation
   | LineAnnotation
   | FreehandAnnotation
-  | TextAnnotation;
+  | TextAnnotation
+  | CircleAnnotation
+  | HighlightAnnotation
+  | StepAnnotation
+  | BlurAnnotation
+  | MeasureAnnotation
+  | ColorPickerAnnotation;
 
 export interface AnnotationState {
   activeAnnotation: Annotation | null;
@@ -59,6 +111,10 @@ export interface AnnotationState {
   commitAnnotation: (a: Annotation) => void;
   color: string;
   strokeWidth: number;
+  screenshotImage?: HTMLImageElement;
+  setColor?: (color: string) => void;
+  nextStepNumber?: number;
+  incrementStepNumber?: () => void;
 }
 
 export interface Tool {
