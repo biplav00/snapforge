@@ -1,0 +1,12 @@
+[package]
+name = "screensnap"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "screen"
+path = "src/main.rs"
+
+[dependencies]
+screen-core = { path = "../crates/screen-core" }
+clap = { version = "4", features = ["derive"] }
