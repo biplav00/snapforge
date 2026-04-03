@@ -28,6 +28,7 @@ fn main() {
             commands::save_config,
             commands::open_save_folder,
             commands::reload_hotkeys,
+            commands::capture_and_copy_region,
             commands::check_ffmpeg,
             commands::start_recording,
             commands::start_recording_and_show_indicator,
@@ -48,15 +49,8 @@ fn main() {
         .expect("error while running tauri application");
 }
 
-/// Capture screen and open overlay window.
+/// Open transparent overlay for region selection (Lightshot-style).
 pub fn trigger_screenshot(app: &AppHandle) {
-    // Capture before opening window
-    let pre_captured = commands::capture_screen(0).ok();
-    if let Ok(mut guard) = app.state::<PreCapturedScreen>().0.lock() {
-        *guard = pre_captured;
-    }
-
-    // Close existing overlay if any
     if let Some(window) = app.get_webview_window("overlay") {
         let _ = window.close();
     }

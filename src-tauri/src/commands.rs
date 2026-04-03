@@ -161,6 +161,23 @@ pub fn reload_hotkeys(app: tauri::AppHandle) -> Result<(), String> {
     crate::hotkeys::reload_hotkeys(&app).map_err(|e| e.to_string())
 }
 
+/// Capture a region and copy it to clipboard (no file save).
+#[tauri::command]
+pub fn capture_and_copy_region(
+    display: usize,
+    x: i32,
+    y: i32,
+    width: u32,
+    height: u32,
+) -> Result<(), String> {
+    let region = screen_core::types::Rect { x, y, width, height };
+    let image = screen_core::capture::capture_region(display, region)
+        .map_err(|e| e.to_string())?;
+    screen_core::clipboard::copy_image_to_clipboard(&image)
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 /// Check if FFmpeg is installed.
 #[tauri::command]
 pub fn check_ffmpeg() -> Result<(), String> {

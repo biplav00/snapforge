@@ -7,7 +7,6 @@
   import type { ToolType } from "../annotation/tools/types.ts";
 
   interface Props {
-    screenshotBase64: string;
     purpose: "screenshot" | "record";
     onSave: (path: string) => void;
     onCopy: () => void;
@@ -15,7 +14,7 @@
     onCancel: () => void;
   }
 
-  let { screenshotBase64, purpose, onSave, onCopy, onRecordingStarted, onCancel }: Props = $props();
+  let { purpose, onSave, onCopy, onRecordingStarted, onCancel }: Props = $props();
 
   // Region state
   let startX = $state(0);
@@ -25,8 +24,11 @@
   let drawing = $state(false);
   let hasRegion = $state(false);
 
-  // Mode: "select" for drawing region, "annotate" for annotation, "record-select" for choosing record options
+  // Mode: "select" = drawing region, "annotate" = annotation, "record-select" = recording options
   let mode = $state<"select" | "annotate" | "record-select">("select");
+
+  // Screenshot captured on-demand when entering annotate mode
+  let screenshotBase64 = $state("");
 
   // Drag/resize state
   let dragging = $state(false);
@@ -37,7 +39,7 @@
   // Saving state
   let saving = $state(false);
 
-  // Toast message shown inside region
+  // Toast
   let toastMessage = $state("");
   let toastVisible = $state(false);
   let toastTimeout: ReturnType<typeof setTimeout> | null = null;
@@ -51,28 +53,11 @@
 
   const HANDLE_SIZE = 8;
 
-  // Tool shortcut mapping
   const TOOL_SHORTCUTS: Record<string, ToolType> = {
-    "1": "arrow",
-    "2": "rect",
-    "3": "circle",
-    "4": "line",
-    "5": "freehand",
-    "6": "text",
-    "7": "highlight",
-    "8": "blur",
-    "9": "steps",
-    "0": "colorpicker",
-    "a": "arrow",
-    "r": "rect",
-    "c": "circle",
-    "l": "line",
-    "f": "freehand",
-    "t": "text",
-    "h": "highlight",
-    "b": "blur",
-    "n": "steps",
-    "i": "colorpicker",
+    "1": "arrow", "2": "rect", "3": "circle", "4": "line", "5": "freehand",
+    "6": "text", "7": "highlight", "8": "blur", "9": "steps", "0": "colorpicker",
+    "a": "arrow", "r": "rect", "c": "circle", "l": "line", "f": "freehand",
+    "t": "text", "h": "highlight", "b": "blur", "n": "steps", "i": "colorpicker",
     "m": "measure",
   };
 
@@ -81,20 +66,14 @@
   let regionY = $derived(Math.min(startY, endY));
   let regionW = $derived(Math.abs(endX - startX));
   let regionH = $derived(Math.abs(endY - startY));
-
   let dimensionLabel = $derived(`${regionW} × ${regionH}`);
 
   function handleMouseDown(e: MouseEvent) {
-    if (saving || mode === "annotate") return;
-    // In record-select mode, don't start new region (user is choosing buttons)
-    if (mode === "record-select") return;
+    if (saving || mode === "annotate" || mode === "record-select") return;
 
     if (hasRegion) {
       const handle = getHandleAt(e.clientX, e.clientY);
-      if (handle) {
-        resizing = handle;
-        return;
-      }
+      if (handle) { resizing = handle; return; }
       if (isInsideRegion(e.clientX, e.clientY)) {
         dragging = true;
         dragOffsetX = e.clientX - regionX;
@@ -114,17 +93,11 @@
   function handleMouseMove(e: MouseEvent) {
     if (mode === "annotate" || mode === "record-select") return;
     if (drawing) {
-      endX = e.clientX;
-      endY = e.clientY;
+      endX = e.clientX; endY = e.clientY;
     } else if (dragging) {
-      const newX = e.clientX - dragOffsetX;
-      const newY = e.clientY - dragOffsetY;
-      const dx = newX - regionX;
-      const dy = newY - regionY;
-      startX += dx;
-      startY += dy;
-      endX += dx;
-      endY += dy;
+      const dx = e.clientX - dragOffsetX - regionX;
+      const dy = e.clientY - dragOffsetY - regionY;
+      startX += dx; startY += dy; endX += dx; endY += dy;
     } else if (resizing) {
       applyResize(resizing, e.clientX, e.clientY);
     }
@@ -139,7 +112,6 @@
         if (purpose === "screenshot") {
           enterAnnotateMode();
         } else {
-          // Recording mode — show record options
           mode = "record-select";
         }
       }
@@ -156,42 +128,36 @@
   function getHandleAt(x: number, y: number): string | null {
     const handles = getHandlePositions();
     for (const [name, hx, hy] of handles) {
-      if (Math.abs(x - hx) <= HANDLE_SIZE && Math.abs(y - hy) <= HANDLE_SIZE) {
-        return name;
-      }
+      if (Math.abs(x - hx) <= HANDLE_SIZE && Math.abs(y - hy) <= HANDLE_SIZE) return name;
     }
     return null;
   }
 
   function getHandlePositions(): [string, number, number][] {
     return [
-      ["nw", regionX, regionY],
-      ["ne", regionX + regionW, regionY],
-      ["sw", regionX, regionY + regionH],
-      ["se", regionX + regionW, regionY + regionH],
-      ["n", regionX + regionW / 2, regionY],
-      ["s", regionX + regionW / 2, regionY + regionH],
-      ["w", regionX, regionY + regionH / 2],
-      ["e", regionX + regionW, regionY + regionH / 2],
+      ["nw", regionX, regionY], ["ne", regionX + regionW, regionY],
+      ["sw", regionX, regionY + regionH], ["se", regionX + regionW, regionY + regionH],
+      ["n", regionX + regionW / 2, regionY], ["s", regionX + regionW / 2, regionY + regionH],
+      ["w", regionX, regionY + regionH / 2], ["e", regionX + regionW, regionY + regionH / 2],
     ];
   }
 
   function applyResize(handle: string, mx: number, my: number) {
-    if (handle.includes("n")) {
-      if (startY < endY) startY = my; else endY = my;
-    }
-    if (handle.includes("s")) {
-      if (startY < endY) endY = my; else startY = my;
-    }
-    if (handle.includes("w")) {
-      if (startX < endX) startX = mx; else endX = mx;
-    }
-    if (handle.includes("e")) {
-      if (startX < endX) endX = mx; else startX = mx;
-    }
+    if (handle.includes("n")) { if (startY < endY) startY = my; else endY = my; }
+    if (handle.includes("s")) { if (startY < endY) endY = my; else startY = my; }
+    if (handle.includes("w")) { if (startX < endX) startX = mx; else endX = mx; }
+    if (handle.includes("e")) { if (startX < endX) endX = mx; else startX = mx; }
   }
 
-  function enterAnnotateMode() {
+  async function enterAnnotateMode() {
+    // Capture screenshot NOW for annotation canvas and compositing
+    try {
+      screenshotBase64 = await invoke<string>("capture_screen", { display: 0 });
+    } catch (e) {
+      console.error("Failed to capture for annotation:", e);
+      showToast("Capture failed");
+      return;
+    }
     mode = "annotate";
     clearAnnotations();
   }
@@ -200,50 +166,20 @@
     const target = e.target as HTMLElement;
     if (target.tagName === "INPUT" || target.tagName === "TEXTAREA") return;
 
-    // In record-select mode, Enter starts recording the region
     if (mode === "record-select") {
-      if (e.key === "Enter") {
-        e.preventDefault();
-        startRecordingRegion();
-        return;
-      }
+      if (e.key === "Enter") { e.preventDefault(); startRecordingRegion(); }
       return;
     }
 
-    // Undo/redo in annotate mode
     if (mode === "annotate") {
-      if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === "Z") {
-        e.preventDefault();
-        redo();
-        return;
-      }
-      if ((e.ctrlKey || e.metaKey) && e.key === "z") {
-        e.preventDefault();
-        undo();
-        return;
-      }
-      if ((e.ctrlKey || e.metaKey) && e.key === "c") {
-        e.preventDefault();
-        handleCopy();
-        return;
-      }
-      if ((e.ctrlKey || e.metaKey) && e.key === "s") {
-        e.preventDefault();
-        handleSave();
-        return;
-      }
-      if (e.key === "Enter") {
-        e.preventDefault();
-        handleSave();
-        return;
-      }
+      if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === "Z") { e.preventDefault(); redo(); return; }
+      if ((e.ctrlKey || e.metaKey) && e.key === "z") { e.preventDefault(); undo(); return; }
+      if ((e.ctrlKey || e.metaKey) && e.key === "c") { e.preventDefault(); handleCopy(); return; }
+      if ((e.ctrlKey || e.metaKey) && e.key === "s") { e.preventDefault(); handleSave(); return; }
+      if (e.key === "Enter") { e.preventDefault(); handleSave(); return; }
       if (!e.ctrlKey && !e.metaKey && !e.altKey) {
         const tool = TOOL_SHORTCUTS[e.key.toLowerCase()];
-        if (tool) {
-          e.preventDefault();
-          setTool(tool);
-          return;
-        }
+        if (tool) { e.preventDefault(); setTool(tool); return; }
       }
     }
   }
@@ -253,10 +189,11 @@
     saving = true;
     try {
       let path: string;
-      if (annotations.value.length > 0) {
+      if (annotations.value.length > 0 && screenshotBase64) {
         const base64 = await compositeImage(screenshotBase64, regionX, regionY, regionW, regionH, annotations.value);
         path = await invoke<string>("save_composited_image", { imageBase64: base64 });
       } else {
+        // No annotations — capture fresh and save directly
         const dpr = window.devicePixelRatio || 1;
         path = await invoke<string>("save_region", {
           display: 0,
@@ -277,11 +214,21 @@
     if (saving) return;
     saving = true;
     try {
-      const base64 = await compositeImage(
-        screenshotBase64, regionX, regionY, regionW, regionH,
-        annotations.value.length > 0 ? annotations.value : [],
-      );
-      await invoke("copy_composited_image", { imageBase64: base64 });
+      if (annotations.value.length > 0 && screenshotBase64) {
+        const base64 = await compositeImage(screenshotBase64, regionX, regionY, regionW, regionH, annotations.value);
+        await invoke("copy_composited_image", { imageBase64: base64 });
+      } else {
+        // No annotations — capture fresh region and copy
+        const dpr = window.devicePixelRatio || 1;
+        // Capture region, then copy it
+        const base64 = await invoke<string>("capture_and_copy_region", {
+          display: 0,
+          x: Math.round(regionX * dpr),
+          y: Math.round(regionY * dpr),
+          width: Math.round(regionW * dpr),
+          height: Math.round(regionH * dpr),
+        });
+      }
       showToast("Copied to clipboard!");
     } catch (err) {
       console.error("Failed to copy:", err);
@@ -315,11 +262,7 @@
     saving = true;
     try {
       const path = await invoke<string>("start_recording_and_show_indicator", {
-        display: 0,
-        regionX: null,
-        regionY: null,
-        regionW: null,
-        regionH: null,
+        display: 0, regionX: null, regionY: null, regionW: null, regionH: null,
       });
       onRecordingStarted(path);
     } catch (err) {
@@ -339,7 +282,7 @@
   onmousemove={handleMouseMove}
   onmouseup={handleMouseUp}
 >
-  <!-- Dark overlay with cutout -->
+  <!-- Dark semi-transparent overlay with cutout for selected region -->
   {#if hasRegion || drawing}
     <svg class="dim-overlay" viewBox="0 0 {window.innerWidth} {window.innerHeight}">
       <defs>
@@ -348,7 +291,7 @@
           <rect x={regionX} y={regionY} width={regionW} height={regionH} fill="black" />
         </mask>
       </defs>
-      <rect width="100%" height="100%" fill="rgba(0,0,0,0.5)" mask="url(#region-mask)" />
+      <rect width="100%" height="100%" fill="rgba(0,0,0,0.4)" mask="url(#region-mask)" />
     </svg>
 
     <!-- Region border -->
@@ -365,6 +308,9 @@
     >
       {dimensionLabel}
     </div>
+  {:else}
+    <!-- Before any selection: full dim overlay so user knows they're in capture mode -->
+    <div class="full-dim"></div>
   {/if}
 
   <!-- Toast message -->
@@ -396,7 +342,7 @@
   {/if}
 
   <!-- Annotation mode (screenshot only) -->
-  {#if mode === "annotate" && hasRegion}
+  {#if mode === "annotate" && hasRegion && screenshotBase64}
     <AnnotationCanvas
       {regionX}
       {regionY}
@@ -425,6 +371,16 @@
     height: 100vh;
     cursor: crosshair;
     z-index: 10;
+  }
+
+  .full-dim {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100vw;
+    height: 100vh;
+    background: rgba(0, 0, 0, 0.15);
+    pointer-events: none;
   }
 
   .dim-overlay {
@@ -499,14 +455,8 @@
     color: white;
   }
 
-  .btn-record:hover {
-    background: #ee3333;
-  }
-
-  .btn-record:disabled {
-    opacity: 0.6;
-    cursor: not-allowed;
-  }
+  .btn-record:hover { background: #ee3333; }
+  .btn-record:disabled { opacity: 0.6; cursor: not-allowed; }
 
   .btn-record-full {
     background: rgba(255, 68, 68, 0.2);
@@ -514,22 +464,13 @@
     border: 1px solid rgba(255, 68, 68, 0.3);
   }
 
-  .btn-record-full:hover {
-    background: rgba(255, 68, 68, 0.4);
-    color: white;
-  }
-
-  .btn-record-full:disabled {
-    opacity: 0.6;
-    cursor: not-allowed;
-  }
+  .btn-record-full:hover { background: rgba(255, 68, 68, 0.4); color: white; }
+  .btn-record-full:disabled { opacity: 0.6; cursor: not-allowed; }
 
   .btn-cancel {
     background: transparent;
     color: rgba(255, 255, 255, 0.6);
   }
 
-  .btn-cancel:hover {
-    color: white;
-  }
+  .btn-cancel:hover { color: white; }
 </style>
