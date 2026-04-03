@@ -3,4 +3,5 @@ resolver = "2"
 members = [
     "crates/screen-core",
     "cli",
+    "src-tauri",
 ]
