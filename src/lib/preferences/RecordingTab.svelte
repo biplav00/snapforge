@@ -72,10 +72,6 @@
     </div>
   </div>
 
-  <div class="info-box">
-    <strong>Requires FFmpeg</strong>
-    <span>Install via <code>brew install ffmpeg</code></span>
-  </div>
 </div>
 
 <style>
@@ -107,13 +103,4 @@
   .pill.selected { border-color: var(--accent); background: var(--accent-bg); color: var(--accent); }
   .pill input[type="radio"] { display: none; }
 
-  .info-box {
-    display: flex; flex-direction: column; gap: 4px;
-    padding: 10px 14px; background: var(--bg-secondary); border: 1px solid var(--border);
-    border-radius: 8px; font-size: 13px; color: var(--text-muted);
-  }
-  .info-box code {
-    background: var(--bg-kbd); padding: 1px 6px; border-radius: 3px; font-size: 12px;
-    color: var(--text);
-  }
 </style>
