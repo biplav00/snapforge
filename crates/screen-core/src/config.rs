@@ -37,6 +37,7 @@ impl Default for RecordingQuality {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct RecordingConfig {
     pub format: RecordingFormat,
     pub fps: u32,
@@ -54,6 +55,7 @@ impl Default for RecordingConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct HotkeyBindings {
     // Global shortcuts
     pub screenshot: String,
@@ -104,6 +106,7 @@ impl Default for HotkeyBindings {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct AppConfig {
     pub save_directory: PathBuf,
     pub auto_copy_clipboard: bool,
