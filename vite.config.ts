@@ -12,6 +12,7 @@ export default defineConfig({
       input: {
         main: resolve(__dirname, "index.html"),
         preferences: resolve(__dirname, "preferences.html"),
+        recording: resolve(__dirname, "recording.html"),
       },
     },
   },
