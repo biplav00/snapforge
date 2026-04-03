@@ -62,9 +62,6 @@
 </script>
 
 <main>
-  <header>
-    <h1>ScreenSnap Preferences</h1>
-  </header>
 
   {#if !config}
     <div class="loading">Loading settings...</div>
@@ -119,14 +116,6 @@
     height: 100%;
     display: flex;
     flex-direction: column;
-  }
-
-  header { padding: 20px 24px 0; }
-
-  h1 {
-    font-size: 18px;
-    font-weight: 600;
-    color: var(--text);
   }
 
   .loading {
