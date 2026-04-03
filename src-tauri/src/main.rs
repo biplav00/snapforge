@@ -55,13 +55,31 @@ pub fn trigger_screenshot(app: &AppHandle) {
         let _ = window.close();
     }
 
+    // Get screen dimensions for edge-to-edge overlay
+    // Use a large size that covers any display — the OS will clamp to screen bounds
+    let monitor = app
+        .primary_monitor()
+        .ok()
+        .flatten()
+        .or_else(|| app.available_monitors().ok().and_then(|m| m.into_iter().next()));
+
+    let (width, height) = if let Some(m) = monitor {
+        let size = m.size();
+        let scale = m.scale_factor();
+        (size.width as f64 / scale, size.height as f64 / scale)
+    } else {
+        (3840.0, 2160.0) // fallback large size
+    };
+
     let _ = WebviewWindowBuilder::new(app, "overlay", WebviewUrl::App("index.html".into()))
-        .title("ScreenSnap Overlay")
-        .fullscreen(true)
+        .title("")
+        .inner_size(width, height)
+        .position(0.0, 0.0)
         .transparent(true)
         .decorations(false)
         .always_on_top(true)
         .skip_taskbar(true)
+        .resizable(false)
         .build();
 }
 
@@ -95,26 +113,37 @@ pub fn trigger_recording(app: &AppHandle) {
         }
     } else {
         // Open overlay in recording mode for region selection
-        let pre_captured = commands::capture_screen(0).ok();
-        if let Ok(mut guard) = app.state::<PreCapturedScreen>().0.lock() {
-            *guard = pre_captured;
-        }
-
         if let Some(window) = app.get_webview_window("overlay") {
             let _ = window.close();
         }
+
+        let monitor = app
+            .primary_monitor()
+            .ok()
+            .flatten()
+            .or_else(|| app.available_monitors().ok().and_then(|m| m.into_iter().next()));
+
+        let (width, height) = if let Some(m) = monitor {
+            let size = m.size();
+            let scale = m.scale_factor();
+            (size.width as f64 / scale, size.height as f64 / scale)
+        } else {
+            (3840.0, 2160.0)
+        };
 
         let _ = WebviewWindowBuilder::new(
             app,
             "overlay",
             WebviewUrl::App("index.html?mode=record".into()),
         )
-        .title("ScreenSnap Overlay")
-        .fullscreen(true)
+        .title("")
+        .inner_size(width, height)
+        .position(0.0, 0.0)
         .transparent(true)
         .decorations(false)
         .always_on_top(true)
         .skip_taskbar(true)
+        .resizable(false)
         .build();
     }
 }
