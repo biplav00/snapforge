@@ -36,12 +36,10 @@
 
     ctx.clearRect(0, 0, regionW, regionH);
 
-    // Render all committed annotations (coordinates relative to region)
     for (const a of annotations.value) {
       renderAnnotation(ctx, a);
     }
 
-    // Render active (in-progress) annotation
     if (activeAnnotation.value && activeAnnotation.value.tool !== "text") {
       renderAnnotation(ctx, activeAnnotation.value);
     }
@@ -50,30 +48,46 @@
   // Focus text input when it appears
   $effect(() => {
     if (showTextInput && textInput) {
-      textInput.focus();
+      // Use microtask to ensure DOM is ready
+      queueMicrotask(() => textInput?.focus());
     }
   });
 
-  function handleMouseDown(e: MouseEvent) {
-    if (showTextInput) return;
-
-    const x = e.clientX - regionX;
-    const y = e.clientY - regionY;
-    const tool = getTool(activeTool.value);
-    tool.onMouseDown(x, y, {
+  function makeState() {
+    return {
       activeAnnotation: activeAnnotation.value,
       setActiveAnnotation,
       commitAnnotation,
       color: strokeColor.value,
       strokeWidth: strokeWidth.value,
-    });
+    };
+  }
 
-    // If text tool just placed, show input
-    if (activeTool.value === "text" && activeAnnotation.value && activeAnnotation.value.tool === "text") {
-      showTextInput = true;
-      textInputX = (activeAnnotation.value as TextAnnotation).x;
-      textInputY = (activeAnnotation.value as TextAnnotation).y;
-      textInputValue = "";
+  function handleMouseDown(e: MouseEvent) {
+    if (showTextInput) {
+      // If clicking outside the text input, commit current text
+      commitTextInput();
+      return;
+    }
+
+    const x = e.clientX - regionX;
+    const y = e.clientY - regionY;
+
+    if (activeTool.value === "text") {
+      // Handle text tool specially — set annotation and show input immediately
+      const tool = getTool("text");
+      tool.onMouseDown(x, y, makeState());
+      // Read the annotation that was just set
+      const ann = activeAnnotation.value;
+      if (ann && ann.tool === "text") {
+        showTextInput = true;
+        textInputX = (ann as TextAnnotation).x;
+        textInputY = (ann as TextAnnotation).y;
+        textInputValue = "";
+      }
+    } else {
+      const tool = getTool(activeTool.value);
+      tool.onMouseDown(x, y, makeState());
     }
   }
 
@@ -82,13 +96,7 @@
     const x = e.clientX - regionX;
     const y = e.clientY - regionY;
     const tool = getTool(activeTool.value);
-    tool.onMouseMove(x, y, {
-      activeAnnotation: activeAnnotation.value,
-      setActiveAnnotation,
-      commitAnnotation,
-      color: strokeColor.value,
-      strokeWidth: strokeWidth.value,
-    });
+    tool.onMouseMove(x, y, makeState());
   }
 
   function handleMouseUp(e: MouseEvent) {
@@ -96,17 +104,15 @@
     const x = e.clientX - regionX;
     const y = e.clientY - regionY;
     const tool = getTool(activeTool.value);
-    tool.onMouseUp(x, y, {
-      activeAnnotation: activeAnnotation.value,
-      setActiveAnnotation,
-      commitAnnotation,
-      color: strokeColor.value,
-      strokeWidth: strokeWidth.value,
-    });
+    tool.onMouseUp(x, y, makeState());
   }
 
   function commitTextInput() {
-    if (!activeAnnotation.value || activeAnnotation.value.tool !== "text") return;
+    if (!activeAnnotation.value || activeAnnotation.value.tool !== "text") {
+      showTextInput = false;
+      textInputValue = "";
+      return;
+    }
     if (textInputValue.trim()) {
       commitAnnotation({
         ...activeAnnotation.value,
@@ -120,6 +126,8 @@
   }
 
   function handleTextKeydown(e: KeyboardEvent) {
+    // Stop propagation so tool shortcuts don't fire while typing
+    e.stopPropagation();
     if (e.key === "Enter") {
       e.preventDefault();
       commitTextInput();
@@ -129,6 +137,11 @@
       showTextInput = false;
       textInputValue = "";
     }
+  }
+
+  function handleTextInput(e: Event) {
+    // Stop propagation for all input events
+    e.stopPropagation();
   }
 </script>
 
@@ -148,13 +161,15 @@
   ></canvas>
 
   {#if showTextInput}
+    <!-- svelte-ignore a11y_autofocus -->
     <input
       bind:this={textInput}
       bind:value={textInputValue}
       class="text-input"
       style="left:{textInputX}px;top:{textInputY}px;color:{strokeColor.value}"
       onkeydown={handleTextKeydown}
-      onblur={commitTextInput}
+      oninput={handleTextInput}
+      onmousedown={(e) => e.stopPropagation()}
       placeholder="Type here..."
     />
   {/if}
@@ -175,13 +190,14 @@
 
   .text-input {
     position: absolute;
-    background: transparent;
-    border: 1px dashed rgba(255, 255, 255, 0.5);
+    background: rgba(0, 0, 0, 0.3);
+    border: 1px dashed rgba(255, 255, 255, 0.6);
     outline: none;
     font-size: 16px;
     font-family: system-ui, sans-serif;
-    padding: 2px 4px;
-    min-width: 100px;
+    padding: 2px 6px;
+    min-width: 120px;
     z-index: 20;
+    border-radius: 3px;
   }
 </style>

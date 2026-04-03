@@ -37,12 +37,12 @@
     { label: "L", value: 4 },
   ];
 
-  const TOOLS: { type: ToolType; label: string }[] = [
-    { type: "arrow", label: "↗" },
-    { type: "rect", label: "□" },
-    { type: "line", label: "╱" },
-    { type: "freehand", label: "✎" },
-    { type: "text", label: "T" },
+  const TOOLS: { type: ToolType; label: string; shortcut: string }[] = [
+    { type: "arrow", label: "↗", shortcut: "A" },
+    { type: "rect", label: "□", shortcut: "R" },
+    { type: "line", label: "╱", shortcut: "L" },
+    { type: "freehand", label: "✎", shortcut: "F" },
+    { type: "text", label: "T", shortcut: "T" },
   ];
 
   // Position toolbar below region, or above if near screen bottom
@@ -73,7 +73,7 @@
         class="tool-btn"
         class:active={activeTool.value === t.type}
         onclick={() => setTool(t.type)}
-        title={t.type}
+        title="{t.type} ({t.shortcut})"
       >
         {t.label}
       </button>
@@ -132,9 +132,9 @@
 
   <!-- Actions -->
   <div class="tool-group">
-    <button class="action-btn save-btn" onclick={onSave}>Save</button>
-    <button class="action-btn copy-btn" onclick={onCopy}>Copy</button>
-    <button class="action-btn cancel-btn" onclick={onCancel}>Cancel</button>
+    <button class="action-btn save-btn" onclick={onSave} title="Save (⌘S / Enter)">Save</button>
+    <button class="action-btn copy-btn" onclick={onCopy} title="Copy (⌘C)">Copy</button>
+    <button class="action-btn cancel-btn" onclick={onCancel} title="Cancel (Esc)">Cancel</button>
   </div>
 </div>
 

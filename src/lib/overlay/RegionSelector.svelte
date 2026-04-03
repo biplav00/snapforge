@@ -3,7 +3,8 @@
   import AnnotationCanvas from "../annotation/Canvas.svelte";
   import Toolbar from "../annotation/Toolbar.svelte";
   import { compositeImage } from "../annotation/compositing.ts";
-  import { undo, redo, annotations, clearAnnotations } from "../annotation/state.svelte.ts";
+  import { undo, redo, annotations, clearAnnotations, setTool } from "../annotation/state.svelte.ts";
+  import type { ToolType } from "../annotation/tools/types.ts";
 
   interface Props {
     screenshotBase64: string;
@@ -35,6 +36,20 @@
   let saving = $state(false);
 
   const HANDLE_SIZE = 8;
+
+  // Tool shortcut mapping
+  const TOOL_SHORTCUTS: Record<string, ToolType> = {
+    "1": "arrow",
+    "2": "rect",
+    "3": "line",
+    "4": "freehand",
+    "5": "text",
+    "a": "arrow",
+    "r": "rect",
+    "l": "line",
+    "f": "freehand",
+    "t": "text",
+  };
 
   // Computed region bounds
   let regionX = $derived(Math.min(startX, endX));
@@ -94,6 +109,8 @@
       drawing = false;
       if (regionW > 5 && regionH > 5) {
         hasRegion = true;
+        // Go directly to annotate mode after selecting a region
+        enterAnnotateMode();
       }
     }
     dragging = false;
@@ -149,18 +166,48 @@
   }
 
   function handleKeydown(e: KeyboardEvent) {
-    if (mode === "select" && e.key === "Enter" && hasRegion && !saving) {
-      enterAnnotateMode();
-      return;
-    }
+    // Don't intercept keys when typing in text input
+    const target = e.target as HTMLElement;
+    if (target.tagName === "INPUT" || target.tagName === "TEXTAREA") return;
+
     // Undo/redo in annotate mode
     if (mode === "annotate") {
       if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === "Z") {
         e.preventDefault();
         redo();
-      } else if ((e.ctrlKey || e.metaKey) && e.key === "z") {
+        return;
+      }
+      if ((e.ctrlKey || e.metaKey) && e.key === "z") {
         e.preventDefault();
         undo();
+        return;
+      }
+      // Ctrl/Cmd+C to copy
+      if ((e.ctrlKey || e.metaKey) && e.key === "c") {
+        e.preventDefault();
+        handleCopy();
+        return;
+      }
+      // Ctrl/Cmd+S to save
+      if ((e.ctrlKey || e.metaKey) && e.key === "s") {
+        e.preventDefault();
+        handleSave();
+        return;
+      }
+      // Enter to save
+      if (e.key === "Enter") {
+        e.preventDefault();
+        handleSave();
+        return;
+      }
+      // Tool shortcuts (only without modifiers)
+      if (!e.ctrlKey && !e.metaKey && !e.altKey) {
+        const tool = TOOL_SHORTCUTS[e.key.toLowerCase()];
+        if (tool) {
+          e.preventDefault();
+          setTool(tool);
+          return;
+        }
       }
     }
   }
@@ -194,18 +241,15 @@
     if (saving) return;
     saving = true;
     try {
+      const dpr = window.devicePixelRatio || 1;
       if (annotations.value.length > 0) {
         const base64 = await compositeImage(screenshotBase64, regionX, regionY, regionW, regionH, annotations.value);
         await invoke("copy_composited_image", { imageBase64: base64 });
       } else {
-        const dpr = window.devicePixelRatio || 1;
-        await invoke<string>("save_region", {
-          display: 0,
-          x: Math.round(regionX * dpr),
-          y: Math.round(regionY * dpr),
-          width: Math.round(regionW * dpr),
-          height: Math.round(regionH * dpr),
-        });
+        // Capture region and copy via save_region (which copies if config says so)
+        // But we want explicit copy, so use compositing path with empty annotations
+        const base64 = await compositeImage(screenshotBase64, regionX, regionY, regionW, regionH, []);
+        await invoke("copy_composited_image", { imageBase64: base64 });
       }
       onCopy();
     } catch (err) {
@@ -248,32 +292,6 @@
       style="left:{regionX + regionW / 2}px;top:{regionY - 28}px"
     >
       {dimensionLabel}
-    </div>
-  {/if}
-
-  <!-- Resize handles (select mode only) -->
-  {#if hasRegion && !drawing && mode === "select"}
-    {#each getHandlePositions() as [name, hx, hy]}
-      <div
-        class="handle handle-{name}"
-        style="left:{hx - HANDLE_SIZE / 2}px;top:{hy - HANDLE_SIZE / 2}px;width:{HANDLE_SIZE}px;height:{HANDLE_SIZE}px"
-      ></div>
-    {/each}
-
-    <!-- Select mode actions: Annotate or quick-save -->
-    <div
-      class="actions"
-      style="left:{regionX + regionW / 2}px;top:{regionY + regionH + 12}px"
-    >
-      <button class="btn btn-annotate" onclick={enterAnnotateMode}>
-        Annotate (Enter)
-      </button>
-      <button class="btn btn-save" onclick={handleSave} disabled={saving}>
-        {saving ? "Saving..." : "Quick Save"}
-      </button>
-      <button class="btn btn-cancel" onclick={onCancel}>
-        Cancel (Esc)
-      </button>
     </div>
   {/if}
 
@@ -336,69 +354,5 @@
     pointer-events: none;
     z-index: 12;
     white-space: nowrap;
-  }
-
-  .handle {
-    position: absolute;
-    background: #4a9eff;
-    border: 1px solid white;
-    border-radius: 2px;
-    z-index: 12;
-  }
-
-  .handle-nw, .handle-se { cursor: nwse-resize; }
-  .handle-ne, .handle-sw { cursor: nesw-resize; }
-  .handle-n, .handle-s { cursor: ns-resize; }
-  .handle-e, .handle-w { cursor: ew-resize; }
-
-  .actions {
-    position: absolute;
-    transform: translateX(-50%);
-    display: flex;
-    gap: 8px;
-    z-index: 12;
-  }
-
-  .btn {
-    padding: 6px 16px;
-    border: none;
-    border-radius: 6px;
-    font-size: 13px;
-    font-family: system-ui, sans-serif;
-    cursor: pointer;
-    font-weight: 500;
-  }
-
-  .btn-annotate {
-    background: #4a9eff;
-    color: white;
-  }
-
-  .btn-annotate:hover {
-    background: #3a8eef;
-  }
-
-  .btn-save {
-    background: rgba(255, 255, 255, 0.15);
-    color: white;
-    backdrop-filter: blur(4px);
-  }
-
-  .btn-save:hover {
-    background: rgba(255, 255, 255, 0.25);
-  }
-
-  .btn-save:disabled {
-    opacity: 0.6;
-    cursor: not-allowed;
-  }
-
-  .btn-cancel {
-    background: transparent;
-    color: rgba(255, 255, 255, 0.6);
-  }
-
-  .btn-cancel:hover {
-    color: white;
   }
 </style>
