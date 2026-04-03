@@ -31,8 +31,16 @@ pub fn create_tray(app: &AppHandle) -> tauri::Result<()> {
         ],
     )?;
 
+    // Decode embedded PNG to RGBA for tray icon
+    let icon_png = include_bytes!("../icons/32x32.png");
+    let img = image::load_from_memory(icon_png).expect("failed to decode tray icon");
+    let rgba = img.to_rgba8();
+    let (w, h) = (rgba.width(), rgba.height());
+    let icon = tauri::image::Image::new_owned(rgba.into_raw(), w, h);
+
     TrayIconBuilder::new()
-        .icon(app.default_window_icon().unwrap().clone())
+        .icon(icon)
+        .icon_as_template(true)
         .menu(&menu)
         .show_menu_on_left_click(true)
         .on_menu_event(|app, event| match event.id.as_ref() {
