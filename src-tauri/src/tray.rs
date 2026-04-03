@@ -8,6 +8,7 @@ pub fn create_tray(app: &AppHandle) -> tauri::Result<()> {
     let screenshot_item = MenuItem::with_id(app, "screenshot", "Screenshot", true, None::<&str>)?;
     let last_region_item =
         MenuItem::with_id(app, "last_region", "Capture Last Region", true, None::<&str>)?;
+    let record_item = MenuItem::with_id(app, "record", "Record Screen", true, None::<&str>)?;
     let separator1 = PredefinedMenuItem::separator(app)?;
     let open_folder_item =
         MenuItem::with_id(app, "open_folder", "Open Save Folder", true, None::<&str>)?;
@@ -21,6 +22,7 @@ pub fn create_tray(app: &AppHandle) -> tauri::Result<()> {
         &[
             &screenshot_item,
             &last_region_item,
+            &record_item,
             &separator1,
             &open_folder_item,
             &separator2,
@@ -39,6 +41,9 @@ pub fn create_tray(app: &AppHandle) -> tauri::Result<()> {
             }
             "last_region" => {
                 crate::trigger_last_region(app);
+            }
+            "record" => {
+                crate::trigger_recording(app);
             }
             "open_folder" => {
                 let _ = crate::commands::open_save_folder();

@@ -25,6 +25,16 @@ pub fn register_hotkeys(app: &AppHandle) -> tauri::Result<()> {
         });
     }
 
+    // Register record-screen hotkey
+    if let Ok(shortcut) = config.hotkey_bindings.record_screen.parse::<Shortcut>() {
+        let app_handle = app.clone();
+        let _ = app.global_shortcut().on_shortcut(shortcut, move |_app, _shortcut, event| {
+            if event.state == ShortcutState::Pressed {
+                crate::trigger_recording(&app_handle);
+            }
+        });
+    }
+
     Ok(())
 }
 
