@@ -12,10 +12,10 @@
   let statusType = $state<"success" | "error">("success");
 
   const TABS = [
-    { id: "general", label: "General", icon: "⚙" },
-    { id: "hotkeys", label: "Hotkeys", icon: "⌨" },
-    { id: "screenshots", label: "Screenshots", icon: "📷" },
-    { id: "recording", label: "Recording", icon: "🔴" },
+    { id: "general", label: "General" },
+    { id: "hotkeys", label: "Hotkeys" },
+    { id: "screenshots", label: "Screenshots" },
+    { id: "recording", label: "Recording" },
   ];
 
   async function loadConfig() {
@@ -76,7 +76,6 @@
           class:active={activeTab === tab.id}
           onclick={() => (activeTab = tab.id)}
         >
-          <span class="tab-icon">{tab.icon}</span>
           {tab.label}
         </button>
       {/each}
@@ -155,7 +154,6 @@
     color: #888;
     display: flex;
     align-items: center;
-    gap: 6px;
     transition: color 0.15s;
   }
 
@@ -166,10 +164,6 @@
   .tab-btn.active {
     color: #4a9eff;
     border-bottom-color: #4a9eff;
-  }
-
-  .tab-icon {
-    font-size: 14px;
   }
 
   .tab-panel {
