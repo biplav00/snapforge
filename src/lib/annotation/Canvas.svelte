@@ -37,13 +37,13 @@
     ctx.clearRect(0, 0, regionW, regionH);
 
     // Render all committed annotations (coordinates relative to region)
-    for (const a of annotations) {
+    for (const a of annotations.value) {
       renderAnnotation(ctx, a);
     }
 
     // Render active (in-progress) annotation
-    if (activeAnnotation && activeAnnotation.tool !== "text") {
-      renderAnnotation(ctx, activeAnnotation);
+    if (activeAnnotation.value && activeAnnotation.value.tool !== "text") {
+      renderAnnotation(ctx, activeAnnotation.value);
     }
   });
 
@@ -55,24 +55,24 @@
   });
 
   function handleMouseDown(e: MouseEvent) {
-    if (showTextInput) return; // Don't start new tool while editing text
+    if (showTextInput) return;
 
     const x = e.clientX - regionX;
     const y = e.clientY - regionY;
-    const tool = getTool(activeTool);
+    const tool = getTool(activeTool.value);
     tool.onMouseDown(x, y, {
-      activeAnnotation,
+      activeAnnotation: activeAnnotation.value,
       setActiveAnnotation,
       commitAnnotation,
-      color: strokeColor,
-      strokeWidth,
+      color: strokeColor.value,
+      strokeWidth: strokeWidth.value,
     });
 
     // If text tool just placed, show input
-    if (activeTool === "text" && activeAnnotation && activeAnnotation.tool === "text") {
+    if (activeTool.value === "text" && activeAnnotation.value && activeAnnotation.value.tool === "text") {
       showTextInput = true;
-      textInputX = (activeAnnotation as TextAnnotation).x;
-      textInputY = (activeAnnotation as TextAnnotation).y;
+      textInputX = (activeAnnotation.value as TextAnnotation).x;
+      textInputY = (activeAnnotation.value as TextAnnotation).y;
       textInputValue = "";
     }
   }
@@ -81,13 +81,13 @@
     if (showTextInput) return;
     const x = e.clientX - regionX;
     const y = e.clientY - regionY;
-    const tool = getTool(activeTool);
+    const tool = getTool(activeTool.value);
     tool.onMouseMove(x, y, {
-      activeAnnotation,
+      activeAnnotation: activeAnnotation.value,
       setActiveAnnotation,
       commitAnnotation,
-      color: strokeColor,
-      strokeWidth,
+      color: strokeColor.value,
+      strokeWidth: strokeWidth.value,
     });
   }
 
@@ -95,21 +95,21 @@
     if (showTextInput) return;
     const x = e.clientX - regionX;
     const y = e.clientY - regionY;
-    const tool = getTool(activeTool);
+    const tool = getTool(activeTool.value);
     tool.onMouseUp(x, y, {
-      activeAnnotation,
+      activeAnnotation: activeAnnotation.value,
       setActiveAnnotation,
       commitAnnotation,
-      color: strokeColor,
-      strokeWidth,
+      color: strokeColor.value,
+      strokeWidth: strokeWidth.value,
     });
   }
 
   function commitTextInput() {
-    if (!activeAnnotation || activeAnnotation.tool !== "text") return;
+    if (!activeAnnotation.value || activeAnnotation.value.tool !== "text") return;
     if (textInputValue.trim()) {
       commitAnnotation({
-        ...activeAnnotation,
+        ...activeAnnotation.value,
         text: textInputValue.trim(),
       } as TextAnnotation);
     } else {
@@ -152,7 +152,7 @@
       bind:this={textInput}
       bind:value={textInputValue}
       class="text-input"
-      style="left:{textInputX}px;top:{textInputY}px;color:{strokeColor}"
+      style="left:{textInputX}px;top:{textInputY}px;color:{strokeColor.value}"
       onkeydown={handleTextKeydown}
       onblur={commitTextInput}
       placeholder="Type here..."

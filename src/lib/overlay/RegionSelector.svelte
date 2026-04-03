@@ -1,12 +1,18 @@
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
+  import AnnotationCanvas from "../annotation/Canvas.svelte";
+  import Toolbar from "../annotation/Toolbar.svelte";
+  import { compositeImage } from "../annotation/compositing.ts";
+  import { undo, redo, annotations, clearAnnotations } from "../annotation/state.svelte.ts";
 
   interface Props {
+    screenshotBase64: string;
     onSave: (path: string) => void;
+    onCopy: () => void;
     onCancel: () => void;
   }
 
-  let { onSave, onCancel }: Props = $props();
+  let { screenshotBase64, onSave, onCopy, onCancel }: Props = $props();
 
   // Region state
   let startX = $state(0);
@@ -15,6 +21,9 @@
   let endY = $state(0);
   let drawing = $state(false);
   let hasRegion = $state(false);
+
+  // Mode: "select" for drawing region, "annotate" for annotation
+  let mode = $state<"select" | "annotate">("select");
 
   // Drag/resize state
   let dragging = $state(false);
@@ -27,27 +36,23 @@
 
   const HANDLE_SIZE = 8;
 
-  // Computed region bounds (normalized so width/height are always positive)
+  // Computed region bounds
   let regionX = $derived(Math.min(startX, endX));
   let regionY = $derived(Math.min(startY, endY));
   let regionW = $derived(Math.abs(endX - startX));
   let regionH = $derived(Math.abs(endY - startY));
 
-  // Dimension label
   let dimensionLabel = $derived(`${regionW} × ${regionH}`);
 
   function handleMouseDown(e: MouseEvent) {
-    if (saving) return;
+    if (saving || mode === "annotate") return;
 
-    // Check if clicking on a resize handle
     if (hasRegion) {
       const handle = getHandleAt(e.clientX, e.clientY);
       if (handle) {
         resizing = handle;
         return;
       }
-
-      // Check if clicking inside region to drag
       if (isInsideRegion(e.clientX, e.clientY)) {
         dragging = true;
         dragOffsetX = e.clientX - regionX;
@@ -56,7 +61,6 @@
       }
     }
 
-    // Start new region
     startX = e.clientX;
     startY = e.clientY;
     endX = e.clientX;
@@ -66,6 +70,7 @@
   }
 
   function handleMouseMove(e: MouseEvent) {
+    if (mode === "annotate") return;
     if (drawing) {
       endX = e.clientX;
       endY = e.clientY;
@@ -84,6 +89,7 @@
   }
 
   function handleMouseUp(_e: MouseEvent) {
+    if (mode === "annotate") return;
     if (drawing) {
       drawing = false;
       if (regionW > 5 && regionH > 5) {
@@ -137,29 +143,73 @@
     }
   }
 
+  function enterAnnotateMode() {
+    mode = "annotate";
+    clearAnnotations();
+  }
+
   function handleKeydown(e: KeyboardEvent) {
-    if (e.key === "Enter" && hasRegion && !saving) {
-      saveRegion();
+    if (mode === "select" && e.key === "Enter" && hasRegion && !saving) {
+      enterAnnotateMode();
+      return;
+    }
+    // Undo/redo in annotate mode
+    if (mode === "annotate") {
+      if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === "Z") {
+        e.preventDefault();
+        redo();
+      } else if ((e.ctrlKey || e.metaKey) && e.key === "z") {
+        e.preventDefault();
+        undo();
+      }
     }
   }
 
-  async function saveRegion() {
-    if (!hasRegion || saving) return;
+  async function handleSave() {
+    if (saving) return;
     saving = true;
-
     try {
-      // Account for device pixel ratio — coordinates from CSS pixels to physical pixels
-      const dpr = window.devicePixelRatio || 1;
-      const path = await invoke<string>("save_region", {
-        display: 0,
-        x: Math.round(regionX * dpr),
-        y: Math.round(regionY * dpr),
-        width: Math.round(regionW * dpr),
-        height: Math.round(regionH * dpr),
-      });
+      let path: string;
+      if (annotations.value.length > 0) {
+        const base64 = await compositeImage(screenshotBase64, regionX, regionY, regionW, regionH, annotations.value);
+        path = await invoke<string>("save_composited_image", { imageBase64: base64 });
+      } else {
+        const dpr = window.devicePixelRatio || 1;
+        path = await invoke<string>("save_region", {
+          display: 0,
+          x: Math.round(regionX * dpr),
+          y: Math.round(regionY * dpr),
+          width: Math.round(regionW * dpr),
+          height: Math.round(regionH * dpr),
+        });
+      }
       onSave(path);
     } catch (err) {
       console.error("Failed to save:", err);
+      saving = false;
+    }
+  }
+
+  async function handleCopy() {
+    if (saving) return;
+    saving = true;
+    try {
+      if (annotations.value.length > 0) {
+        const base64 = await compositeImage(screenshotBase64, regionX, regionY, regionW, regionH, annotations.value);
+        await invoke("copy_composited_image", { imageBase64: base64 });
+      } else {
+        const dpr = window.devicePixelRatio || 1;
+        await invoke<string>("save_region", {
+          display: 0,
+          x: Math.round(regionX * dpr),
+          y: Math.round(regionY * dpr),
+          width: Math.round(regionW * dpr),
+          height: Math.round(regionH * dpr),
+        });
+      }
+      onCopy();
+    } catch (err) {
+      console.error("Failed to copy:", err);
       saving = false;
     }
   }
@@ -174,7 +224,7 @@
   onmousemove={handleMouseMove}
   onmouseup={handleMouseUp}
 >
-  <!-- Dark overlay with cutout for selected region -->
+  <!-- Dark overlay with cutout -->
   {#if hasRegion || drawing}
     <svg class="dim-overlay" viewBox="0 0 {window.innerWidth} {window.innerHeight}">
       <defs>
@@ -201,8 +251,8 @@
     </div>
   {/if}
 
-  <!-- Resize handles (only when region is finalized) -->
-  {#if hasRegion && !drawing}
+  <!-- Resize handles (select mode only) -->
+  {#if hasRegion && !drawing && mode === "select"}
     {#each getHandlePositions() as [name, hx, hy]}
       <div
         class="handle handle-{name}"
@@ -210,18 +260,40 @@
       ></div>
     {/each}
 
-    <!-- Action buttons -->
+    <!-- Select mode actions: Annotate or quick-save -->
     <div
       class="actions"
       style="left:{regionX + regionW / 2}px;top:{regionY + regionH + 12}px"
     >
-      <button class="btn btn-save" onclick={saveRegion} disabled={saving}>
-        {saving ? "Saving..." : "Save (Enter)"}
+      <button class="btn btn-annotate" onclick={enterAnnotateMode}>
+        Annotate (Enter)
+      </button>
+      <button class="btn btn-save" onclick={handleSave} disabled={saving}>
+        {saving ? "Saving..." : "Quick Save"}
       </button>
       <button class="btn btn-cancel" onclick={onCancel}>
         Cancel (Esc)
       </button>
     </div>
+  {/if}
+
+  <!-- Annotation mode -->
+  {#if mode === "annotate" && hasRegion}
+    <AnnotationCanvas
+      {regionX}
+      {regionY}
+      regionW={regionW}
+      regionH={regionH}
+    />
+    <Toolbar
+      {regionX}
+      {regionY}
+      regionW={regionW}
+      regionH={regionH}
+      onSave={handleSave}
+      onCopy={handleCopy}
+      onCancel={onCancel}
+    />
   {/if}
 </div>
 
@@ -297,13 +369,23 @@
     font-weight: 500;
   }
 
-  .btn-save {
+  .btn-annotate {
     background: #4a9eff;
     color: white;
   }
 
-  .btn-save:hover {
+  .btn-annotate:hover {
     background: #3a8eef;
+  }
+
+  .btn-save {
+    background: rgba(255, 255, 255, 0.15);
+    color: white;
+    backdrop-filter: blur(4px);
+  }
+
+  .btn-save:hover {
+    background: rgba(255, 255, 255, 0.25);
   }
 
   .btn-save:disabled {
@@ -312,12 +394,11 @@
   }
 
   .btn-cancel {
-    background: rgba(255, 255, 255, 0.15);
-    color: white;
-    backdrop-filter: blur(4px);
+    background: transparent;
+    color: rgba(255, 255, 255, 0.6);
   }
 
   .btn-cancel:hover {
-    background: rgba(255, 255, 255, 0.25);
+    color: white;
   }
 </style>

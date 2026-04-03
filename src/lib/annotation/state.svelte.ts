@@ -1,62 +1,88 @@
 // src/lib/annotation/state.svelte.ts
 import type { Annotation, ToolType } from "./tools/types.ts";
 
-// Reactive state using module-level $state runes
-export let annotations = $state<Annotation[]>([]);
-export let activeTool = $state<ToolType>("arrow");
-export let strokeColor = $state("#FF0000");
-export let strokeWidth = $state(2);
-export let activeAnnotation = $state<Annotation | null>(null);
+// Internal reactive state — not exported directly because Svelte 5
+// forbids exporting $state variables that are reassigned.
+let _annotations = $state<Annotation[]>([]);
+let _activeTool = $state<ToolType>("arrow");
+let _strokeColor = $state("#FF0000");
+let _strokeWidth = $state(2);
+let _activeAnnotation = $state<Annotation | null>(null);
+let _undoStack = $state<Annotation[][]>([]);
+let _redoStack = $state<Annotation[][]>([]);
 
-let undoStack = $state<Annotation[][]>([]);
-let redoStack = $state<Annotation[][]>([]);
+// Export getters so consumers can read reactive values
+export function getAnnotations(): Annotation[] {
+  return _annotations;
+}
+
+// Re-export as a getter property on an object for reactive template use
+export const annotations = {
+  get value() { return _annotations; },
+};
+
+export const activeTool = {
+  get value() { return _activeTool; },
+};
+
+export const strokeColor = {
+  get value() { return _strokeColor; },
+};
+
+export const strokeWidth = {
+  get value() { return _strokeWidth; },
+};
+
+export const activeAnnotation = {
+  get value() { return _activeAnnotation; },
+};
 
 export function setActiveAnnotation(a: Annotation | null) {
-  activeAnnotation = a;
+  _activeAnnotation = a;
 }
 
 export function commitAnnotation(a: Annotation) {
-  undoStack.push([...annotations]);
-  redoStack = [];
-  annotations.push(a);
-  activeAnnotation = null;
+  _undoStack.push([..._annotations]);
+  _redoStack = [];
+  _annotations.push(a);
+  _activeAnnotation = null;
 }
 
 export function undo() {
-  if (undoStack.length === 0) return;
-  redoStack.push([...annotations]);
-  annotations = undoStack.pop()!;
+  if (_undoStack.length === 0) return;
+  _redoStack.push([..._annotations]);
+  _annotations = _undoStack.pop()!;
 }
 
 export function redo() {
-  if (redoStack.length === 0) return;
-  undoStack.push([...annotations]);
-  annotations = redoStack.pop()!;
+  if (_redoStack.length === 0) return;
+  _undoStack.push([..._annotations]);
+  _annotations = _redoStack.pop()!;
 }
 
 export function clearAnnotations() {
-  if (annotations.length === 0) return;
-  undoStack.push([...annotations]);
-  redoStack = [];
-  annotations = [];
+  if (_annotations.length === 0) return;
+  _undoStack.push([..._annotations]);
+  _redoStack = [];
+  _annotations = [];
 }
 
 export function setTool(tool: ToolType) {
-  activeTool = tool;
+  _activeTool = tool;
 }
 
 export function setColor(color: string) {
-  strokeColor = color;
+  _strokeColor = color;
 }
 
 export function setStrokeWidth(width: number) {
-  strokeWidth = width;
+  _strokeWidth = width;
 }
 
 export function canUndo(): boolean {
-  return undoStack.length > 0;
+  return _undoStack.length > 0;
 }
 
 export function canRedo(): boolean {
-  return redoStack.length > 0;
+  return _redoStack.length > 0;
 }

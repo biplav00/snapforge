@@ -6,7 +6,8 @@
   let screenshotBase64 = $state("");
   let loading = $state(true);
   let error = $state("");
-  let regionSelected = $state(false);
+  let saved = $state(false);
+  let savedMessage = $state("");
 
   const appWindow = getCurrentWebviewWindow();
 
@@ -30,9 +31,16 @@
     }
   }
 
-  async function handleRegionSaved(path: string) {
-    regionSelected = true;
-    setTimeout(() => appWindow.close(), 500);
+  function handleSaved(path: string) {
+    saved = true;
+    savedMessage = `Saved to: ${path}`;
+    setTimeout(() => appWindow.close(), 800);
+  }
+
+  function handleCopied() {
+    saved = true;
+    savedMessage = "Copied to clipboard!";
+    setTimeout(() => appWindow.close(), 800);
   }
 
   captureScreen();
@@ -42,11 +50,11 @@
 
 <div class="overlay">
   {#if loading}
-    <div class="loading">Capturing screen...</div>
+    <div class="status-msg loading">Capturing screen...</div>
   {:else if error}
-    <div class="error">{error}</div>
-  {:else if regionSelected}
-    <div class="success">Screenshot saved!</div>
+    <div class="status-msg error">{error}</div>
+  {:else if saved}
+    <div class="status-msg success">{savedMessage}</div>
   {:else}
     <img
       src="data:image/png;base64,{screenshotBase64}"
@@ -55,7 +63,9 @@
       draggable="false"
     />
     <RegionSelector
-      onSave={handleRegionSaved}
+      {screenshotBase64}
+      onSave={handleSaved}
+      onCopy={handleCopied}
       onCancel={handleCancel}
     />
   {/if}
@@ -81,7 +91,7 @@
     pointer-events: none;
   }
 
-  .loading, .error, .success {
+  .status-msg {
     position: absolute;
     top: 50%;
     left: 50%;
@@ -92,11 +102,6 @@
     text-shadow: 0 2px 4px rgba(0, 0, 0, 0.5);
   }
 
-  .error {
-    color: #ff4444;
-  }
-
-  .success {
-    color: #44ff44;
-  }
+  .error { color: #ff4444; }
+  .success { color: #44ff44; }
 </style>

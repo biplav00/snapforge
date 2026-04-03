@@ -71,7 +71,7 @@
     {#each TOOLS as t}
       <button
         class="tool-btn"
-        class:active={activeTool === t.type}
+        class:active={activeTool.value === t.type}
         onclick={() => setTool(t.type)}
         title={t.type}
       >
@@ -89,15 +89,16 @@
       onclick={() => (showColorPicker = !showColorPicker)}
       title="Color"
     >
-      <div class="color-swatch-current" style="background:{strokeColor}"></div>
+      <div class="color-swatch-current" style="background:{strokeColor.value}"></div>
     </button>
     {#if showColorPicker}
       <div class="color-picker">
         {#each COLORS as c}
           <button
             class="color-swatch"
-            class:active={strokeColor === c}
+            class:active={strokeColor.value === c}
             style="background:{c}"
+            title={c}
             onclick={() => { setColor(c); showColorPicker = false; }}
           ></button>
         {/each}
@@ -110,7 +111,7 @@
     {#each SIZES as s}
       <button
         class="tool-btn size-btn"
-        class:active={strokeWidth === s.value}
+        class:active={strokeWidth.value === s.value}
         onclick={() => setStrokeWidth(s.value)}
         title="{s.label} ({s.value}px)"
       >
