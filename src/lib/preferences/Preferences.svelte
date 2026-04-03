@@ -86,7 +86,7 @@
         <GeneralTab {config} onChange={updateConfig} />
       {:else if activeTab === "hotkeys"}
         <HotkeysTab
-          bindings={config.hotkey_bindings as { screenshot: string; capture_last_region: string; record_screen: string }}
+          bindings={config.hotkey_bindings as Record<string, string>}
           onChangeBinding={updateHotkeyBinding}
         />
       {:else if activeTab === "screenshots"}
@@ -115,25 +115,23 @@
   main {
     padding: 0;
     font-family: system-ui, -apple-system, sans-serif;
-    color: #333;
+    color: var(--text);
     height: 100%;
     display: flex;
     flex-direction: column;
   }
 
-  header {
-    padding: 20px 24px 0;
-  }
+  header { padding: 20px 24px 0; }
 
   h1 {
     font-size: 18px;
     font-weight: 600;
-    color: #222;
+    color: var(--text);
   }
 
   .loading {
     padding: 40px 24px;
-    color: #888;
+    color: var(--text-muted);
     text-align: center;
   }
 
@@ -141,7 +139,7 @@
     display: flex;
     gap: 0;
     padding: 16px 24px 0;
-    border-bottom: 1px solid #e8e8e8;
+    border-bottom: 1px solid var(--border);
   }
 
   .tab-btn {
@@ -151,20 +149,12 @@
     background: transparent;
     font-size: 13px;
     cursor: pointer;
-    color: #888;
-    display: flex;
-    align-items: center;
+    color: var(--text-muted);
     transition: color 0.15s;
   }
 
-  .tab-btn:hover {
-    color: #555;
-  }
-
-  .tab-btn.active {
-    color: #4a9eff;
-    border-bottom-color: #4a9eff;
-  }
+  .tab-btn:hover { color: var(--text-secondary); }
+  .tab-btn.active { color: var(--accent); border-bottom-color: var(--accent); }
 
   .tab-panel {
     flex: 1;
@@ -174,20 +164,18 @@
 
   .footer {
     padding: 14px 24px;
-    border-top: 1px solid #e8e8e8;
+    border-top: 1px solid var(--border);
     display: flex;
     align-items: center;
     justify-content: space-between;
-    background: #fafafa;
+    background: var(--bg-footer);
   }
 
-  .footer-left {
-    flex: 1;
-  }
+  .footer-left { flex: 1; }
 
   .save-btn {
     padding: 8px 24px;
-    background: #4a9eff;
+    background: var(--accent);
     color: white;
     border: none;
     border-radius: 6px;
@@ -197,21 +185,9 @@
     transition: background 0.15s;
   }
 
-  .save-btn:hover {
-    background: #3a8eef;
-  }
+  .save-btn:hover { background: var(--accent-hover); }
+  .save-btn:disabled { opacity: 0.6; cursor: not-allowed; }
 
-  .save-btn:disabled {
-    opacity: 0.6;
-    cursor: not-allowed;
-  }
-
-  .status {
-    font-size: 13px;
-    color: #44aa44;
-  }
-
-  .status.error {
-    color: #dd4444;
-  }
+  .status { font-size: 13px; color: var(--success); }
+  .status.error { color: var(--danger); }
 </style>

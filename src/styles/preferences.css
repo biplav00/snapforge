@@ -8,11 +8,68 @@ html, body {
   width: 100%;
   height: 100%;
   overflow: auto;
-  background: white;
-  font-family: system-ui, sans-serif;
+  background: var(--bg);
+  font-family: system-ui, -apple-system, sans-serif;
+  color: var(--text);
 }
 
 #app {
   width: 100%;
   height: 100%;
+}
+
+/* Light theme (default) */
+:root {
+  --bg: #ffffff;
+  --bg-secondary: #fafafa;
+  --bg-hover: #f5f7fa;
+  --bg-active: #eef4ff;
+  --bg-input: #fafafa;
+  --bg-input-focus: #ffffff;
+  --bg-kbd: #f0f0f0;
+  --bg-footer: #fafafa;
+  --border: #e0e0e0;
+  --border-light: #f0f0f0;
+  --border-input: #d0d0d0;
+  --border-kbd: #ddd;
+  --text: #333333;
+  --text-secondary: #555555;
+  --text-muted: #888888;
+  --text-faint: #aaaaaa;
+  --accent: #4a9eff;
+  --accent-hover: #3a8eef;
+  --accent-bg: #f0f6ff;
+  --danger: #cc4444;
+  --danger-bg: #fff0f0;
+  --danger-border: #ffaaaa;
+  --success: #44aa44;
+}
+
+/* Dark theme */
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #1e1e1e;
+    --bg-secondary: #252525;
+    --bg-hover: #2a2a2a;
+    --bg-active: #1a2a3a;
+    --bg-input: #2a2a2a;
+    --bg-input-focus: #333333;
+    --bg-kbd: #333333;
+    --bg-footer: #1a1a1a;
+    --border: #3a3a3a;
+    --border-light: #2e2e2e;
+    --border-input: #444444;
+    --border-kbd: #4a4a4a;
+    --text: #e0e0e0;
+    --text-secondary: #cccccc;
+    --text-muted: #888888;
+    --text-faint: #666666;
+    --accent: #5cb8ff;
+    --accent-hover: #4aa8ef;
+    --accent-bg: #1a2a3a;
+    --danger: #ff6666;
+    --danger-bg: #2a1a1a;
+    --danger-border: #553333;
+    --success: #66cc66;
+  }
 }

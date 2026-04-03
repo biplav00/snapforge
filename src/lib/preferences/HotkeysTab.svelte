@@ -1,12 +1,6 @@
 <script lang="ts">
-  interface HotkeyBindings {
-    screenshot: string;
-    capture_last_region: string;
-    record_screen: string;
-  }
-
   interface Props {
-    bindings: HotkeyBindings;
+    bindings: Record<string, string>;
     onChangeBinding: (action: string, newBinding: string) => void;
   }
 
@@ -14,53 +8,43 @@
 
   let recording = $state<string | null>(null);
 
-  const GLOBAL_ACTIONS = [
-    { id: "screenshot", label: "Screenshot", description: "Open capture overlay" },
-    { id: "capture_last_region", label: "Capture Last Region", description: "Re-capture previous region" },
-    { id: "record_screen", label: "Record Screen", description: "Start/stop screen recording" },
+  interface HotkeyEntry { id: string; label: string; }
+
+  const GLOBAL_ACTIONS: HotkeyEntry[] = [
+    { id: "screenshot", label: "Screenshot" },
+    { id: "capture_last_region", label: "Capture Last Region" },
+    { id: "record_screen", label: "Record Screen" },
   ];
 
-  const ANNOTATION_SHORTCUTS = [
-    { key: "A", label: "Arrow tool" },
-    { key: "R", label: "Rectangle tool" },
-    { key: "C", label: "Circle tool" },
-    { key: "L", label: "Line tool" },
-    { key: "F", label: "Freehand tool" },
-    { key: "T", label: "Text tool" },
-    { key: "H", label: "Highlight tool" },
-    { key: "B", label: "Blur tool" },
-    { key: "N", label: "Step numbers tool" },
-    { key: "I", label: "Color picker tool" },
-    { key: "M", label: "Measurement tool" },
+  const TOOL_ACTIONS: HotkeyEntry[] = [
+    { id: "tool_arrow", label: "Arrow" },
+    { id: "tool_rect", label: "Rectangle" },
+    { id: "tool_circle", label: "Circle" },
+    { id: "tool_line", label: "Line" },
+    { id: "tool_freehand", label: "Freehand" },
+    { id: "tool_text", label: "Text" },
+    { id: "tool_highlight", label: "Highlight" },
+    { id: "tool_blur", label: "Blur" },
+    { id: "tool_steps", label: "Step Numbers" },
+    { id: "tool_colorpicker", label: "Color Picker" },
+    { id: "tool_measure", label: "Measurement" },
   ];
 
-  const OVERLAY_SHORTCUTS = [
-    { key: "⌘ S", label: "Save screenshot" },
-    { key: "⌘ C", label: "Copy to clipboard" },
-    { key: "⌘ Z", label: "Undo" },
-    { key: "⌘ ⇧ Z", label: "Redo" },
-    { key: "Enter", label: "Save / Confirm" },
-    { key: "Escape", label: "Cancel / Close overlay" },
+  const OVERLAY_ACTIONS: HotkeyEntry[] = [
+    { id: "action_save", label: "Save" },
+    { id: "action_copy", label: "Copy to Clipboard" },
+    { id: "action_undo", label: "Undo" },
+    { id: "action_redo", label: "Redo" },
   ];
 
-  function startRecording(action: string) {
-    recording = action;
-  }
-
-  function cancelRecording() {
-    recording = null;
-  }
+  function startRecording(action: string) { recording = action; }
+  function cancelRecording() { recording = null; }
 
   function handleKeydown(e: KeyboardEvent) {
     if (!recording) return;
     e.preventDefault();
     e.stopPropagation();
-
-    if (e.key === "Escape") {
-      recording = null;
-      return;
-    }
-
+    if (e.key === "Escape") { recording = null; return; }
     if (["Control", "Shift", "Alt", "Meta"].includes(e.key)) return;
 
     const parts: string[] = [];
@@ -71,214 +55,121 @@
     let key = e.key.length === 1 ? e.key.toUpperCase() : e.code;
     if (key.startsWith("Key")) key = key.slice(3);
     if (key.startsWith("Digit")) key = key.slice(5);
-
     parts.push(key);
-    const combo = parts.join("+");
 
-    onChangeBinding(recording, combo);
+    onChangeBinding(recording, parts.join("+"));
     recording = null;
   }
 
   function resetDefaults() {
-    onChangeBinding("screenshot", "CmdOrCtrl+Shift+S");
-    onChangeBinding("capture_last_region", "CmdOrCtrl+Shift+L");
-    onChangeBinding("record_screen", "CmdOrCtrl+Shift+R");
+    const defaults: Record<string, string> = {
+      screenshot: "CmdOrCtrl+Shift+S", capture_last_region: "CmdOrCtrl+Shift+L",
+      record_screen: "CmdOrCtrl+Shift+R",
+      tool_arrow: "A", tool_rect: "R", tool_circle: "C", tool_line: "L",
+      tool_freehand: "F", tool_text: "T", tool_highlight: "H", tool_blur: "B",
+      tool_steps: "N", tool_colorpicker: "I", tool_measure: "M",
+      action_save: "CmdOrCtrl+S", action_copy: "CmdOrCtrl+C",
+      action_undo: "CmdOrCtrl+Z", action_redo: "CmdOrCtrl+Shift+Z",
+    };
+    for (const [k, v] of Object.entries(defaults)) onChangeBinding(k, v);
   }
 
-  function formatShortcut(shortcut: string): string {
-    return shortcut
-      .replace("CmdOrCtrl", "⌘")
-      .replace("Shift", "⇧")
-      .replace("Alt", "⌥")
-      .replace(/\+/g, " ");
+  function fmt(s: string): string {
+    return s.replace("CmdOrCtrl", "⌘").replace("Shift", "⇧").replace("Alt", "⌥").replace(/\+/g, " ");
   }
 </script>
 
 <svelte:window onkeydown={handleKeydown} />
 
 <div class="tab-content">
-  <section>
-    <h3>Global Shortcuts</h3>
-    <p class="section-desc">These work system-wide, even when ScreenSnap is in the background.</p>
-    <div class="hotkey-list">
-      {#each GLOBAL_ACTIONS as action}
-        <div class="hotkey-row" class:active={recording === action.id}>
-          <div class="hotkey-info">
-            <span class="hotkey-label">{action.label}</span>
-            <span class="hotkey-desc">{action.description}</span>
-          </div>
-          <div class="hotkey-binding">
-            {#if recording === action.id}
-              <span class="recording-indicator">Press shortcut...</span>
-              <button class="cancel-btn" onclick={cancelRecording}>Cancel</button>
-            {:else}
-              <kbd class="shortcut">{formatShortcut(bindings[action.id as keyof HotkeyBindings])}</kbd>
-              <button class="rebind-btn" onclick={() => startRecording(action.id)}>Change</button>
-            {/if}
-          </div>
-        </div>
-      {/each}
-    </div>
-    <button class="reset-btn" onclick={resetDefaults}>Reset to Defaults</button>
-  </section>
+  {#each [
+    { title: "Global Shortcuts", items: GLOBAL_ACTIONS, col: "Action" },
+    { title: "Annotation Tools", items: TOOL_ACTIONS, col: "Tool" },
+    { title: "Overlay Actions", items: OVERLAY_ACTIONS, col: "Action" },
+  ] as section}
+    <section>
+      <h3>{section.title}</h3>
+      <table>
+        <thead><tr><th>{section.col}</th><th>Shortcut</th><th></th></tr></thead>
+        <tbody>
+          {#each section.items as action}
+            <tr class:active={recording === action.id}>
+              <td class="name">{action.label}</td>
+              <td class="binding">
+                {#if recording === action.id}
+                  <span class="rec">Press keys...</span>
+                {:else}
+                  <kbd>{fmt(bindings[action.id] ?? "")}</kbd>
+                {/if}
+              </td>
+              <td class="btn-cell">
+                {#if recording === action.id}
+                  <button class="cancel" onclick={cancelRecording}>Cancel</button>
+                {:else}
+                  <button class="change" onclick={() => startRecording(action.id)}>Change</button>
+                {/if}
+              </td>
+            </tr>
+          {/each}
+        </tbody>
+      </table>
+    </section>
+  {/each}
 
-  <section>
-    <h3>Annotation Tools</h3>
-    <p class="section-desc">Active while annotating a screenshot. Press the key to switch tools.</p>
-    <div class="shortcut-grid">
-      {#each ANNOTATION_SHORTCUTS as s}
-        <div class="shortcut-item">
-          <kbd class="shortcut fixed">{s.key}</kbd>
-          <span class="shortcut-label">{s.label}</span>
-        </div>
-      {/each}
-    </div>
-  </section>
-
-  <section>
-    <h3>Overlay Actions</h3>
-    <p class="section-desc">Active while the capture overlay is open.</p>
-    <div class="shortcut-grid">
-      {#each OVERLAY_SHORTCUTS as s}
-        <div class="shortcut-item">
-          <kbd class="shortcut fixed">{s.key}</kbd>
-          <span class="shortcut-label">{s.label}</span>
-        </div>
-      {/each}
-    </div>
-  </section>
+  <button class="reset" onclick={resetDefaults}>Reset All to Defaults</button>
 </div>
 
 <style>
-  .tab-content {
-    display: flex;
-    flex-direction: column;
-    gap: 24px;
-  }
+  .tab-content { display: flex; flex-direction: column; gap: 22px; }
+  section { display: flex; flex-direction: column; gap: 6px; }
+  h3 { font-size: 12px; font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px; }
 
-  section {
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-  }
+  table { width: 100%; border-collapse: collapse; }
+  thead th { text-align: left; padding: 5px 8px; font-size: 11px; font-weight: 500; color: var(--text-faint); border-bottom: 1px solid var(--border); }
+  tbody tr { transition: background 0.1s; }
+  tbody tr:hover { background: var(--bg-hover); }
+  tbody tr.active { background: var(--bg-active); }
+  td { padding: 5px 8px; border-bottom: 1px solid var(--border-light); font-size: 13px; vertical-align: middle; }
 
-  h3 {
-    font-size: 14px;
-    font-weight: 600;
-    color: #333;
-  }
-
-  .section-desc {
-    font-size: 12px;
-    color: #888;
-    margin-bottom: 4px;
-  }
-
-  .hotkey-list {
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-  }
-
-  .hotkey-row {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    padding: 8px 10px;
-    border-radius: 6px;
-    transition: background 0.15s;
-  }
-
-  .hotkey-row:hover { background: #f5f7fa; }
-  .hotkey-row.active { background: #eef4ff; }
-
-  .hotkey-info {
-    display: flex;
-    flex-direction: column;
-    gap: 1px;
-  }
-
-  .hotkey-label { font-size: 13px; font-weight: 500; }
-  .hotkey-desc { font-size: 11px; color: #888; }
-
-  .hotkey-binding {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-  }
-
-  .shortcut {
-    background: #f0f0f0;
-    border: 1px solid #ddd;
-    padding: 2px 8px;
+  .name { font-weight: 450; color: var(--text); }
+  .binding { width: 130px; }
+  .binding kbd {
+    background: var(--bg-kbd);
+    border: 1px solid var(--border-kbd);
+    padding: 1px 7px;
     border-radius: 4px;
     font-size: 12px;
     font-family: system-ui, sans-serif;
     letter-spacing: 0.5px;
-    min-width: 40px;
-    text-align: center;
+    color: var(--text);
   }
+  .btn-cell { width: 65px; text-align: right; }
 
-  .shortcut.fixed {
-    min-width: 32px;
-    background: #f5f5f5;
-  }
+  .rec { color: var(--accent); font-size: 12px; font-style: italic; animation: blink 1s ease-in-out infinite; }
+  @keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
 
-  .recording-indicator {
-    color: #4a9eff;
-    font-size: 12px;
-    font-style: italic;
-    animation: blink 1s ease-in-out infinite;
-  }
-
-  @keyframes blink {
-    0%, 100% { opacity: 1; }
-    50% { opacity: 0.4; }
-  }
-
-  .rebind-btn, .cancel-btn {
-    padding: 3px 10px;
-    border: 1px solid #d0d0d0;
+  .change, .cancel {
+    padding: 2px 9px;
+    border: 1px solid var(--border-input);
     border-radius: 4px;
-    background: white;
+    background: var(--bg);
     cursor: pointer;
     font-size: 11px;
-    color: #555;
+    color: var(--text-secondary);
   }
+  .change:hover { background: var(--bg-hover); }
+  .cancel { border-color: var(--danger-border); color: var(--danger); }
+  .cancel:hover { background: var(--danger-bg); }
 
-  .rebind-btn:hover { background: #f0f0f0; }
-  .cancel-btn { border-color: #ffaaaa; color: #cc4444; }
-  .cancel-btn:hover { background: #fff0f0; }
-
-  .reset-btn {
+  .reset {
     align-self: flex-start;
     padding: 5px 14px;
-    border: 1px solid #d0d0d0;
+    border: 1px solid var(--border-input);
     border-radius: 5px;
-    background: white;
+    background: var(--bg);
     cursor: pointer;
     font-size: 12px;
-    color: #666;
-    margin-top: 4px;
+    color: var(--text-secondary);
   }
-
-  .reset-btn:hover { background: #f0f0f0; }
-
-  .shortcut-grid {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 4px 16px;
-  }
-
-  .shortcut-item {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    padding: 4px 0;
-  }
-
-  .shortcut-label {
-    font-size: 12px;
-    color: #555;
-  }
+  .reset:hover { background: var(--bg-hover); }
 </style>

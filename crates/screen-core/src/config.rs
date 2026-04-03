@@ -55,9 +55,27 @@ impl Default for RecordingConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HotkeyBindings {
+    // Global shortcuts
     pub screenshot: String,
     pub capture_last_region: String,
     pub record_screen: String,
+    // Annotation tool shortcuts
+    pub tool_arrow: String,
+    pub tool_rect: String,
+    pub tool_circle: String,
+    pub tool_line: String,
+    pub tool_freehand: String,
+    pub tool_text: String,
+    pub tool_highlight: String,
+    pub tool_blur: String,
+    pub tool_steps: String,
+    pub tool_colorpicker: String,
+    pub tool_measure: String,
+    // Overlay action shortcuts
+    pub action_save: String,
+    pub action_copy: String,
+    pub action_undo: String,
+    pub action_redo: String,
 }
 
 impl Default for HotkeyBindings {
@@ -66,6 +84,21 @@ impl Default for HotkeyBindings {
             screenshot: "CmdOrCtrl+Shift+S".to_string(),
             capture_last_region: "CmdOrCtrl+Shift+L".to_string(),
             record_screen: "CmdOrCtrl+Shift+R".to_string(),
+            tool_arrow: "A".to_string(),
+            tool_rect: "R".to_string(),
+            tool_circle: "C".to_string(),
+            tool_line: "L".to_string(),
+            tool_freehand: "F".to_string(),
+            tool_text: "T".to_string(),
+            tool_highlight: "H".to_string(),
+            tool_blur: "B".to_string(),
+            tool_steps: "N".to_string(),
+            tool_colorpicker: "I".to_string(),
+            tool_measure: "M".to_string(),
+            action_save: "CmdOrCtrl+S".to_string(),
+            action_copy: "CmdOrCtrl+C".to_string(),
+            action_undo: "CmdOrCtrl+Z".to_string(),
+            action_redo: "CmdOrCtrl+Shift+Z".to_string(),
         }
     }
 }
