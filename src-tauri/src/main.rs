@@ -2,10 +2,21 @@
 
 mod commands;
 
+use std::sync::Mutex;
+
+/// Holds a pre-captured screenshot taken before the overlay window appears.
+pub struct PreCapturedScreen(pub Mutex<Option<String>>);
+
 fn main() {
+    // Capture the screen BEFORE creating any windows.
+    // This avoids the overlay window interfering with the screenshot.
+    let pre_captured = commands::capture_screen(0).ok();
+
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
+        .manage(PreCapturedScreen(Mutex::new(pre_captured)))
         .invoke_handler(tauri::generate_handler![
+            commands::get_pre_captured_screen,
             commands::capture_screen,
             commands::save_region,
             commands::save_fullscreen,
@@ -13,8 +24,6 @@ fn main() {
             commands::copy_composited_image,
         ])
         .setup(|app| {
-            // Create the overlay window on startup for now.
-            // Later this will be triggered by hotkey/tray.
             let _overlay = tauri::WebviewWindowBuilder::new(
                 app,
                 "overlay",

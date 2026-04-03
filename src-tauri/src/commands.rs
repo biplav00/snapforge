@@ -1,6 +1,17 @@
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 
+/// Return the pre-captured screenshot (taken before the overlay window appeared).
+#[tauri::command]
+pub fn get_pre_captured_screen(
+    state: tauri::State<'_, crate::PreCapturedScreen>,
+) -> Result<String, String> {
+    let guard = state.0.lock().map_err(|e| e.to_string())?;
+    guard
+        .clone()
+        .ok_or_else(|| "No pre-captured screen available".to_string())
+}
+
 /// Capture fullscreen and return base64-encoded PNG for the overlay background.
 #[tauri::command]
 pub fn capture_screen(display: usize) -> Result<String, String> {

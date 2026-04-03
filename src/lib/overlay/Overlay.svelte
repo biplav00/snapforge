@@ -13,7 +13,7 @@
 
   async function captureScreen() {
     try {
-      screenshotBase64 = await invoke<string>("capture_screen", { display: 0 });
+      screenshotBase64 = await invoke<string>("get_pre_captured_screen");
       loading = false;
     } catch (e) {
       error = String(e);
