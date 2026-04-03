@@ -3,13 +3,14 @@ import { arrowTool } from "./arrow.ts";
 import { rectTool } from "./rect.ts";
 import { lineTool } from "./line.ts";
 import { freehandTool } from "./freehand.ts";
+import { textTool } from "./text.ts";
 
 const tools: Record<ToolType, Tool> = {
   arrow: arrowTool,
   rect: rectTool,
   line: lineTool,
   freehand: freehandTool,
-  text: arrowTool, // placeholder — text tool added in Task 4
+  text: textTool,
 };
 
 export function getTool(type: ToolType): Tool {
