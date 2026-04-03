@@ -12,6 +12,21 @@ pub enum ConfigError {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HotkeyBindings {
+    pub screenshot: String,
+    pub capture_last_region: String,
+}
+
+impl Default for HotkeyBindings {
+    fn default() -> Self {
+        Self {
+            screenshot: "CmdOrCtrl+Shift+S".to_string(),
+            capture_last_region: "CmdOrCtrl+Shift+L".to_string(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
     pub save_directory: PathBuf,
     pub auto_copy_clipboard: bool,
@@ -22,6 +37,7 @@ pub struct AppConfig {
     pub screenshot_format: CaptureFormat,
     pub jpg_quality: u8,
     pub filename_pattern: String,
+    pub hotkey_bindings: HotkeyBindings,
 }
 
 impl Default for AppConfig {
@@ -40,6 +56,7 @@ impl Default for AppConfig {
             screenshot_format: CaptureFormat::default(),
             jpg_quality: 90,
             filename_pattern: "screenshot-{date}-{time}".to_string(),
+            hotkey_bindings: HotkeyBindings::default(),
         }
     }
 }
