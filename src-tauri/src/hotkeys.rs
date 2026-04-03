@@ -6,7 +6,10 @@ pub fn register_hotkeys(app: &AppHandle) -> tauri::Result<()> {
     let config = match snapforge_core::config::AppConfig::load() {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("Warning: failed to load config for hotkeys, using defaults: {}", e);
+            eprintln!(
+                "Warning: failed to load config for hotkeys, using defaults: {}",
+                e
+            );
             snapforge_core::config::AppConfig::default()
         }
     };
@@ -14,31 +17,41 @@ pub fn register_hotkeys(app: &AppHandle) -> tauri::Result<()> {
     // Register screenshot hotkey
     if let Ok(shortcut) = config.hotkey_bindings.screenshot.parse::<Shortcut>() {
         let app_handle = app.clone();
-        let _ = app.global_shortcut().on_shortcut(shortcut, move |_app, _shortcut, event| {
-            if event.state == ShortcutState::Pressed {
-                crate::trigger_screenshot(&app_handle);
-            }
-        });
+        let _ = app
+            .global_shortcut()
+            .on_shortcut(shortcut, move |_app, _shortcut, event| {
+                if event.state == ShortcutState::Pressed {
+                    crate::trigger_screenshot(&app_handle);
+                }
+            });
     }
 
     // Register last-region hotkey
-    if let Ok(shortcut) = config.hotkey_bindings.capture_last_region.parse::<Shortcut>() {
+    if let Ok(shortcut) = config
+        .hotkey_bindings
+        .capture_last_region
+        .parse::<Shortcut>()
+    {
         let app_handle = app.clone();
-        let _ = app.global_shortcut().on_shortcut(shortcut, move |_app, _shortcut, event| {
-            if event.state == ShortcutState::Pressed {
-                crate::trigger_last_region(&app_handle);
-            }
-        });
+        let _ = app
+            .global_shortcut()
+            .on_shortcut(shortcut, move |_app, _shortcut, event| {
+                if event.state == ShortcutState::Pressed {
+                    crate::trigger_last_region(&app_handle);
+                }
+            });
     }
 
     // Register record-screen hotkey
     if let Ok(shortcut) = config.hotkey_bindings.record_screen.parse::<Shortcut>() {
         let app_handle = app.clone();
-        let _ = app.global_shortcut().on_shortcut(shortcut, move |_app, _shortcut, event| {
-            if event.state == ShortcutState::Pressed {
-                crate::trigger_recording(&app_handle);
-            }
-        });
+        let _ = app
+            .global_shortcut()
+            .on_shortcut(shortcut, move |_app, _shortcut, event| {
+                if event.state == ShortcutState::Pressed {
+                    crate::trigger_recording(&app_handle);
+                }
+            });
     }
 
     Ok(())

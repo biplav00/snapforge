@@ -1,11 +1,11 @@
-pub mod types;
 pub mod capture;
-pub mod format;
 pub mod clipboard;
 pub mod config;
+pub mod format;
 pub mod record;
+pub mod types;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use thiserror::Error;
 use types::{CaptureFormat, Rect};
 
@@ -24,10 +24,9 @@ pub enum ScreenError {
 }
 
 /// Capture fullscreen screenshot, save to file, optionally copy to clipboard.
-/// Returns the path where the file was saved.
 pub fn screenshot_fullscreen(
     display: usize,
-    save_path: &PathBuf,
+    save_path: &Path,
     format: CaptureFormat,
     quality: u8,
     copy_to_clipboard: bool,
@@ -39,15 +38,14 @@ pub fn screenshot_fullscreen(
     }
 
     format::save_image(&image, save_path, format, quality)?;
-    Ok(save_path.clone())
+    Ok(save_path.to_path_buf())
 }
 
 /// Capture a specific region, save to file, optionally copy to clipboard.
-/// Returns the path where the file was saved.
 pub fn screenshot_region(
     display: usize,
     region: Rect,
-    save_path: &PathBuf,
+    save_path: &Path,
     format: CaptureFormat,
     quality: u8,
     copy_to_clipboard: bool,
@@ -59,5 +57,5 @@ pub fn screenshot_region(
     }
 
     format::save_image(&image, save_path, format, quality)?;
-    Ok(save_path.clone())
+    Ok(save_path.to_path_buf())
 }

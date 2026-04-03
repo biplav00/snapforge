@@ -77,11 +77,12 @@ pub fn find_ffmpeg(provided_path: Option<&PathBuf>) -> Result<PathBuf, RecordErr
     }
 
     // Check system PATH (cross-platform)
-    let check_cmd = if cfg!(target_os = "windows") { "where" } else { "which" };
-    if let Ok(output) = std::process::Command::new(check_cmd)
-        .arg("ffmpeg")
-        .output()
-    {
+    let check_cmd = if cfg!(target_os = "windows") {
+        "where"
+    } else {
+        "which"
+    };
+    if let Ok(output) = std::process::Command::new(check_cmd).arg("ffmpeg").output() {
         if output.status.success() {
             let path_str = String::from_utf8_lossy(&output.stdout)
                 .lines()

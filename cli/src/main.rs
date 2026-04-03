@@ -5,7 +5,10 @@ use std::path::PathBuf;
 use std::process;
 
 #[derive(Parser)]
-#[command(name = "snapforge", about = "Snapforge — screenshot and screen recording tool")]
+#[command(
+    name = "snapforge",
+    about = "Snapforge — screenshot and screen recording tool"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -98,7 +101,15 @@ fn main() {
             quality,
             display,
         } => {
-            if let Err(e) = handle_capture(fullscreen, last_region, region, format, output, quality, display) {
+            if let Err(e) = handle_capture(
+                fullscreen,
+                last_region,
+                region,
+                format,
+                output,
+                quality,
+                display,
+            ) {
                 eprintln!("Error: {}", e);
                 process::exit(1);
             }
@@ -138,18 +149,35 @@ fn handle_capture(
     let save_path = output.unwrap_or_else(|| config.save_file_path());
 
     if let Some(region) = region {
-        let path = snapforge_core::screenshot_region(display, region, &save_path, format, quality, config.auto_copy_clipboard)?;
+        let path = snapforge_core::screenshot_region(
+            display,
+            region,
+            &save_path,
+            format,
+            quality,
+            config.auto_copy_clipboard,
+        )?;
         println!("Saved to: {}", path.display());
 
         if config.remember_last_region {
             let mut config = config;
-            config.last_region = Some(snapforge_core::types::LastRegion { display, rect: region });
+            config.last_region = Some(snapforge_core::types::LastRegion {
+                display,
+                rect: region,
+            });
             let _ = config.save();
         }
     } else if last_region {
         match config.last_region {
             Some(last) => {
-                let path = snapforge_core::screenshot_region(last.display, last.rect, &save_path, format, quality, config.auto_copy_clipboard)?;
+                let path = snapforge_core::screenshot_region(
+                    last.display,
+                    last.rect,
+                    &save_path,
+                    format,
+                    quality,
+                    config.auto_copy_clipboard,
+                )?;
                 println!("Saved to: {}", path.display());
             }
             None => {
@@ -158,7 +186,13 @@ fn handle_capture(
             }
         }
     } else if fullscreen {
-        let path = snapforge_core::screenshot_fullscreen(display, &save_path, format, quality, config.auto_copy_clipboard)?;
+        let path = snapforge_core::screenshot_fullscreen(
+            display,
+            &save_path,
+            format,
+            quality,
+            config.auto_copy_clipboard,
+        )?;
         println!("Saved to: {}", path.display());
     } else {
         // Launch the Tauri overlay app for interactive region selection
@@ -225,7 +259,10 @@ fn handle_record(
         quality: config.recording.quality,
     };
 
-    println!("Recording to: {} (press Ctrl+C to stop)", output_path.display());
+    println!(
+        "Recording to: {} (press Ctrl+C to stop)",
+        output_path.display()
+    );
 
     let handle = snapforge_core::record::ffmpeg::start_recording(record_config)?;
 
@@ -233,7 +270,8 @@ fn handle_record(
     let r = running.clone();
     ctrlc::set_handler(move || {
         r.store(false, std::sync::atomic::Ordering::SeqCst);
-    }).expect("Error setting Ctrl-C handler");
+    })
+    .expect("Error setting Ctrl-C handler");
 
     while running.load(std::sync::atomic::Ordering::SeqCst) {
         std::thread::sleep(std::time::Duration::from_millis(100));

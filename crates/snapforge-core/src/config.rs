@@ -11,29 +11,19 @@ pub enum ConfigError {
     Parse(#[from] serde_json::Error),
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub enum RecordingFormat {
+    #[default]
     Mp4,
     Gif,
 }
 
-impl Default for RecordingFormat {
-    fn default() -> Self {
-        RecordingFormat::Mp4
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub enum RecordingQuality {
     Low,
+    #[default]
     Medium,
     High,
-}
-
-impl Default for RecordingQuality {
-    fn default() -> Self {
-        RecordingQuality::Medium
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -50,15 +50,11 @@ fn main() {
 
 /// Get screen dimensions for edge-to-edge overlay.
 fn get_screen_size(app: &AppHandle) -> (f64, f64) {
-    let monitor = app
-        .primary_monitor()
-        .ok()
-        .flatten()
-        .or_else(|| {
-            app.available_monitors()
-                .ok()
-                .and_then(|m| m.into_iter().next())
-        });
+    let monitor = app.primary_monitor().ok().flatten().or_else(|| {
+        app.available_monitors()
+            .ok()
+            .and_then(|m| m.into_iter().next())
+    });
 
     if let Some(m) = monitor {
         let size = m.size();

@@ -13,7 +13,10 @@ fn main() {
 
     let ffmpeg_path = std::path::Path::new("binaries").join(&ffmpeg_name);
     if ffmpeg_path.exists() {
-        println!("cargo:warning=Bundling FFmpeg from {}", ffmpeg_path.display());
+        println!(
+            "cargo:warning=Bundling FFmpeg from {}",
+            ffmpeg_path.display()
+        );
         // Copy to output directory so it's next to the binary
         if let Ok(out_dir) = std::env::var("OUT_DIR") {
             let dest = std::path::Path::new(&out_dir)

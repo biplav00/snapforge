@@ -6,8 +6,9 @@ pub struct Rect {
     pub height: u32,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum CaptureFormat {
+    #[default]
     Png,
     Jpg,
     WebP,
@@ -32,12 +33,6 @@ impl CaptureFormat {
     }
 }
 
-impl Default for CaptureFormat {
-    fn default() -> Self {
-        CaptureFormat::Png
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct LastRegion {
     pub display: usize,
@@ -57,11 +52,26 @@ mod tests {
 
     #[test]
     fn test_capture_format_from_extension() {
-        assert_eq!(CaptureFormat::from_extension("png"), Some(CaptureFormat::Png));
-        assert_eq!(CaptureFormat::from_extension("PNG"), Some(CaptureFormat::Png));
-        assert_eq!(CaptureFormat::from_extension("jpg"), Some(CaptureFormat::Jpg));
-        assert_eq!(CaptureFormat::from_extension("jpeg"), Some(CaptureFormat::Jpg));
-        assert_eq!(CaptureFormat::from_extension("webp"), Some(CaptureFormat::WebP));
+        assert_eq!(
+            CaptureFormat::from_extension("png"),
+            Some(CaptureFormat::Png)
+        );
+        assert_eq!(
+            CaptureFormat::from_extension("PNG"),
+            Some(CaptureFormat::Png)
+        );
+        assert_eq!(
+            CaptureFormat::from_extension("jpg"),
+            Some(CaptureFormat::Jpg)
+        );
+        assert_eq!(
+            CaptureFormat::from_extension("jpeg"),
+            Some(CaptureFormat::Jpg)
+        );
+        assert_eq!(
+            CaptureFormat::from_extension("webp"),
+            Some(CaptureFormat::WebP)
+        );
         assert_eq!(CaptureFormat::from_extension("bmp"), None);
     }
 
@@ -72,7 +82,12 @@ mod tests {
 
     #[test]
     fn test_rect_serde_roundtrip() {
-        let rect = Rect { x: 100, y: 200, width: 800, height: 600 };
+        let rect = Rect {
+            x: 100,
+            y: 200,
+            width: 800,
+            height: 600,
+        };
         let json = serde_json::to_string(&rect).unwrap();
         let deserialized: Rect = serde_json::from_str(&json).unwrap();
         assert_eq!(rect, deserialized);

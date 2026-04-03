@@ -5,13 +5,7 @@ fn test_fullscreen_screenshot_png() {
     let tmp = tempfile::tempdir().unwrap();
     let path = tmp.path().join("fullscreen.png");
 
-    let result = snapforge_core::screenshot_fullscreen(
-        0,
-        &path,
-        CaptureFormat::Png,
-        90,
-        false,
-    );
+    let result = snapforge_core::screenshot_fullscreen(0, &path, CaptureFormat::Png, 90, false);
 
     if let Ok(saved_path) = result {
         assert!(saved_path.exists());
@@ -28,16 +22,14 @@ fn test_fullscreen_screenshot_png() {
 fn test_region_screenshot_jpg() {
     let tmp = tempfile::tempdir().unwrap();
     let path = tmp.path().join("region.jpg");
-    let region = Rect { x: 0, y: 0, width: 200, height: 150 };
+    let region = Rect {
+        x: 0,
+        y: 0,
+        width: 200,
+        height: 150,
+    };
 
-    let result = snapforge_core::screenshot_region(
-        0,
-        region,
-        &path,
-        CaptureFormat::Jpg,
-        85,
-        false,
-    );
+    let result = snapforge_core::screenshot_region(0, region, &path, CaptureFormat::Jpg, 85, false);
 
     if let Ok(saved_path) = result {
         assert!(saved_path.exists());
@@ -51,16 +43,15 @@ fn test_region_screenshot_jpg() {
 fn test_region_screenshot_webp() {
     let tmp = tempfile::tempdir().unwrap();
     let path = tmp.path().join("region.webp");
-    let region = Rect { x: 50, y: 50, width: 100, height: 100 };
+    let region = Rect {
+        x: 50,
+        y: 50,
+        width: 100,
+        height: 100,
+    };
 
-    let result = snapforge_core::screenshot_region(
-        0,
-        region,
-        &path,
-        CaptureFormat::WebP,
-        90,
-        false,
-    );
+    let result =
+        snapforge_core::screenshot_region(0, region, &path, CaptureFormat::WebP, 90, false);
 
     if let Ok(saved_path) = result {
         assert!(saved_path.exists());

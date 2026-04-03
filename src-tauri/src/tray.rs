@@ -6,8 +6,13 @@ use tauri::{
 
 pub fn create_tray(app: &AppHandle) -> tauri::Result<()> {
     let screenshot_item = MenuItem::with_id(app, "screenshot", "Screenshot", true, None::<&str>)?;
-    let last_region_item =
-        MenuItem::with_id(app, "last_region", "Capture Last Region", true, None::<&str>)?;
+    let last_region_item = MenuItem::with_id(
+        app,
+        "last_region",
+        "Capture Last Region",
+        true,
+        None::<&str>,
+    )?;
     let record_item = MenuItem::with_id(app, "record", "Record Screen", true, None::<&str>)?;
     let separator1 = PredefinedMenuItem::separator(app)?;
     let open_folder_item =

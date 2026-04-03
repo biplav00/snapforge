@@ -16,7 +16,7 @@ impl RecordingState {
     pub fn is_recording(&self) -> bool {
         self.handle
             .lock()
-            .map(|h| h.as_ref().map_or(false, |handle| handle.is_running()))
+            .map(|h| h.as_ref().is_some_and(|handle| handle.is_running()))
             .unwrap_or(false)
     }
 }

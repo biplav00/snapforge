@@ -44,9 +44,7 @@ fn get_display_id(display: usize) -> Result<u32, CaptureError> {
     }
 }
 
-fn cg_image_to_rgba(
-    cg_image: &core_graphics::image::CGImage,
-) -> Result<RgbaImage, CaptureError> {
+fn cg_image_to_rgba(cg_image: &core_graphics::image::CGImage) -> Result<RgbaImage, CaptureError> {
     let width = cg_image.width() as u32;
     let height = cg_image.height() as u32;
     let bytes_per_row = cg_image.bytes_per_row();

@@ -15,26 +15,34 @@ pub enum FormatError {
 }
 
 /// Encode an RgbaImage to bytes in the given format.
-pub fn encode_image(image: &RgbaImage, format: CaptureFormat, quality: u8) -> Result<Vec<u8>, FormatError> {
+pub fn encode_image(
+    image: &RgbaImage,
+    format: CaptureFormat,
+    quality: u8,
+) -> Result<Vec<u8>, FormatError> {
     let mut buf = Cursor::new(Vec::new());
 
     match format {
         CaptureFormat::Png => {
-            image.write_to(&mut buf, image::ImageFormat::Png)
+            image
+                .write_to(&mut buf, image::ImageFormat::Png)
                 .map_err(|e| FormatError::EncodeFailed(e.to_string()))?;
         }
         CaptureFormat::Jpg => {
             let rgb = image::DynamicImage::ImageRgba8(image.clone()).to_rgb8();
             let mut encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buf, quality);
-            encoder.encode(
-                rgb.as_raw(),
-                rgb.width(),
-                rgb.height(),
-                image::ExtendedColorType::Rgb8,
-            ).map_err(|e| FormatError::EncodeFailed(e.to_string()))?;
+            encoder
+                .encode(
+                    rgb.as_raw(),
+                    rgb.width(),
+                    rgb.height(),
+                    image::ExtendedColorType::Rgb8,
+                )
+                .map_err(|e| FormatError::EncodeFailed(e.to_string()))?;
         }
         CaptureFormat::WebP => {
-            image.write_to(&mut buf, image::ImageFormat::WebP)
+            image
+                .write_to(&mut buf, image::ImageFormat::WebP)
                 .map_err(|e| FormatError::EncodeFailed(e.to_string()))?;
         }
     }
@@ -43,7 +51,12 @@ pub fn encode_image(image: &RgbaImage, format: CaptureFormat, quality: u8) -> Re
 }
 
 /// Save an RgbaImage to a file path. Creates parent directories if needed.
-pub fn save_image(image: &RgbaImage, path: &Path, format: CaptureFormat, quality: u8) -> Result<(), FormatError> {
+pub fn save_image(
+    image: &RgbaImage,
+    path: &Path,
+    format: CaptureFormat,
+    quality: u8,
+) -> Result<(), FormatError> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -106,6 +119,9 @@ mod tests {
 
         let size_high = std::fs::metadata(&path_high).unwrap().len();
         let size_low = std::fs::metadata(&path_low).unwrap().len();
-        assert!(size_high > size_low, "higher quality should produce larger file");
+        assert!(
+            size_high > size_low,
+            "higher quality should produce larger file"
+        );
     }
 }

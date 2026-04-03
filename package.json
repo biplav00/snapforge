@@ -16,7 +16,8 @@
     "format": "biome format --write src/",
     "format:check": "biome format src/",
     "typecheck": "tsc --noEmit",
-    "check": "biome check src/ && tsc --noEmit"
+    "check": "biome check src/ && tsc --noEmit",
+    "prepare": "husky"
   },
   "keywords": [],
   "author": "",
@@ -25,9 +26,14 @@
   "devDependencies": {
     "@biomejs/biome": "^2.4.10",
     "@sveltejs/vite-plugin-svelte": "^7.0.0",
+    "husky": "^9.1.7",
+    "lint-staged": "^16.4.0",
     "svelte": "^5.55.1",
     "typescript": "^6.0.2",
     "vite": "^8.0.3"
+  },
+  "lint-staged": {
+    "src/**/*.{ts,svelte}": ["biome check --fix", "biome format --write"]
   },
   "dependencies": {
     "@tauri-apps/api": "^2.10.1",

@@ -11,8 +11,8 @@ pub enum ClipboardError {
 
 /// Copy an RgbaImage to the system clipboard.
 pub fn copy_image_to_clipboard(image: &RgbaImage) -> Result<(), ClipboardError> {
-    let mut clipboard = arboard::Clipboard::new()
-        .map_err(|e| ClipboardError::AccessFailed(e.to_string()))?;
+    let mut clipboard =
+        arboard::Clipboard::new().map_err(|e| ClipboardError::AccessFailed(e.to_string()))?;
 
     let img_data = arboard::ImageData {
         width: image.width() as usize,
@@ -20,7 +20,8 @@ pub fn copy_image_to_clipboard(image: &RgbaImage) -> Result<(), ClipboardError> 
         bytes: std::borrow::Cow::Borrowed(image.as_raw()),
     };
 
-    clipboard.set_image(img_data)
+    clipboard
+        .set_image(img_data)
         .map_err(|e| ClipboardError::SetFailed(e.to_string()))?;
 
     Ok(())

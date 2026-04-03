@@ -1,5 +1,5 @@
-use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
+use base64::Engine;
 
 /// Return the pre-captured screenshot (taken before the overlay window appeared).
 #[tauri::command]
@@ -15,15 +15,11 @@ pub fn get_pre_captured_screen(
 /// Capture fullscreen and return base64-encoded PNG for the overlay background.
 #[tauri::command]
 pub fn capture_screen(display: usize) -> Result<String, String> {
-    let image = snapforge_core::capture::capture_fullscreen(display)
-        .map_err(|e| e.to_string())?;
+    let image = snapforge_core::capture::capture_fullscreen(display).map_err(|e| e.to_string())?;
 
-    let bytes = snapforge_core::format::encode_image(
-        &image,
-        snapforge_core::types::CaptureFormat::Png,
-        90,
-    )
-    .map_err(|e| e.to_string())?;
+    let bytes =
+        snapforge_core::format::encode_image(&image, snapforge_core::types::CaptureFormat::Png, 90)
+            .map_err(|e| e.to_string())?;
 
     Ok(STANDARD.encode(&bytes))
 }
@@ -37,9 +33,13 @@ pub fn save_region(
     width: u32,
     height: u32,
 ) -> Result<String, String> {
-    let region = snapforge_core::types::Rect { x, y, width, height };
-    let config = snapforge_core::config::AppConfig::load()
-        .map_err(|e| e.to_string())?;
+    let region = snapforge_core::types::Rect {
+        x,
+        y,
+        width,
+        height,
+    };
+    let config = snapforge_core::config::AppConfig::load().map_err(|e| e.to_string())?;
 
     let save_path = config.save_file_path();
     let format = config.screenshot_format;
@@ -61,8 +61,7 @@ pub fn save_region(
 /// Save a fullscreen capture to disk (no region selection).
 #[tauri::command]
 pub fn save_fullscreen(display: usize) -> Result<String, String> {
-    let config = snapforge_core::config::AppConfig::load()
-        .map_err(|e| e.to_string())?;
+    let config = snapforge_core::config::AppConfig::load().map_err(|e| e.to_string())?;
 
     let save_path = config.save_file_path();
     let format = config.screenshot_format;
@@ -90,8 +89,7 @@ pub fn save_composited_image(image_base64: String) -> Result<String, String> {
     let img = image::load_from_memory_with_format(&bytes, image::ImageFormat::Png)
         .map_err(|e| format!("image decode failed: {}", e))?;
 
-    let config = snapforge_core::config::AppConfig::load()
-        .map_err(|e| e.to_string())?;
+    let config = snapforge_core::config::AppConfig::load().map_err(|e| e.to_string())?;
 
     let save_path = config.save_file_path();
     if let Some(parent) = save_path.parent() {
@@ -121,8 +119,7 @@ pub fn copy_composited_image(image_base64: String) -> Result<(), String> {
         .map_err(|e| format!("image decode failed: {}", e))?;
 
     let rgba = img.to_rgba8();
-    snapforge_core::clipboard::copy_image_to_clipboard(&rgba)
-        .map_err(|e| e.to_string())?;
+    snapforge_core::clipboard::copy_image_to_clipboard(&rgba).map_err(|e| e.to_string())?;
 
     Ok(())
 }
@@ -130,8 +127,7 @@ pub fn copy_composited_image(image_base64: String) -> Result<(), String> {
 /// Get the current app config as JSON.
 #[tauri::command]
 pub fn get_config() -> Result<String, String> {
-    let config = snapforge_core::config::AppConfig::load()
-        .map_err(|e| e.to_string())?;
+    let config = snapforge_core::config::AppConfig::load().map_err(|e| e.to_string())?;
     serde_json::to_string(&config).map_err(|e| e.to_string())
 }
 
@@ -146,8 +142,7 @@ pub fn save_config(config_json: String) -> Result<(), String> {
 /// Open the save directory in the system file manager.
 #[tauri::command]
 pub fn open_save_folder() -> Result<(), String> {
-    let config = snapforge_core::config::AppConfig::load()
-        .map_err(|e| e.to_string())?;
+    let config = snapforge_core::config::AppConfig::load().map_err(|e| e.to_string())?;
     let dir = &config.save_directory;
     if !dir.exists() {
         std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
@@ -170,11 +165,15 @@ pub fn capture_and_copy_region(
     width: u32,
     height: u32,
 ) -> Result<(), String> {
-    let region = snapforge_core::types::Rect { x, y, width, height };
-    let image = snapforge_core::capture::capture_region(display, region)
-        .map_err(|e| e.to_string())?;
-    snapforge_core::clipboard::copy_image_to_clipboard(&image)
-        .map_err(|e| e.to_string())?;
+    let region = snapforge_core::types::Rect {
+        x,
+        y,
+        width,
+        height,
+    };
+    let image =
+        snapforge_core::capture::capture_region(display, region).map_err(|e| e.to_string())?;
+    snapforge_core::clipboard::copy_image_to_clipboard(&image).map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -194,13 +193,15 @@ pub fn start_recording(
     region_w: Option<u32>,
     region_h: Option<u32>,
 ) -> Result<String, String> {
-    let config = snapforge_core::config::AppConfig::load()
-        .map_err(|e| e.to_string())?;
+    let config = snapforge_core::config::AppConfig::load().map_err(|e| e.to_string())?;
 
     let region = match (region_x, region_y, region_w, region_h) {
-        (Some(x), Some(y), Some(w), Some(h)) => {
-            Some(snapforge_core::types::Rect { x, y, width: w, height: h })
-        }
+        (Some(x), Some(y), Some(w), Some(h)) => Some(snapforge_core::types::Rect {
+            x,
+            y,
+            width: w,
+            height: h,
+        }),
         _ => None,
     };
 
@@ -238,9 +239,7 @@ pub fn stop_recording(
 
 /// Check if currently recording.
 #[tauri::command]
-pub fn is_recording(
-    state: tauri::State<'_, crate::recording::RecordingState>,
-) -> bool {
+pub fn is_recording(state: tauri::State<'_, crate::recording::RecordingState>) -> bool {
     state.is_recording()
 }
 
@@ -262,10 +261,10 @@ pub fn start_recording_and_show_indicator(
 
 /// Save a screenshot of the last remembered region.
 pub fn save_last_region() -> Result<String, String> {
-    let config = snapforge_core::config::AppConfig::load()
-        .map_err(|e| e.to_string())?;
+    let config = snapforge_core::config::AppConfig::load().map_err(|e| e.to_string())?;
 
-    let last = config.last_region
+    let last = config
+        .last_region
         .ok_or_else(|| "No last region saved".to_string())?;
 
     let save_path = config.save_file_path();
