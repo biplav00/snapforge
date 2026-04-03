@@ -35,6 +35,7 @@
           <input type="radio" name="rec-format" value={fmt.value}
             checked={recording.format === fmt.value}
             onchange={() => updateRecording("format", fmt.value)} />
+          <span class="radio-dot"></span>
           <div class="format-content">
             <span class="format-name">{fmt.label}</span>
             <span class="format-desc">{fmt.desc}</span>
@@ -71,7 +72,6 @@
       {/each}
     </div>
   </div>
-
 </div>
 
 <style>
@@ -79,28 +79,44 @@
   .field { display: flex; flex-direction: column; gap: 6px; }
   .field > label { font-size: 13px; font-weight: 500; color: var(--text-secondary); }
 
+  /* Custom radio card group */
   .format-group { display: flex; gap: 8px; }
   .format-option {
-    flex: 1; display: flex; align-items: flex-start; gap: 8px;
+    flex: 1; display: flex; align-items: flex-start; gap: 10px;
     padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px;
     cursor: pointer; transition: all 0.15s; background: var(--bg);
   }
   .format-option:hover { border-color: var(--border-input); background: var(--bg-hover); }
   .format-option.selected { border-color: var(--accent); background: var(--accent-bg); }
-  .format-option input[type="radio"] { margin-top: 2px; accent-color: var(--accent); }
+
+  .format-option input[type="radio"] { position: absolute; opacity: 0; width: 0; height: 0; }
+  .radio-dot {
+    width: 16px; height: 16px; border-radius: 50%; flex-shrink: 0; margin-top: 1px;
+    border: 2px solid var(--border-input); transition: all 0.15s;
+    position: relative;
+  }
+  .radio-dot::after {
+    content: ""; position: absolute;
+    width: 8px; height: 8px; border-radius: 50%;
+    top: 2px; left: 2px;
+    background: transparent; transition: background 0.15s;
+  }
+  .format-option.selected .radio-dot { border-color: var(--accent); }
+  .format-option.selected .radio-dot::after { background: var(--accent); }
+
   .format-content { display: flex; flex-direction: column; gap: 2px; }
   .format-name { font-size: 14px; font-weight: 600; color: var(--text); }
   .format-desc { font-size: 11px; color: var(--text-muted); }
 
+  /* Pill group */
   .pill-group { display: flex; gap: 6px; flex-wrap: wrap; }
   .pill {
-    display: flex; align-items: center; gap: 4px;
-    padding: 6px 14px; border: 1px solid var(--border); border-radius: 20px;
+    display: flex; align-items: center;
+    padding: 6px 16px; border: 1px solid var(--border); border-radius: 20px;
     font-size: 13px; cursor: pointer; transition: all 0.15s;
     background: var(--bg); color: var(--text);
   }
   .pill:hover { border-color: var(--border-input); background: var(--bg-hover); }
-  .pill.selected { border-color: var(--accent); background: var(--accent-bg); color: var(--accent); }
+  .pill.selected { border-color: var(--accent); background: var(--accent-bg); color: var(--accent); font-weight: 500; }
   .pill input[type="radio"] { display: none; }
-
 </style>

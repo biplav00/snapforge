@@ -20,60 +20,80 @@
 
   <div class="divider"></div>
 
-  <div class="field">
-    <label class="toggle">
-      <input
-        type="checkbox"
+  <label class="switch-row">
+    <span class="switch-label">Auto-copy to clipboard after capture</span>
+    <span class="switch">
+      <input type="checkbox"
         checked={config.auto_copy_clipboard as boolean}
-        onchange={(e) => onChange("auto_copy_clipboard", (e.target as HTMLInputElement).checked)}
-      />
-      <span>Auto-copy to clipboard after capture</span>
-    </label>
-    <span class="hint">Automatically copy screenshot to clipboard when saving</span>
-  </div>
+        onchange={(e) => onChange("auto_copy_clipboard", (e.target as HTMLInputElement).checked)} />
+      <span class="slider"></span>
+    </span>
+  </label>
 
-  <div class="field">
-    <label class="toggle">
-      <input
-        type="checkbox"
+  <label class="switch-row">
+    <span class="switch-label">Show notification after capture</span>
+    <span class="switch">
+      <input type="checkbox"
         checked={config.show_notification as boolean}
-        onchange={(e) => onChange("show_notification", (e.target as HTMLInputElement).checked)}
-      />
-      <span>Show notification after capture</span>
-    </label>
-  </div>
+        onchange={(e) => onChange("show_notification", (e.target as HTMLInputElement).checked)} />
+      <span class="slider"></span>
+    </span>
+  </label>
 
-  <div class="field">
-    <label class="toggle">
-      <input
-        type="checkbox"
+  <label class="switch-row">
+    <span class="switch-label">Remember last region</span>
+    <span class="switch">
+      <input type="checkbox"
         checked={config.remember_last_region as boolean}
-        onchange={(e) => onChange("remember_last_region", (e.target as HTMLInputElement).checked)}
-      />
-      <span>Remember last region</span>
-    </label>
-    <span class="hint">Pre-select previous region on next capture</span>
-  </div>
+        onchange={(e) => onChange("remember_last_region", (e.target as HTMLInputElement).checked)} />
+      <span class="slider"></span>
+    </span>
+  </label>
 </div>
 
 <style>
   .tab-content { display: flex; flex-direction: column; gap: 14px; }
   .field { display: flex; flex-direction: column; gap: 4px; }
-  .field > label:not(.toggle) { font-size: 13px; font-weight: 500; color: var(--text-secondary); margin-bottom: 2px; }
+  .field > label { font-size: 13px; font-weight: 500; color: var(--text-secondary); margin-bottom: 2px; }
 
   input[type="text"] {
-    padding: 7px 10px;
-    border: 1px solid var(--border-input);
-    border-radius: 6px;
-    font-size: 13px;
-    font-family: monospace;
-    background: var(--bg-input);
-    color: var(--text);
+    padding: 7px 10px; border: 1px solid var(--border-input); border-radius: 6px;
+    font-size: 13px; font-family: monospace; background: var(--bg-input); color: var(--text);
   }
   input[type="text"]:focus { outline: none; border-color: var(--accent); background: var(--bg-input-focus); }
 
-  .toggle { display: flex; align-items: center; gap: 10px; cursor: pointer; font-size: 14px; color: var(--text); }
-  input[type="checkbox"] { width: 16px; height: 16px; accent-color: var(--accent); }
-  .hint { font-size: 12px; color: var(--text-muted); margin-left: 26px; }
   .divider { height: 1px; background: var(--border-light); margin: 4px 0; }
+
+  /* Toggle switch rows */
+  .switch-row {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 6px 0; cursor: pointer;
+  }
+  .switch-label { font-size: 14px; color: var(--text); }
+
+  /* Custom toggle switch */
+  .switch {
+    position: relative; width: 40px; height: 22px; flex-shrink: 0;
+  }
+  .switch input {
+    opacity: 0; width: 0; height: 0; position: absolute;
+  }
+  .slider {
+    position: absolute; inset: 0;
+    background: var(--border-input); border-radius: 22px;
+    transition: background 0.2s;
+  }
+  .slider::before {
+    content: ""; position: absolute;
+    width: 16px; height: 16px; left: 3px; bottom: 3px;
+    background: white; border-radius: 50%;
+    transition: transform 0.2s;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.15);
+  }
+  .switch input:checked + .slider {
+    background: var(--accent);
+  }
+  .switch input:checked + .slider::before {
+    transform: translateX(18px);
+  }
 </style>
