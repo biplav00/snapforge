@@ -43,6 +43,33 @@ enum Commands {
         #[arg(long, short, default_value = "0")]
         display: usize,
     },
+
+    /// Record the screen
+    Record {
+        /// Record the full screen
+        #[arg(long)]
+        fullscreen: bool,
+
+        /// Record a specific region: x,y,width,height
+        #[arg(long, value_parser = parse_region)]
+        region: Option<Rect>,
+
+        /// Output format: mp4, gif
+        #[arg(long, short, default_value = "mp4")]
+        format: String,
+
+        /// Frame rate
+        #[arg(long, default_value = "30")]
+        fps: u32,
+
+        /// Output file path
+        #[arg(long, short)]
+        output: Option<PathBuf>,
+
+        /// Display index
+        #[arg(long, short, default_value = "0")]
+        display: usize,
+    },
 }
 
 fn parse_region(s: &str) -> Result<Rect, String> {
@@ -72,6 +99,19 @@ fn main() {
             display,
         } => {
             if let Err(e) = handle_capture(fullscreen, last_region, region, format, output, quality, display) {
+                eprintln!("Error: {}", e);
+                process::exit(1);
+            }
+        }
+        Commands::Record {
+            fullscreen,
+            region,
+            format,
+            fps,
+            output,
+            display,
+        } => {
+            if let Err(e) = handle_record(fullscreen, region, format, fps, output, display) {
                 eprintln!("Error: {}", e);
                 process::exit(1);
             }
@@ -144,6 +184,63 @@ fn handle_capture(
             std::process::exit(1);
         }
     }
+
+    Ok(())
+}
+
+fn handle_record(
+    fullscreen: bool,
+    region: Option<Rect>,
+    format_str: String,
+    fps: u32,
+    output: Option<PathBuf>,
+    display: usize,
+) -> Result<(), Box<dyn std::error::Error>> {
+    screen_core::record::check_ffmpeg()?;
+
+    let config = screen_core::config::AppConfig::load()?;
+    let recording_format = match format_str.to_lowercase().as_str() {
+        "gif" => screen_core::config::RecordingFormat::Gif,
+        _ => screen_core::config::RecordingFormat::Mp4,
+    };
+
+    let output_path = output.unwrap_or_else(|| config.recording_file_path());
+
+    let record_region = if let Some(r) = region {
+        Some(r)
+    } else if fullscreen {
+        None
+    } else {
+        eprintln!("Specify --fullscreen or --region for CLI recording.");
+        std::process::exit(1);
+    };
+
+    let record_config = screen_core::record::RecordConfig {
+        display,
+        region: record_region,
+        output_path: output_path.clone(),
+        format: recording_format,
+        fps,
+        quality: config.recording.quality,
+    };
+
+    println!("Recording to: {} (press Ctrl+C to stop)", output_path.display());
+
+    let handle = screen_core::record::ffmpeg::start_recording(record_config)?;
+
+    let running = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let r = running.clone();
+    ctrlc::set_handler(move || {
+        r.store(false, std::sync::atomic::Ordering::SeqCst);
+    }).expect("Error setting Ctrl-C handler");
+
+    while running.load(std::sync::atomic::Ordering::SeqCst) {
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+
+    println!("\nStopping recording...");
+    handle.stop()?;
+    println!("Saved to: {}", output_path.display());
 
     Ok(())
 }
