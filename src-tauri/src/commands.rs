@@ -226,6 +226,22 @@ pub fn is_recording(
     state.is_recording()
 }
 
+/// Start recording and open the indicator window.
+#[tauri::command]
+pub fn start_recording_and_show_indicator(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, crate::recording::RecordingState>,
+    display: usize,
+    region_x: Option<i32>,
+    region_y: Option<i32>,
+    region_w: Option<u32>,
+    region_h: Option<u32>,
+) -> Result<String, String> {
+    let path = start_recording(state, display, region_x, region_y, region_w, region_h)?;
+    crate::open_recording_indicator(&app);
+    Ok(path)
+}
+
 /// Save a screenshot of the last remembered region.
 pub fn save_last_region() -> Result<String, String> {
     let config = screen_core::config::AppConfig::load()

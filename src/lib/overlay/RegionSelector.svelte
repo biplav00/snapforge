@@ -8,12 +8,14 @@
 
   interface Props {
     screenshotBase64: string;
+    purpose: "screenshot" | "record";
     onSave: (path: string) => void;
     onCopy: () => void;
+    onRecordingStarted: (path: string) => void;
     onCancel: () => void;
   }
 
-  let { screenshotBase64, onSave, onCopy, onCancel }: Props = $props();
+  let { screenshotBase64, purpose, onSave, onCopy, onRecordingStarted, onCancel }: Props = $props();
 
   // Region state
   let startX = $state(0);
@@ -23,8 +25,8 @@
   let drawing = $state(false);
   let hasRegion = $state(false);
 
-  // Mode: "select" for drawing region, "annotate" for annotation
-  let mode = $state<"select" | "annotate">("select");
+  // Mode: "select" for drawing region, "annotate" for annotation, "record-select" for choosing record options
+  let mode = $state<"select" | "annotate" | "record-select">("select");
 
   // Drag/resize state
   let dragging = $state(false);
@@ -84,6 +86,8 @@
 
   function handleMouseDown(e: MouseEvent) {
     if (saving || mode === "annotate") return;
+    // In record-select mode, don't start new region (user is choosing buttons)
+    if (mode === "record-select") return;
 
     if (hasRegion) {
       const handle = getHandleAt(e.clientX, e.clientY);
@@ -108,7 +112,7 @@
   }
 
   function handleMouseMove(e: MouseEvent) {
-    if (mode === "annotate") return;
+    if (mode === "annotate" || mode === "record-select") return;
     if (drawing) {
       endX = e.clientX;
       endY = e.clientY;
@@ -127,13 +131,17 @@
   }
 
   function handleMouseUp(_e: MouseEvent) {
-    if (mode === "annotate") return;
+    if (mode === "annotate" || mode === "record-select") return;
     if (drawing) {
       drawing = false;
       if (regionW > 5 && regionH > 5) {
         hasRegion = true;
-        // Go directly to annotate mode after selecting a region
-        enterAnnotateMode();
+        if (purpose === "screenshot") {
+          enterAnnotateMode();
+        } else {
+          // Recording mode — show record options
+          mode = "record-select";
+        }
       }
     }
     dragging = false;
@@ -189,9 +197,18 @@
   }
 
   function handleKeydown(e: KeyboardEvent) {
-    // Don't intercept keys when typing in text input
     const target = e.target as HTMLElement;
     if (target.tagName === "INPUT" || target.tagName === "TEXTAREA") return;
+
+    // In record-select mode, Enter starts recording the region
+    if (mode === "record-select") {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        startRecordingRegion();
+        return;
+      }
+      return;
+    }
 
     // Undo/redo in annotate mode
     if (mode === "annotate") {
@@ -205,25 +222,21 @@
         undo();
         return;
       }
-      // Ctrl/Cmd+C to copy
       if ((e.ctrlKey || e.metaKey) && e.key === "c") {
         e.preventDefault();
         handleCopy();
         return;
       }
-      // Ctrl/Cmd+S to save
       if ((e.ctrlKey || e.metaKey) && e.key === "s") {
         e.preventDefault();
         handleSave();
         return;
       }
-      // Enter to save
       if (e.key === "Enter") {
         e.preventDefault();
         handleSave();
         return;
       }
-      // Tool shortcuts (only without modifiers)
       if (!e.ctrlKey && !e.metaKey && !e.altKey) {
         const tool = TOOL_SHORTCUTS[e.key.toLowerCase()];
         if (tool) {
@@ -276,6 +289,45 @@
     }
     saving = false;
   }
+
+  async function startRecordingRegion() {
+    if (saving) return;
+    saving = true;
+    try {
+      const dpr = window.devicePixelRatio || 1;
+      const path = await invoke<string>("start_recording_and_show_indicator", {
+        display: 0,
+        regionX: Math.round(regionX * dpr),
+        regionY: Math.round(regionY * dpr),
+        regionW: Math.round(regionW * dpr),
+        regionH: Math.round(regionH * dpr),
+      });
+      onRecordingStarted(path);
+    } catch (err) {
+      console.error("Failed to start recording:", err);
+      showToast(`Recording failed: ${err}`);
+      saving = false;
+    }
+  }
+
+  async function startRecordingFullscreen() {
+    if (saving) return;
+    saving = true;
+    try {
+      const path = await invoke<string>("start_recording_and_show_indicator", {
+        display: 0,
+        regionX: null,
+        regionY: null,
+        regionW: null,
+        regionH: null,
+      });
+      onRecordingStarted(path);
+    } catch (err) {
+      console.error("Failed to start recording:", err);
+      showToast(`Recording failed: ${err}`);
+      saving = false;
+    }
+  }
 </script>
 
 <svelte:window onkeydown={handleKeydown} />
@@ -302,6 +354,7 @@
     <!-- Region border -->
     <div
       class="region-border"
+      class:recording={purpose === "record"}
       style="left:{regionX}px;top:{regionY}px;width:{regionW}px;height:{regionH}px"
     ></div>
 
@@ -324,7 +377,25 @@
     </div>
   {/if}
 
-  <!-- Annotation mode -->
+  <!-- Recording mode: region selected, show record options -->
+  {#if mode === "record-select" && hasRegion}
+    <div
+      class="actions"
+      style="left:{regionX + regionW / 2}px;top:{regionY + regionH + 12}px"
+    >
+      <button class="btn btn-record" onclick={startRecordingRegion} disabled={saving}>
+        ● Record Region (Enter)
+      </button>
+      <button class="btn btn-record-full" onclick={startRecordingFullscreen} disabled={saving}>
+        ● Record Fullscreen
+      </button>
+      <button class="btn btn-cancel" onclick={onCancel}>
+        Cancel (Esc)
+      </button>
+    </div>
+  {/if}
+
+  <!-- Annotation mode (screenshot only) -->
   {#if mode === "annotate" && hasRegion}
     <AnnotationCanvas
       {regionX}
@@ -372,6 +443,10 @@
     z-index: 11;
   }
 
+  .region-border.recording {
+    border-color: #ff4444;
+  }
+
   .dimension-label {
     position: absolute;
     transform: translateX(-50%);
@@ -399,5 +474,62 @@
     pointer-events: none;
     z-index: 30;
     white-space: nowrap;
+  }
+
+  .actions {
+    position: absolute;
+    transform: translateX(-50%);
+    display: flex;
+    gap: 8px;
+    z-index: 12;
+  }
+
+  .btn {
+    padding: 6px 16px;
+    border: none;
+    border-radius: 6px;
+    font-size: 13px;
+    font-family: system-ui, sans-serif;
+    cursor: pointer;
+    font-weight: 500;
+  }
+
+  .btn-record {
+    background: #ff4444;
+    color: white;
+  }
+
+  .btn-record:hover {
+    background: #ee3333;
+  }
+
+  .btn-record:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+  }
+
+  .btn-record-full {
+    background: rgba(255, 68, 68, 0.2);
+    color: #ff6666;
+    border: 1px solid rgba(255, 68, 68, 0.3);
+  }
+
+  .btn-record-full:hover {
+    background: rgba(255, 68, 68, 0.4);
+    color: white;
+  }
+
+  .btn-record-full:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+  }
+
+  .btn-cancel {
+    background: transparent;
+    color: rgba(255, 255, 255, 0.6);
+  }
+
+  .btn-cancel:hover {
+    color: white;
   }
 </style>

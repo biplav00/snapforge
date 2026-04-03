@@ -11,6 +11,10 @@
 
   const appWindow = getCurrentWebviewWindow();
 
+  // Determine overlay purpose from URL query param
+  const urlParams = new URLSearchParams(window.location.search);
+  const overlayPurpose: "screenshot" | "record" = urlParams.get("mode") === "record" ? "record" : "screenshot";
+
   async function captureScreen() {
     try {
       screenshotBase64 = await invoke<string>("get_pre_captured_screen");
@@ -43,6 +47,12 @@
     setTimeout(() => appWindow.close(), 800);
   }
 
+  function handleRecordingStarted(path: string) {
+    // Recording started — close the overlay immediately
+    // The recording indicator window opens from Rust
+    appWindow.close();
+  }
+
   captureScreen();
 </script>
 
@@ -64,8 +74,10 @@
     />
     <RegionSelector
       {screenshotBase64}
+      purpose={overlayPurpose}
       onSave={handleSaved}
       onCopy={handleCopied}
+      onRecordingStarted={handleRecordingStarted}
       onCancel={handleCancel}
     />
   {/if}

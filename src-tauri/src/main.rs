@@ -30,6 +30,7 @@ fn main() {
             commands::reload_hotkeys,
             commands::check_ffmpeg,
             commands::start_recording,
+            commands::start_recording_and_show_indicator,
             commands::stop_recording,
             commands::is_recording,
         ])
@@ -83,7 +84,7 @@ pub fn trigger_last_region(app: &AppHandle) {
     let _ = app;
 }
 
-/// Toggle recording. If not recording, start fullscreen recording and show indicator.
+/// Toggle recording. If not recording, open overlay for region selection.
 /// If recording, stop and close indicator.
 pub fn trigger_recording(app: &AppHandle) {
     let state = app.state::<recording::RecordingState>();
@@ -99,42 +100,50 @@ pub fn trigger_recording(app: &AppHandle) {
             let _ = window.close();
         }
     } else {
-        // Start fullscreen recording
-        let config = screen_core::config::AppConfig::load().unwrap_or_default();
-        let output_path = config.recording_file_path();
-        let record_config = screen_core::record::RecordConfig {
-            display: 0,
-            region: None,
-            output_path,
-            format: config.recording.format,
-            fps: config.recording.fps,
-            quality: config.recording.quality,
-        };
-
-        match screen_core::record::ffmpeg::start_recording(record_config) {
-            Ok(handle) => {
-                if let Ok(mut guard) = state.handle.lock() {
-                    *guard = Some(handle);
-                }
-                // Open indicator window
-                let _ = WebviewWindowBuilder::new(
-                    app,
-                    "recording-indicator",
-                    WebviewUrl::App("recording.html".into()),
-                )
-                .title("Recording")
-                .inner_size(200.0, 50.0)
-                .resizable(false)
-                .decorations(false)
-                .always_on_top(true)
-                .transparent(true)
-                .build();
-            }
-            Err(e) => {
-                eprintln!("Recording failed: {}", e);
-            }
+        // Open overlay in recording mode for region selection
+        let pre_captured = commands::capture_screen(0).ok();
+        if let Ok(mut guard) = app.state::<PreCapturedScreen>().0.lock() {
+            *guard = pre_captured;
         }
+
+        if let Some(window) = app.get_webview_window("overlay") {
+            let _ = window.close();
+        }
+
+        let _ = WebviewWindowBuilder::new(
+            app,
+            "overlay",
+            WebviewUrl::App("index.html?mode=record".into()),
+        )
+        .title("ScreenSnap Overlay")
+        .fullscreen(true)
+        .transparent(true)
+        .decorations(false)
+        .always_on_top(true)
+        .skip_taskbar(true)
+        .build();
     }
+}
+
+/// Open the recording indicator window after recording has started.
+pub fn open_recording_indicator(app: &AppHandle) {
+    if let Some(window) = app.get_webview_window("recording-indicator") {
+        let _ = window.set_focus();
+        return;
+    }
+
+    let _ = WebviewWindowBuilder::new(
+        app,
+        "recording-indicator",
+        WebviewUrl::App("recording.html".into()),
+    )
+    .title("Recording")
+    .inner_size(200.0, 50.0)
+    .resizable(false)
+    .decorations(false)
+    .always_on_top(true)
+    .transparent(true)
+    .build();
 }
 
 /// Open preferences window (or focus if already open).
