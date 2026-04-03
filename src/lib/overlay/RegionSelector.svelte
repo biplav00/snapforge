@@ -35,6 +35,18 @@
   // Saving state
   let saving = $state(false);
 
+  // Toast message shown inside region
+  let toastMessage = $state("");
+  let toastVisible = $state(false);
+  let toastTimeout: ReturnType<typeof setTimeout> | null = null;
+
+  function showToast(msg: string) {
+    toastMessage = msg;
+    toastVisible = true;
+    if (toastTimeout) clearTimeout(toastTimeout);
+    toastTimeout = setTimeout(() => { toastVisible = false; }, 1500);
+  }
+
   const HANDLE_SIZE = 8;
 
   // Tool shortcut mapping
@@ -241,21 +253,17 @@
     if (saving) return;
     saving = true;
     try {
-      const dpr = window.devicePixelRatio || 1;
-      if (annotations.value.length > 0) {
-        const base64 = await compositeImage(screenshotBase64, regionX, regionY, regionW, regionH, annotations.value);
-        await invoke("copy_composited_image", { imageBase64: base64 });
-      } else {
-        // Capture region and copy via save_region (which copies if config says so)
-        // But we want explicit copy, so use compositing path with empty annotations
-        const base64 = await compositeImage(screenshotBase64, regionX, regionY, regionW, regionH, []);
-        await invoke("copy_composited_image", { imageBase64: base64 });
-      }
-      onCopy();
+      const base64 = await compositeImage(
+        screenshotBase64, regionX, regionY, regionW, regionH,
+        annotations.value.length > 0 ? annotations.value : [],
+      );
+      await invoke("copy_composited_image", { imageBase64: base64 });
+      showToast("Copied to clipboard!");
     } catch (err) {
       console.error("Failed to copy:", err);
-      saving = false;
+      showToast("Copy failed");
     }
+    saving = false;
   }
 </script>
 
@@ -292,6 +300,16 @@
       style="left:{regionX + regionW / 2}px;top:{regionY - 28}px"
     >
       {dimensionLabel}
+    </div>
+  {/if}
+
+  <!-- Toast message -->
+  {#if toastVisible && hasRegion}
+    <div
+      class="toast"
+      style="left:{regionX + regionW / 2}px;top:{regionY + regionH / 2}px"
+    >
+      {toastMessage}
     </div>
   {/if}
 
@@ -353,6 +371,21 @@
     font-family: monospace;
     pointer-events: none;
     z-index: 12;
+    white-space: nowrap;
+  }
+
+  .toast {
+    position: absolute;
+    transform: translate(-50%, -50%);
+    background: rgba(0, 0, 0, 0.8);
+    color: #44ff44;
+    padding: 8px 20px;
+    border-radius: 8px;
+    font-size: 15px;
+    font-family: system-ui, sans-serif;
+    font-weight: 500;
+    pointer-events: none;
+    z-index: 30;
     white-space: nowrap;
   }
 </style>
