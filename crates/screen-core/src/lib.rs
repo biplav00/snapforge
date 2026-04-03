@@ -3,6 +3,7 @@ pub mod capture;
 pub mod format;
 pub mod clipboard;
 pub mod config;
+pub mod record;
 
 use std::path::PathBuf;
 use thiserror::Error;
@@ -18,6 +19,8 @@ pub enum ScreenError {
     Clipboard(#[from] clipboard::ClipboardError),
     #[error("config error: {0}")]
     Config(#[from] config::ConfigError),
+    #[error("recording error: {0}")]
+    Recording(#[from] record::RecordError),
 }
 
 /// Capture fullscreen screenshot, save to file, optionally copy to clipboard.
