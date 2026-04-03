@@ -22,6 +22,9 @@ fn main() {
             commands::save_fullscreen,
             commands::save_composited_image,
             commands::copy_composited_image,
+            commands::get_config,
+            commands::save_config,
+            commands::open_save_folder,
         ])
         .setup(|app| {
             let _overlay = tauri::WebviewWindowBuilder::new(

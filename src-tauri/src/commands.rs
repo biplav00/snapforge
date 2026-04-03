@@ -126,3 +126,53 @@ pub fn copy_composited_image(image_base64: String) -> Result<(), String> {
 
     Ok(())
 }
+
+/// Get the current app config as JSON.
+#[tauri::command]
+pub fn get_config() -> Result<String, String> {
+    let config = screen_core::config::AppConfig::load()
+        .map_err(|e| e.to_string())?;
+    serde_json::to_string(&config).map_err(|e| e.to_string())
+}
+
+/// Save the app config from JSON.
+#[tauri::command]
+pub fn save_config(config_json: String) -> Result<(), String> {
+    let config: screen_core::config::AppConfig =
+        serde_json::from_str(&config_json).map_err(|e| e.to_string())?;
+    config.save().map_err(|e| e.to_string())
+}
+
+/// Open the save directory in the system file manager.
+#[tauri::command]
+pub fn open_save_folder() -> Result<(), String> {
+    let config = screen_core::config::AppConfig::load()
+        .map_err(|e| e.to_string())?;
+    let dir = &config.save_directory;
+    if !dir.exists() {
+        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    }
+    open::that(dir).map_err(|e| e.to_string())
+}
+
+/// Save a screenshot of the last remembered region.
+pub fn save_last_region() -> Result<String, String> {
+    let config = screen_core::config::AppConfig::load()
+        .map_err(|e| e.to_string())?;
+
+    let last = config.last_region
+        .ok_or_else(|| "No last region saved".to_string())?;
+
+    let save_path = config.save_file_path();
+    let path = screen_core::screenshot_region(
+        last.display,
+        last.rect,
+        &save_path,
+        config.screenshot_format,
+        config.jpg_quality,
+        config.auto_copy_clipboard,
+    )
+    .map_err(|e| e.to_string())?;
+
+    Ok(path.display().to_string())
+}

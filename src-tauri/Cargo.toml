@@ -14,3 +14,4 @@ serde_json = "1"
 screen-core = { path = "../crates/screen-core" }
 base64 = "0.22"
 image = "0.25"
+open = "5"
