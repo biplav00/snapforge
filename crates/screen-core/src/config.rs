@@ -12,9 +12,52 @@ pub enum ConfigError {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum RecordingFormat {
+    Mp4,
+    Gif,
+}
+
+impl Default for RecordingFormat {
+    fn default() -> Self {
+        RecordingFormat::Mp4
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum RecordingQuality {
+    Low,
+    Medium,
+    High,
+}
+
+impl Default for RecordingQuality {
+    fn default() -> Self {
+        RecordingQuality::Medium
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RecordingConfig {
+    pub format: RecordingFormat,
+    pub fps: u32,
+    pub quality: RecordingQuality,
+}
+
+impl Default for RecordingConfig {
+    fn default() -> Self {
+        Self {
+            format: RecordingFormat::default(),
+            fps: 30,
+            quality: RecordingQuality::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HotkeyBindings {
     pub screenshot: String,
     pub capture_last_region: String,
+    pub record_screen: String,
 }
 
 impl Default for HotkeyBindings {
@@ -22,6 +65,7 @@ impl Default for HotkeyBindings {
         Self {
             screenshot: "CmdOrCtrl+Shift+S".to_string(),
             capture_last_region: "CmdOrCtrl+Shift+L".to_string(),
+            record_screen: "CmdOrCtrl+Shift+R".to_string(),
         }
     }
 }
@@ -38,6 +82,7 @@ pub struct AppConfig {
     pub jpg_quality: u8,
     pub filename_pattern: String,
     pub hotkey_bindings: HotkeyBindings,
+    pub recording: RecordingConfig,
 }
 
 impl Default for AppConfig {
@@ -57,6 +102,7 @@ impl Default for AppConfig {
             jpg_quality: 90,
             filename_pattern: "screenshot-{date}-{time}".to_string(),
             hotkey_bindings: HotkeyBindings::default(),
+            recording: RecordingConfig::default(),
         }
     }
 }
@@ -94,6 +140,16 @@ impl AppConfig {
         self.filename_pattern
             .replace("{date}", &now.format("%Y-%m-%d").to_string())
             .replace("{time}", &now.format("%H-%M-%S").to_string())
+    }
+
+    pub fn recording_file_path(&self) -> PathBuf {
+        let now = chrono::Local::now();
+        let ext = match self.recording.format {
+            RecordingFormat::Mp4 => "mp4",
+            RecordingFormat::Gif => "gif",
+        };
+        let filename = format!("recording-{}.{}", now.format("%Y-%m-%d-%H-%M-%S"), ext);
+        self.save_directory.join(filename)
     }
 
     pub fn save_file_path(&self) -> PathBuf {
