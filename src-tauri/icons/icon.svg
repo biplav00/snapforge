@@ -1,0 +1,60 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#1a1f35;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#0d1220;stop-opacity:1" />
+    </linearGradient>
+    <linearGradient id="accent" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#5cb8ff;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#3a7fff;stop-opacity:1" />
+    </linearGradient>
+    <filter id="glow">
+      <feGaussianBlur stdDeviation="6" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+
+  <!-- Background rounded square -->
+  <rect x="32" y="32" width="448" height="448" rx="88" ry="88" fill="url(#bg)" />
+
+  <!-- Subtle inner border -->
+  <rect x="32" y="32" width="448" height="448" rx="88" ry="88"
+        fill="none" stroke="rgba(255,255,255,0.06)" stroke-width="2" />
+
+  <!-- Viewfinder frame — offset lines creating a stylized capture frame -->
+  <g stroke="url(#accent)" stroke-width="14" stroke-linecap="round" fill="none" filter="url(#glow)">
+    <!-- Top-left -->
+    <path d="M 140,120 L 120,120 L 120,140" />
+    <!-- Top-right -->
+    <path d="M 372,120 L 392,120 L 392,140" />
+    <!-- Bottom-left -->
+    <path d="M 140,392 L 120,392 L 120,372" />
+    <!-- Bottom-right -->
+    <path d="M 372,392 L 392,392 L 392,372" />
+  </g>
+
+  <!-- Inner selection region — dashed rectangle suggesting selected area -->
+  <rect x="156" y="156" width="200" height="200" rx="4" ry="4"
+        fill="rgba(74,158,255,0.06)" stroke="rgba(74,158,255,0.25)"
+        stroke-width="2" stroke-dasharray="8 6" />
+
+  <!-- Center crosshair -->
+  <g stroke="url(#accent)" stroke-width="3" stroke-linecap="round" opacity="0.7">
+    <line x1="256" y1="228" x2="256" y2="248" />
+    <line x1="256" y1="264" x2="256" y2="284" />
+    <line x1="228" y1="256" x2="248" y2="256" />
+    <line x1="264" y1="256" x2="284" y2="256" />
+  </g>
+
+  <!-- Center dot -->
+  <circle cx="256" cy="256" r="5" fill="url(#accent)" />
+
+  <!-- Small "S" lightning bolt / snap indicator bottom-right -->
+  <g transform="translate(340, 340)" opacity="0.9">
+    <path d="M 12,0 L 4,18 L 14,18 L 6,36"
+          stroke="#ffcc44" stroke-width="5" stroke-linecap="round" stroke-linejoin="round" fill="none" />
+  </g>
+</svg>
