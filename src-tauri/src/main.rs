@@ -24,11 +24,11 @@ fn main() {
             commands::save_fullscreen,
             commands::save_composited_image,
             commands::copy_composited_image,
+            commands::capture_and_copy_region,
             commands::get_config,
             commands::save_config,
             commands::open_save_folder,
             commands::reload_hotkeys,
-            commands::capture_and_copy_region,
             commands::check_ffmpeg,
             commands::start_recording,
             commands::start_recording_and_show_indicator,
@@ -36,7 +36,6 @@ fn main() {
             commands::is_recording,
         ])
         .setup(|app| {
-            // Hide dock icon on macOS — tray-only app
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
 
@@ -49,29 +48,36 @@ fn main() {
         .expect("error while running tauri application");
 }
 
-/// Open transparent overlay for region selection (Lightshot-style).
-pub fn trigger_screenshot(app: &AppHandle) {
-    if let Some(window) = app.get_webview_window("overlay") {
-        let _ = window.close();
-    }
-
-    // Get screen dimensions for edge-to-edge overlay
-    // Use a large size that covers any display — the OS will clamp to screen bounds
+/// Get screen dimensions for edge-to-edge overlay.
+fn get_screen_size(app: &AppHandle) -> (f64, f64) {
     let monitor = app
         .primary_monitor()
         .ok()
         .flatten()
-        .or_else(|| app.available_monitors().ok().and_then(|m| m.into_iter().next()));
+        .or_else(|| {
+            app.available_monitors()
+                .ok()
+                .and_then(|m| m.into_iter().next())
+        });
 
-    let (width, height) = if let Some(m) = monitor {
+    if let Some(m) = monitor {
         let size = m.size();
         let scale = m.scale_factor();
         (size.width as f64 / scale, size.height as f64 / scale)
     } else {
-        (3840.0, 2160.0) // fallback large size
-    };
+        (3840.0, 2160.0)
+    }
+}
 
-    let _ = WebviewWindowBuilder::new(app, "overlay", WebviewUrl::App("index.html".into()))
+/// Open a fullscreen transparent overlay window.
+fn open_overlay(app: &AppHandle, url: &str) {
+    if let Some(window) = app.get_webview_window("overlay") {
+        let _ = window.close();
+    }
+
+    let (width, height) = get_screen_size(app);
+
+    let _ = WebviewWindowBuilder::new(app, "overlay", WebviewUrl::App(url.into()))
         .title("")
         .inner_size(width, height)
         .position(0.0, 0.0)
@@ -83,15 +89,16 @@ pub fn trigger_screenshot(app: &AppHandle) {
         .build();
 }
 
+/// Open transparent overlay for region selection (Lightshot-style).
+pub fn trigger_screenshot(app: &AppHandle) {
+    open_overlay(app, "index.html");
+}
+
 /// Capture last region directly (no overlay).
 pub fn trigger_last_region(app: &AppHandle) {
     match commands::save_last_region() {
-        Ok(path) => {
-            eprintln!("Saved last region to: {}", path);
-        }
-        Err(e) => {
-            eprintln!("Last region capture failed: {}", e);
-        }
+        Ok(path) => eprintln!("Saved last region to: {}", path),
+        Err(e) => eprintln!("Last region capture failed: {}", e),
     }
     let _ = app;
 }
@@ -101,50 +108,16 @@ pub fn trigger_last_region(app: &AppHandle) {
 pub fn trigger_recording(app: &AppHandle) {
     let state = app.state::<recording::RecordingState>();
     if state.is_recording() {
-        // Stop recording
         if let Ok(mut guard) = state.handle.lock() {
             if let Some(handle) = guard.take() {
                 let _ = handle.stop();
             }
         }
-        // Close indicator window
         if let Some(window) = app.get_webview_window("recording-indicator") {
             let _ = window.close();
         }
     } else {
-        // Open overlay in recording mode for region selection
-        if let Some(window) = app.get_webview_window("overlay") {
-            let _ = window.close();
-        }
-
-        let monitor = app
-            .primary_monitor()
-            .ok()
-            .flatten()
-            .or_else(|| app.available_monitors().ok().and_then(|m| m.into_iter().next()));
-
-        let (width, height) = if let Some(m) = monitor {
-            let size = m.size();
-            let scale = m.scale_factor();
-            (size.width as f64 / scale, size.height as f64 / scale)
-        } else {
-            (3840.0, 2160.0)
-        };
-
-        let _ = WebviewWindowBuilder::new(
-            app,
-            "overlay",
-            WebviewUrl::App("index.html?mode=record".into()),
-        )
-        .title("")
-        .inner_size(width, height)
-        .position(0.0, 0.0)
-        .transparent(true)
-        .decorations(false)
-        .always_on_top(true)
-        .skip_taskbar(true)
-        .resizable(false)
-        .build();
+        open_overlay(app, "index.html?mode=record");
     }
 }
 

@@ -7,6 +7,7 @@
 
   let activeTab = $state("general");
   let config = $state<Record<string, unknown> | null>(null);
+  let loadError = $state("");
   let saving = $state(false);
   let statusMessage = $state("");
   let statusType = $state<"success" | "error">("success");
@@ -24,8 +25,7 @@
       config = JSON.parse(json);
     } catch (e) {
       console.error("Failed to load config:", e);
-      statusMessage = `Failed to load: ${e}`;
-      statusType = "error";
+      loadError = `Failed to load settings: ${e}`;
     }
   }
 
@@ -63,7 +63,9 @@
 
 <main>
 
-  {#if !config}
+  {#if loadError}
+    <div class="loading error">{loadError}<br/><button onclick={loadConfig}>Retry</button></div>
+  {:else if !config}
     <div class="loading">Loading settings...</div>
   {:else}
     <nav class="tabs">

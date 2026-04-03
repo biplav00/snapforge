@@ -5,8 +5,8 @@ use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum ConfigError {
-    #[error("failed to read config: {0}")]
-    Read(#[from] std::io::Error),
+    #[error("config IO error: {0}")]
+    Io(#[from] std::io::Error),
     #[error("failed to parse config: {0}")]
     Parse(#[from] serde_json::Error),
 }
@@ -164,10 +164,10 @@ impl AppConfig {
     pub fn save(&self) -> Result<(), ConfigError> {
         let path = Self::config_path();
         if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).map_err(ConfigError::Read)?;
+            std::fs::create_dir_all(parent).map_err(ConfigError::Io)?;
         }
         let contents = serde_json::to_string_pretty(self)?;
-        std::fs::write(&path, contents).map_err(ConfigError::Read)?;
+        std::fs::write(&path, contents).map_err(ConfigError::Io)?;
         Ok(())
     }
 

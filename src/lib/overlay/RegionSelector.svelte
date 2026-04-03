@@ -190,17 +190,10 @@
     if (saving) return;
     saving = true;
     try {
-      // Hide overlay, capture clean screen, then composite
+      // Hide overlay, capture clean screen, composite with annotations, save
       const screenshot = await captureWithOverlayHidden();
-      let path: string;
-      if (annotations.value.length > 0) {
-        const base64 = await compositeImage(screenshot, regionX, regionY, regionW, regionH, annotations.value);
-        path = await invoke<string>("save_composited_image", { imageBase64: base64 });
-      } else {
-        // No annotations — save the captured region directly
-        const base64 = await compositeImage(screenshot, regionX, regionY, regionW, regionH, []);
-        path = await invoke<string>("save_composited_image", { imageBase64: base64 });
-      }
+      const base64 = await compositeImage(screenshot, regionX, regionY, regionW, regionH, annotations.value);
+      const path = await invoke<string>("save_composited_image", { imageBase64: base64 });
       onSave(path);
     } catch (err) {
       console.error("Failed to save:", err);

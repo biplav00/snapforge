@@ -36,7 +36,7 @@ enum Commands {
         output: Option<PathBuf>,
 
         /// Image quality for jpg/webp (1-100)
-        #[arg(long, short, default_value = "90")]
+        #[arg(long, short, default_value = "90", value_parser = clap::value_parser!(u8).range(1..=100))]
         quality: u8,
 
         /// Display index (0 = main display)

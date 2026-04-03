@@ -64,7 +64,13 @@
   function stopPropagation(e: MouseEvent) {
     e.stopPropagation();
   }
+
+  function handleWindowClick() {
+    if (showColorPicker) showColorPicker = false;
+  }
 </script>
+
+<svelte:window onclick={handleWindowClick} />
 
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div

@@ -12,12 +12,7 @@ let _undoStack = $state<Annotation[][]>([]);
 let _redoStack = $state<Annotation[][]>([]);
 let _nextStepNumber = $state(1);
 
-// Export getters so consumers can read reactive values
-export function getAnnotations(): Annotation[] {
-  return _annotations;
-}
-
-// Re-export as a getter property on an object for reactive template use
+// Export as getter properties for reactive template use
 export const annotations = {
   get value() { return _annotations; },
 };

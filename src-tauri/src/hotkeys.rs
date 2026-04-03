@@ -3,7 +3,13 @@ use tauri::AppHandle;
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
 
 pub fn register_hotkeys(app: &AppHandle) -> tauri::Result<()> {
-    let config = screen_core::config::AppConfig::load().unwrap_or_default();
+    let config = match screen_core::config::AppConfig::load() {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("Warning: failed to load config for hotkeys, using defaults: {}", e);
+            screen_core::config::AppConfig::default()
+        }
+    };
 
     // Register screenshot hotkey
     if let Ok(shortcut) = config.hotkey_bindings.screenshot.parse::<Shortcut>() {

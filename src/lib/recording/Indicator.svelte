@@ -2,8 +2,9 @@
   import { invoke } from "@tauri-apps/api/core";
   import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 
+  import { onDestroy } from "svelte";
+
   let elapsed = $state(0);
-  let interval: ReturnType<typeof setInterval> | null = null;
 
   const appWindow = getCurrentWebviewWindow();
 
@@ -19,13 +20,14 @@
     } catch (e) {
       console.error("Failed to stop:", e);
     }
-    if (interval) clearInterval(interval);
     appWindow.close();
   }
 
-  interval = setInterval(() => {
+  const interval = setInterval(() => {
     elapsed += 1;
   }, 1000);
+
+  onDestroy(() => clearInterval(interval));
 </script>
 
 <div class="indicator">

@@ -33,7 +33,8 @@ pub fn create_tray(app: &AppHandle) -> tauri::Result<()> {
 
     // Decode embedded PNG to RGBA for tray icon (optimized for menu bar)
     let icon_png = include_bytes!("../icons/tray-icon.png");
-    let img = image::load_from_memory(icon_png).expect("failed to decode tray icon");
+    let img = image::load_from_memory(icon_png)
+        .map_err(|e| tauri::Error::AssetNotFound(format!("tray icon decode failed: {}", e)))?;
     let rgba = img.to_rgba8();
     let (w, h) = (rgba.width(), rgba.height());
     let icon = tauri::image::Image::new_owned(rgba.into_raw(), w, h);

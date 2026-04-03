@@ -59,6 +59,10 @@ fn cg_image_to_rgba(
         let row_start = (y as usize) * bytes_per_row;
         for x in 0..width {
             let pixel_start = row_start + (x as usize) * 4;
+            // Bounds check to avoid panic on unexpected pixel formats or padding
+            if pixel_start + 3 >= raw_bytes.len() {
+                return Err(CaptureError::ImageDataFailed);
+            }
             // CoreGraphics uses BGRA byte order
             let b = raw_bytes[pixel_start];
             let g = raw_bytes[pixel_start + 1];

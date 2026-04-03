@@ -34,9 +34,7 @@ mod tests {
     fn test_copy_to_clipboard() {
         let img = RgbaImage::from_pixel(10, 10, image::Rgba([255, 0, 0, 255]));
         // This may fail in headless CI environments without a display server.
-        let result = copy_image_to_clipboard(&img);
-        if result.is_ok() {
-            assert!(result.is_ok());
-        }
+        // We just verify it doesn't panic — success depends on the environment.
+        let _ = copy_image_to_clipboard(&img);
     }
 }
