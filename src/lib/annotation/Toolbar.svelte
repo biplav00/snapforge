@@ -40,9 +40,15 @@
   const TOOLS: { type: ToolType; label: string; shortcut: string }[] = [
     { type: "arrow", label: "↗", shortcut: "A" },
     { type: "rect", label: "□", shortcut: "R" },
+    { type: "circle", label: "○", shortcut: "C" },
     { type: "line", label: "╱", shortcut: "L" },
     { type: "freehand", label: "✎", shortcut: "F" },
     { type: "text", label: "T", shortcut: "T" },
+    { type: "highlight", label: "▬", shortcut: "H" },
+    { type: "blur", label: "▦", shortcut: "B" },
+    { type: "steps", label: "①", shortcut: "N" },
+    { type: "colorpicker", label: "◉", shortcut: "I" },
+    { type: "measure", label: "📏", shortcut: "M" },
   ];
 
   // Position toolbar below region, or above if near screen bottom

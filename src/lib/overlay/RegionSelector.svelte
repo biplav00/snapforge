@@ -53,14 +53,25 @@
   const TOOL_SHORTCUTS: Record<string, ToolType> = {
     "1": "arrow",
     "2": "rect",
-    "3": "line",
-    "4": "freehand",
-    "5": "text",
+    "3": "circle",
+    "4": "line",
+    "5": "freehand",
+    "6": "text",
+    "7": "highlight",
+    "8": "blur",
+    "9": "steps",
+    "0": "colorpicker",
     "a": "arrow",
     "r": "rect",
+    "c": "circle",
     "l": "line",
     "f": "freehand",
     "t": "text",
+    "h": "highlight",
+    "b": "blur",
+    "n": "steps",
+    "i": "colorpicker",
+    "m": "measure",
   };
 
   // Computed region bounds
@@ -320,6 +331,7 @@
       {regionY}
       regionW={regionW}
       regionH={regionH}
+      {screenshotBase64}
     />
     <Toolbar
       {regionX}

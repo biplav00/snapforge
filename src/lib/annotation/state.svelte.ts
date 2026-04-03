@@ -10,6 +10,7 @@ let _strokeWidth = $state(2);
 let _activeAnnotation = $state<Annotation | null>(null);
 let _undoStack = $state<Annotation[][]>([]);
 let _redoStack = $state<Annotation[][]>([]);
+let _nextStepNumber = $state(1);
 
 // Export getters so consumers can read reactive values
 export function getAnnotations(): Annotation[] {
@@ -37,6 +38,10 @@ export const activeAnnotation = {
   get value() { return _activeAnnotation; },
 };
 
+export const nextStepNumber = {
+  get value() { return _nextStepNumber; },
+};
+
 export function setActiveAnnotation(a: Annotation | null) {
   _activeAnnotation = a;
 }
@@ -61,10 +66,14 @@ export function redo() {
 }
 
 export function clearAnnotations() {
-  if (_annotations.length === 0) return;
+  if (_annotations.length === 0) {
+    _nextStepNumber = 1;
+    return;
+  }
   _undoStack.push([..._annotations]);
   _redoStack = [];
   _annotations = [];
+  _nextStepNumber = 1;
 }
 
 export function setTool(tool: ToolType) {
@@ -77,6 +86,10 @@ export function setColor(color: string) {
 
 export function setStrokeWidth(width: number) {
   _strokeWidth = width;
+}
+
+export function incrementStepNumber() {
+  _nextStepNumber++;
 }
 
 export function canUndo(): boolean {

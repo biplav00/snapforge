@@ -4,6 +4,12 @@ import { rectTool } from "./rect.ts";
 import { lineTool } from "./line.ts";
 import { freehandTool } from "./freehand.ts";
 import { textTool } from "./text.ts";
+import { circleTool } from "./circle.ts";
+import { highlightTool } from "./highlight.ts";
+import { stepsTool } from "./steps.ts";
+import { blurTool } from "./blur.ts";
+import { colorPickerTool } from "./colorpicker.ts";
+import { measureTool } from "./measure.ts";
 
 const tools: Record<ToolType, Tool> = {
   arrow: arrowTool,
@@ -11,6 +17,12 @@ const tools: Record<ToolType, Tool> = {
   line: lineTool,
   freehand: freehandTool,
   text: textTool,
+  circle: circleTool,
+  highlight: highlightTool,
+  steps: stepsTool,
+  blur: blurTool,
+  colorpicker: colorPickerTool,
+  measure: measureTool,
 };
 
 export function getTool(type: ToolType): Tool {

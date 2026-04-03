@@ -10,6 +10,9 @@
     strokeWidth,
     setActiveAnnotation,
     commitAnnotation,
+    setColor,
+    nextStepNumber,
+    incrementStepNumber,
   } from "./state.svelte.ts";
 
   interface Props {
@@ -17,9 +20,20 @@
     regionY: number;
     regionW: number;
     regionH: number;
+    screenshotBase64: string;
   }
 
-  let { regionX, regionY, regionW, regionH }: Props = $props();
+  let { regionX, regionY, regionW, regionH, screenshotBase64 }: Props = $props();
+
+  let screenshotImg: HTMLImageElement | undefined = $state(undefined);
+
+  $effect(() => {
+    if (screenshotBase64) {
+      const img = new Image();
+      img.src = `data:image/png;base64,${screenshotBase64}`;
+      img.onload = () => { screenshotImg = img; };
+    }
+  });
 
   let canvas: HTMLCanvasElement;
   let textInput: HTMLInputElement | undefined = $state(undefined);
@@ -60,6 +74,10 @@
       commitAnnotation,
       color: strokeColor.value,
       strokeWidth: strokeWidth.value,
+      screenshotImage: screenshotImg,
+      setColor,
+      nextStepNumber: nextStepNumber.value,
+      incrementStepNumber,
     };
   }
 
