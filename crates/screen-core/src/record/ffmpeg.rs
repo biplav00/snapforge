@@ -2,6 +2,7 @@ use super::{RecordConfig, RecordError};
 use crate::capture;
 use crate::config::{RecordingFormat, RecordingQuality};
 use std::io::Write;
+use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -28,7 +29,8 @@ impl RecordingHandle {
 }
 
 pub fn start_recording(config: RecordConfig) -> Result<RecordingHandle, RecordError> {
-    super::check_ffmpeg()?;
+    // Find FFmpeg binary (bundled or system)
+    let ffmpeg_path = super::find_ffmpeg(config.ffmpeg_path.as_ref())?;
 
     // Capture one test frame to get dimensions
     let test_frame = if let Some(region) = &config.region {
@@ -42,7 +44,7 @@ pub fn start_recording(config: RecordConfig) -> Result<RecordingHandle, RecordEr
     let width = test_frame.width();
     let height = test_frame.height();
 
-    let mut child = spawn_ffmpeg(&config, width, height)?;
+    let mut child = spawn_ffmpeg(&ffmpeg_path, &config, width, height)?;
     let mut stdin = child.stdin.take()
         .ok_or_else(|| RecordError::FfmpegSpawnFailed("no stdin".into()))?;
 
@@ -58,7 +60,6 @@ pub fn start_recording(config: RecordConfig) -> Result<RecordingHandle, RecordEr
             &mut stdin,
         );
 
-        // Write the test frame as the first frame
         writer.write_all(test_frame.as_raw())
             .map_err(|e| RecordError::WriteFailed(e.to_string()))?;
 
@@ -109,7 +110,7 @@ pub fn start_recording(config: RecordConfig) -> Result<RecordingHandle, RecordEr
     })
 }
 
-fn spawn_ffmpeg(config: &RecordConfig, width: u32, height: u32) -> Result<Child, RecordError> {
+fn spawn_ffmpeg(ffmpeg_path: &PathBuf, config: &RecordConfig, width: u32, height: u32) -> Result<Child, RecordError> {
     let crf = match config.quality {
         RecordingQuality::Low => "28",
         RecordingQuality::Medium => "23",
@@ -154,7 +155,7 @@ fn spawn_ffmpeg(config: &RecordConfig, width: u32, height: u32) -> Result<Child,
 
     args.push(output_path);
 
-    Command::new("ffmpeg")
+    Command::new(ffmpeg_path)
         .args(&args)
         .stdin(Stdio::piped())
         .stdout(Stdio::null())

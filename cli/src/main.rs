@@ -219,6 +219,7 @@ fn handle_record(
         display,
         region: record_region,
         output_path: output_path.clone(),
+        ffmpeg_path: None,
         format: recording_format,
         fps,
         quality: config.recording.quality,

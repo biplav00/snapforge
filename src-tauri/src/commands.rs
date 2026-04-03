@@ -212,6 +212,7 @@ pub fn start_recording(
         format: config.recording.format,
         fps: config.recording.fps,
         quality: config.recording.quality,
+        ffmpeg_path: None, // will search bundled sidecar then system PATH
     };
 
     let handle = screen_core::record::ffmpeg::start_recording(record_config)
