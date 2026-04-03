@@ -1,10 +1,13 @@
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
+  import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
   import AnnotationCanvas from "../annotation/Canvas.svelte";
   import Toolbar from "../annotation/Toolbar.svelte";
   import { compositeImage } from "../annotation/compositing.ts";
   import { undo, redo, annotations, clearAnnotations, setTool } from "../annotation/state.svelte.ts";
   import type { ToolType } from "../annotation/tools/types.ts";
+
+  const appWindow = getCurrentWebviewWindow();
 
   interface Props {
     purpose: "screenshot" | "record";
@@ -26,9 +29,6 @@
 
   // Mode: "select" = drawing region, "annotate" = annotation, "record-select" = recording options
   let mode = $state<"select" | "annotate" | "record-select">("select");
-
-  // Screenshot captured on-demand when entering annotate mode
-  let screenshotBase64 = $state("");
 
   // Drag/resize state
   let dragging = $state(false);
@@ -149,17 +149,19 @@
     if (handle.includes("e")) { if (startX < endX) endX = mx; else startX = mx; }
   }
 
-  async function enterAnnotateMode() {
-    // Capture screenshot NOW for annotation canvas and compositing
-    try {
-      screenshotBase64 = await invoke<string>("capture_screen", { display: 0 });
-    } catch (e) {
-      console.error("Failed to capture for annotation:", e);
-      showToast("Capture failed");
-      return;
-    }
+  function enterAnnotateMode() {
+    // No screenshot capture — annotations render on transparent overlay.
+    // Screenshot is captured at save/copy time.
     mode = "annotate";
     clearAnnotations();
+  }
+
+  /** Hide overlay, wait for it to disappear, capture screen, return base64. */
+  async function captureWithOverlayHidden(): Promise<string> {
+    await appWindow.hide();
+    await new Promise((r) => setTimeout(r, 150));
+    const screenshot = await invoke<string>("capture_screen", { display: 0 });
+    return screenshot;
   }
 
   function handleKeydown(e: KeyboardEvent) {
@@ -188,25 +190,22 @@
     if (saving) return;
     saving = true;
     try {
+      // Hide overlay, capture clean screen, then composite
+      const screenshot = await captureWithOverlayHidden();
       let path: string;
-      if (annotations.value.length > 0 && screenshotBase64) {
-        const base64 = await compositeImage(screenshotBase64, regionX, regionY, regionW, regionH, annotations.value);
+      if (annotations.value.length > 0) {
+        const base64 = await compositeImage(screenshot, regionX, regionY, regionW, regionH, annotations.value);
         path = await invoke<string>("save_composited_image", { imageBase64: base64 });
       } else {
-        // No annotations — capture fresh and save directly
-        const dpr = window.devicePixelRatio || 1;
-        path = await invoke<string>("save_region", {
-          display: 0,
-          x: Math.round(regionX * dpr),
-          y: Math.round(regionY * dpr),
-          width: Math.round(regionW * dpr),
-          height: Math.round(regionH * dpr),
-        });
+        // No annotations — save the captured region directly
+        const base64 = await compositeImage(screenshot, regionX, regionY, regionW, regionH, []);
+        path = await invoke<string>("save_composited_image", { imageBase64: base64 });
       }
       onSave(path);
     } catch (err) {
       console.error("Failed to save:", err);
       saving = false;
+      await appWindow.show(); // Re-show if save failed
     }
   }
 
@@ -214,24 +213,18 @@
     if (saving) return;
     saving = true;
     try {
-      if (annotations.value.length > 0 && screenshotBase64) {
-        const base64 = await compositeImage(screenshotBase64, regionX, regionY, regionW, regionH, annotations.value);
-        await invoke("copy_composited_image", { imageBase64: base64 });
-      } else {
-        // No annotations — capture fresh region and copy
-        const dpr = window.devicePixelRatio || 1;
-        // Capture region, then copy it
-        const base64 = await invoke<string>("capture_and_copy_region", {
-          display: 0,
-          x: Math.round(regionX * dpr),
-          y: Math.round(regionY * dpr),
-          width: Math.round(regionW * dpr),
-          height: Math.round(regionH * dpr),
-        });
-      }
+      // Hide overlay, capture clean screen, composite, copy
+      const screenshot = await captureWithOverlayHidden();
+      const base64 = await compositeImage(
+        screenshot, regionX, regionY, regionW, regionH,
+        annotations.value.length > 0 ? annotations.value : [],
+      );
+      await invoke("copy_composited_image", { imageBase64: base64 });
+      await appWindow.show(); // Re-show overlay after copy
       showToast("Copied to clipboard!");
     } catch (err) {
       console.error("Failed to copy:", err);
+      await appWindow.show();
       showToast("Copy failed");
     }
     saving = false;
@@ -342,13 +335,12 @@
   {/if}
 
   <!-- Annotation mode (screenshot only) -->
-  {#if mode === "annotate" && hasRegion && screenshotBase64}
+  {#if mode === "annotate" && hasRegion}
     <AnnotationCanvas
       {regionX}
       {regionY}
       regionW={regionW}
       regionH={regionH}
-      {screenshotBase64}
     />
     <Toolbar
       {regionX}

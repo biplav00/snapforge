@@ -20,10 +20,10 @@
     regionY: number;
     regionW: number;
     regionH: number;
-    screenshotBase64: string;
+    screenshotBase64?: string;
   }
 
-  let { regionX, regionY, regionW, regionH, screenshotBase64 }: Props = $props();
+  let { regionX, regionY, regionW, regionH, screenshotBase64 = "" }: Props = $props();
 
   let screenshotImg: HTMLImageElement | undefined = $state(undefined);
 
