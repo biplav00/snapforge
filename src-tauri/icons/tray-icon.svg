@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 22 22">
+  <!-- Template icon: black strokes on transparent. macOS renders as white in dark mode, black in light mode -->
+  <g stroke="#000" stroke-width="2" stroke-linecap="round" fill="none">
+    <path d="M 3,7 L 3,3 L 7,3" />
+    <path d="M 15,3 L 19,3 L 19,7" />
+    <path d="M 3,15 L 3,19 L 7,19" />
+    <path d="M 15,19 L 19,19 L 19,15" />
+  </g>
+  <circle cx="11" cy="11" r="2" fill="#000" />
+</svg>
