@@ -1,3 +1,31 @@
+# Rust
 /target
-.superpowers/
+Cargo.lock
+
+# Node
+node_modules/
+dist/
+
+# macOS
 .DS_Store
+*.swp
+*~
+
+# IDE
+.idea/
+.vscode/
+*.code-workspace
+
+# Superpowers
+.superpowers/
+
+# Environment
+.env
+.env.*
+
+# Tauri
+src-tauri/target/
+src-tauri/gen/
+
+# FFmpeg binaries (downloaded by scripts/download-ffmpeg.sh)
+src-tauri/binaries/ffmpeg-*
