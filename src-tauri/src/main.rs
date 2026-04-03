@@ -9,6 +9,8 @@ fn main() {
             commands::capture_screen,
             commands::save_region,
             commands::save_fullscreen,
+            commands::save_composited_image,
+            commands::copy_composited_image,
         ])
         .setup(|app| {
             // Create the overlay window on startup for now.

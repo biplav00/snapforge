@@ -68,3 +68,50 @@ pub fn save_fullscreen(display: usize) -> Result<String, String> {
 
     Ok(path.display().to_string())
 }
+
+/// Save a composited image (screenshot + annotations) from base64 PNG.
+#[tauri::command]
+pub fn save_composited_image(image_base64: String) -> Result<String, String> {
+    let bytes = STANDARD
+        .decode(&image_base64)
+        .map_err(|e| format!("base64 decode failed: {}", e))?;
+
+    let img = image::load_from_memory_with_format(&bytes, image::ImageFormat::Png)
+        .map_err(|e| format!("image decode failed: {}", e))?;
+
+    let config = screen_core::config::AppConfig::load()
+        .map_err(|e| e.to_string())?;
+
+    let save_path = config.save_file_path();
+    if let Some(parent) = save_path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+
+    let rgba = img.to_rgba8();
+    screen_core::format::save_image(
+        &rgba,
+        &save_path,
+        config.screenshot_format,
+        config.jpg_quality,
+    )
+    .map_err(|e| e.to_string())?;
+
+    Ok(save_path.display().to_string())
+}
+
+/// Copy a composited image (screenshot + annotations) to clipboard from base64 PNG.
+#[tauri::command]
+pub fn copy_composited_image(image_base64: String) -> Result<(), String> {
+    let bytes = STANDARD
+        .decode(&image_base64)
+        .map_err(|e| format!("base64 decode failed: {}", e))?;
+
+    let img = image::load_from_memory_with_format(&bytes, image::ImageFormat::Png)
+        .map_err(|e| format!("image decode failed: {}", e))?;
+
+    let rgba = img.to_rgba8();
+    screen_core::clipboard::copy_image_to_clipboard(&rgba)
+        .map_err(|e| e.to_string())?;
+
+    Ok(())
+}
