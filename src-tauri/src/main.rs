@@ -13,6 +13,7 @@ pub struct PreCapturedScreen(pub Mutex<Option<String>>);
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .manage(PreCapturedScreen(Mutex::new(None)))
         .invoke_handler(tauri::generate_handler![
             commands::get_pre_captured_screen,
@@ -24,6 +25,7 @@ fn main() {
             commands::get_config,
             commands::save_config,
             commands::open_save_folder,
+            commands::reload_hotkeys,
         ])
         .setup(|app| {
             // Hide dock icon on macOS — tray-only app

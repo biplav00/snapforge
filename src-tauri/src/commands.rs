@@ -155,6 +155,12 @@ pub fn open_save_folder() -> Result<(), String> {
     open::that(dir).map_err(|e| e.to_string())
 }
 
+/// Reload global hotkeys from config (call after saving preferences).
+#[tauri::command]
+pub fn reload_hotkeys(app: tauri::AppHandle) -> Result<(), String> {
+    crate::hotkeys::reload_hotkeys(&app).map_err(|e| e.to_string())
+}
+
 /// Save a screenshot of the last remembered region.
 pub fn save_last_region() -> Result<String, String> {
     let config = screen_core::config::AppConfig::load()
