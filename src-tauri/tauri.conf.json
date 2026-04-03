@@ -1,7 +1,7 @@
 {
-  "productName": "ScreenSnap",
+  "productName": "Snapforge",
   "version": "0.1.0",
-  "identifier": "com.screensnap.app",
+  "identifier": "com.snapforge.app",
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420",

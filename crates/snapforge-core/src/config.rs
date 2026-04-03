@@ -125,7 +125,7 @@ impl Default for AppConfig {
     fn default() -> Self {
         let save_directory = dirs::picture_dir()
             .unwrap_or_else(|| dirs::home_dir().unwrap_or_else(|| PathBuf::from(".")))
-            .join("ScreenSnap");
+            .join("Snapforge");
 
         Self {
             save_directory,
@@ -147,7 +147,7 @@ impl AppConfig {
     pub fn config_path() -> PathBuf {
         let config_dir = dirs::config_dir()
             .unwrap_or_else(|| PathBuf::from("."))
-            .join("screensnap");
+            .join("snapforge");
         config_dir.join("config.json")
     }
 

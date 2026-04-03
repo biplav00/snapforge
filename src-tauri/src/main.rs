@@ -154,7 +154,7 @@ pub fn open_preferences(app: &AppHandle) {
         "preferences",
         WebviewUrl::App("preferences.html".into()),
     )
-    .title("ScreenSnap Preferences")
+    .title("Snapforge Preferences")
     .inner_size(600.0, 480.0)
     .resizable(true)
     .build();

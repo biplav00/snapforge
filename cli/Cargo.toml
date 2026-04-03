@@ -1,13 +1,13 @@
 [package]
-name = "screensnap"
+name = "snapforge-cli"
 version = "0.1.0"
 edition = "2021"
 
 [[bin]]
-name = "screen"
+name = "snapforge"
 path = "src/main.rs"
 
 [dependencies]
-screen-core = { path = "../crates/screen-core" }
+snapforge-core = { path = "../crates/snapforge-core" }
 clap = { version = "4", features = ["derive"] }
 ctrlc = "3"

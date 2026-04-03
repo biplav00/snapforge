@@ -1,5 +1,5 @@
 // src-tauri/src/recording.rs
-use screen_core::record::ffmpeg::RecordingHandle;
+use snapforge_core::record::ffmpeg::RecordingHandle;
 use std::sync::Mutex;
 
 pub struct RecordingState {

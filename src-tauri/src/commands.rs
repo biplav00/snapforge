@@ -15,12 +15,12 @@ pub fn get_pre_captured_screen(
 /// Capture fullscreen and return base64-encoded PNG for the overlay background.
 #[tauri::command]
 pub fn capture_screen(display: usize) -> Result<String, String> {
-    let image = screen_core::capture::capture_fullscreen(display)
+    let image = snapforge_core::capture::capture_fullscreen(display)
         .map_err(|e| e.to_string())?;
 
-    let bytes = screen_core::format::encode_image(
+    let bytes = snapforge_core::format::encode_image(
         &image,
-        screen_core::types::CaptureFormat::Png,
+        snapforge_core::types::CaptureFormat::Png,
         90,
     )
     .map_err(|e| e.to_string())?;
@@ -37,15 +37,15 @@ pub fn save_region(
     width: u32,
     height: u32,
 ) -> Result<String, String> {
-    let region = screen_core::types::Rect { x, y, width, height };
-    let config = screen_core::config::AppConfig::load()
+    let region = snapforge_core::types::Rect { x, y, width, height };
+    let config = snapforge_core::config::AppConfig::load()
         .map_err(|e| e.to_string())?;
 
     let save_path = config.save_file_path();
     let format = config.screenshot_format;
     let quality = config.jpg_quality;
 
-    let path = screen_core::screenshot_region(
+    let path = snapforge_core::screenshot_region(
         display,
         region,
         &save_path,
@@ -61,14 +61,14 @@ pub fn save_region(
 /// Save a fullscreen capture to disk (no region selection).
 #[tauri::command]
 pub fn save_fullscreen(display: usize) -> Result<String, String> {
-    let config = screen_core::config::AppConfig::load()
+    let config = snapforge_core::config::AppConfig::load()
         .map_err(|e| e.to_string())?;
 
     let save_path = config.save_file_path();
     let format = config.screenshot_format;
     let quality = config.jpg_quality;
 
-    let path = screen_core::screenshot_fullscreen(
+    let path = snapforge_core::screenshot_fullscreen(
         display,
         &save_path,
         format,
@@ -90,7 +90,7 @@ pub fn save_composited_image(image_base64: String) -> Result<String, String> {
     let img = image::load_from_memory_with_format(&bytes, image::ImageFormat::Png)
         .map_err(|e| format!("image decode failed: {}", e))?;
 
-    let config = screen_core::config::AppConfig::load()
+    let config = snapforge_core::config::AppConfig::load()
         .map_err(|e| e.to_string())?;
 
     let save_path = config.save_file_path();
@@ -99,7 +99,7 @@ pub fn save_composited_image(image_base64: String) -> Result<String, String> {
     }
 
     let rgba = img.to_rgba8();
-    screen_core::format::save_image(
+    snapforge_core::format::save_image(
         &rgba,
         &save_path,
         config.screenshot_format,
@@ -121,7 +121,7 @@ pub fn copy_composited_image(image_base64: String) -> Result<(), String> {
         .map_err(|e| format!("image decode failed: {}", e))?;
 
     let rgba = img.to_rgba8();
-    screen_core::clipboard::copy_image_to_clipboard(&rgba)
+    snapforge_core::clipboard::copy_image_to_clipboard(&rgba)
         .map_err(|e| e.to_string())?;
 
     Ok(())
@@ -130,7 +130,7 @@ pub fn copy_composited_image(image_base64: String) -> Result<(), String> {
 /// Get the current app config as JSON.
 #[tauri::command]
 pub fn get_config() -> Result<String, String> {
-    let config = screen_core::config::AppConfig::load()
+    let config = snapforge_core::config::AppConfig::load()
         .map_err(|e| e.to_string())?;
     serde_json::to_string(&config).map_err(|e| e.to_string())
 }
@@ -138,7 +138,7 @@ pub fn get_config() -> Result<String, String> {
 /// Save the app config from JSON.
 #[tauri::command]
 pub fn save_config(config_json: String) -> Result<(), String> {
-    let config: screen_core::config::AppConfig =
+    let config: snapforge_core::config::AppConfig =
         serde_json::from_str(&config_json).map_err(|e| e.to_string())?;
     config.save().map_err(|e| e.to_string())
 }
@@ -146,7 +146,7 @@ pub fn save_config(config_json: String) -> Result<(), String> {
 /// Open the save directory in the system file manager.
 #[tauri::command]
 pub fn open_save_folder() -> Result<(), String> {
-    let config = screen_core::config::AppConfig::load()
+    let config = snapforge_core::config::AppConfig::load()
         .map_err(|e| e.to_string())?;
     let dir = &config.save_directory;
     if !dir.exists() {
@@ -170,10 +170,10 @@ pub fn capture_and_copy_region(
     width: u32,
     height: u32,
 ) -> Result<(), String> {
-    let region = screen_core::types::Rect { x, y, width, height };
-    let image = screen_core::capture::capture_region(display, region)
+    let region = snapforge_core::types::Rect { x, y, width, height };
+    let image = snapforge_core::capture::capture_region(display, region)
         .map_err(|e| e.to_string())?;
-    screen_core::clipboard::copy_image_to_clipboard(&image)
+    snapforge_core::clipboard::copy_image_to_clipboard(&image)
         .map_err(|e| e.to_string())?;
     Ok(())
 }
@@ -181,7 +181,7 @@ pub fn capture_and_copy_region(
 /// Check if FFmpeg is installed.
 #[tauri::command]
 pub fn check_ffmpeg() -> Result<(), String> {
-    screen_core::record::check_ffmpeg().map_err(|e| e.to_string())
+    snapforge_core::record::check_ffmpeg().map_err(|e| e.to_string())
 }
 
 /// Start recording. Returns the output file path.
@@ -194,18 +194,18 @@ pub fn start_recording(
     region_w: Option<u32>,
     region_h: Option<u32>,
 ) -> Result<String, String> {
-    let config = screen_core::config::AppConfig::load()
+    let config = snapforge_core::config::AppConfig::load()
         .map_err(|e| e.to_string())?;
 
     let region = match (region_x, region_y, region_w, region_h) {
         (Some(x), Some(y), Some(w), Some(h)) => {
-            Some(screen_core::types::Rect { x, y, width: w, height: h })
+            Some(snapforge_core::types::Rect { x, y, width: w, height: h })
         }
         _ => None,
     };
 
     let output_path = config.recording_file_path();
-    let record_config = screen_core::record::RecordConfig {
+    let record_config = snapforge_core::record::RecordConfig {
         display,
         region,
         output_path: output_path.clone(),
@@ -215,7 +215,7 @@ pub fn start_recording(
         ffmpeg_path: None, // will search bundled sidecar then system PATH
     };
 
-    let handle = screen_core::record::ffmpeg::start_recording(record_config)
+    let handle = snapforge_core::record::ffmpeg::start_recording(record_config)
         .map_err(|e| e.to_string())?;
 
     let mut guard = state.handle.lock().map_err(|e| e.to_string())?;
@@ -262,14 +262,14 @@ pub fn start_recording_and_show_indicator(
 
 /// Save a screenshot of the last remembered region.
 pub fn save_last_region() -> Result<String, String> {
-    let config = screen_core::config::AppConfig::load()
+    let config = snapforge_core::config::AppConfig::load()
         .map_err(|e| e.to_string())?;
 
     let last = config.last_region
         .ok_or_else(|| "No last region saved".to_string())?;
 
     let save_path = config.save_file_path();
-    let path = screen_core::screenshot_region(
+    let path = snapforge_core::screenshot_region(
         last.display,
         last.rect,
         &save_path,

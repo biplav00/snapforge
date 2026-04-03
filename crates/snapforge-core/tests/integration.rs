@@ -1,11 +1,11 @@
-use screen_core::types::{CaptureFormat, Rect};
+use snapforge_core::types::{CaptureFormat, Rect};
 
 #[test]
 fn test_fullscreen_screenshot_png() {
     let tmp = tempfile::tempdir().unwrap();
     let path = tmp.path().join("fullscreen.png");
 
-    let result = screen_core::screenshot_fullscreen(
+    let result = snapforge_core::screenshot_fullscreen(
         0,
         &path,
         CaptureFormat::Png,
@@ -30,7 +30,7 @@ fn test_region_screenshot_jpg() {
     let path = tmp.path().join("region.jpg");
     let region = Rect { x: 0, y: 0, width: 200, height: 150 };
 
-    let result = screen_core::screenshot_region(
+    let result = snapforge_core::screenshot_region(
         0,
         region,
         &path,
@@ -53,7 +53,7 @@ fn test_region_screenshot_webp() {
     let path = tmp.path().join("region.webp");
     let region = Rect { x: 50, y: 50, width: 100, height: 100 };
 
-    let result = screen_core::screenshot_region(
+    let result = snapforge_core::screenshot_region(
         0,
         region,
         &path,
