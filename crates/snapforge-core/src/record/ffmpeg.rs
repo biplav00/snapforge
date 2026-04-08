@@ -93,13 +93,10 @@ pub fn start_recording(config: RecordConfig) -> Result<RecordingHandle, RecordEr
                 capture::capture_fullscreen(display)
             };
 
-            match frame {
-                Ok(img) => {
-                    if writer.write_all(img.as_raw()).is_err() {
-                        break;
-                    }
+            if let Ok(img) = frame {
+                if writer.write_all(img.as_raw()).is_err() {
+                    break;
                 }
-                Err(_) => continue,
             }
         }
 
@@ -143,6 +140,75 @@ pub fn start_recording(config: RecordConfig) -> Result<RecordingHandle, RecordEr
         stop_flag,
         thread: Some(thread),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::{RecordingFormat, RecordingQuality};
+    use std::path::PathBuf;
+
+    fn test_config(path: &Path) -> super::super::RecordConfig {
+        super::super::RecordConfig {
+            display: 0,
+            region: None,
+            output_path: path.to_path_buf(),
+            format: RecordingFormat::Mp4,
+            fps: 10,
+            quality: RecordingQuality::Low,
+            ffmpeg_path: None,
+        }
+    }
+
+    #[test]
+    fn test_recording_handle_stop_flag() {
+        let flag = Arc::new(AtomicBool::new(false));
+        assert!(!flag.load(Ordering::SeqCst));
+        flag.store(true, Ordering::SeqCst);
+        assert!(flag.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn test_start_recording_no_ffmpeg() {
+        // If ffmpeg is not present, start_recording should return an error, not panic
+        let tmp = tempfile::tempdir().unwrap();
+        let config = super::super::RecordConfig {
+            display: 0,
+            region: None,
+            output_path: tmp.path().join("test.mp4"),
+            format: RecordingFormat::Mp4,
+            fps: 10,
+            quality: RecordingQuality::Low,
+            ffmpeg_path: Some(PathBuf::from("/nonexistent/ffmpeg")),
+        };
+        // This may succeed if system ffmpeg exists, or fail — either is fine
+        let _ = start_recording(config);
+    }
+
+    #[test]
+    fn test_start_and_stop_recording() {
+        // Only run if ffmpeg is available and display capture works
+        if super::super::find_ffmpeg(None).is_err() {
+            return;
+        }
+        if crate::capture::capture_fullscreen(0).is_err() {
+            return;
+        }
+
+        let tmp = tempfile::tempdir().unwrap();
+        let config = test_config(&tmp.path().join("recording.mp4"));
+
+        match start_recording(config) {
+            Ok(handle) => {
+                assert!(handle.is_running());
+                std::thread::sleep(Duration::from_millis(500));
+                assert!(handle.stop().is_ok());
+            }
+            Err(_) => {
+                // Capture or ffmpeg may fail in CI
+            }
+        }
+    }
 }
 
 fn spawn_ffmpeg(

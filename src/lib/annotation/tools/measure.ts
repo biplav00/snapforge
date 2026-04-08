@@ -1,4 +1,4 @@
-import type { Tool, AnnotationState, Annotation, MeasureAnnotation } from "./types.ts";
+import type { Annotation, AnnotationState, MeasureAnnotation, Tool } from "./types.ts";
 import { generateId } from "./types.ts";
 
 export const measureTool: Tool = {
@@ -49,7 +49,10 @@ export const measureTool: Tool = {
     ctx.setLineDash([]);
 
     ctx.fillStyle = a.color;
-    for (const [px, py] of [[a.startX, a.startY], [a.endX, a.endY]]) {
+    for (const [px, py] of [
+      [a.startX, a.startY],
+      [a.endX, a.endY],
+    ]) {
       ctx.beginPath();
       ctx.arc(px, py, 3, 0, Math.PI * 2);
       ctx.fill();
@@ -64,12 +67,7 @@ export const measureTool: Tool = {
     const pad = 3;
 
     ctx.fillStyle = "rgba(0,0,0,0.7)";
-    ctx.fillRect(
-      mx - metrics.width / 2 - pad,
-      my - 16 - pad,
-      metrics.width + pad * 2,
-      16 + pad,
-    );
+    ctx.fillRect(mx - metrics.width / 2 - pad, my - 16 - pad, metrics.width + pad * 2, 16 + pad);
     ctx.fillStyle = "white";
     ctx.textAlign = "center";
     ctx.fillText(label, mx, my - pad);

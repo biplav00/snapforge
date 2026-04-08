@@ -1,15 +1,23 @@
 use crate::types::Rect;
-use core_graphics::display::{CGDisplay, CGMainDisplayID};
+use core_graphics::display::CGDisplay;
 use image::RgbaImage;
 
 use super::CaptureError;
 
-pub fn display_count() -> usize {
-    if CGDisplay::new(unsafe { CGMainDisplayID() }).is_active() {
-        1
-    } else {
-        0
+/// Get IDs of all active displays.
+fn active_display_ids() -> Vec<u32> {
+    // CGGetActiveDisplayList: up to 16 displays
+    let mut ids: Vec<u32> = vec![0; 16];
+    let mut count: u32 = 0;
+    unsafe {
+        core_graphics::display::CGGetActiveDisplayList(16, ids.as_mut_ptr(), &mut count);
     }
+    ids.truncate(count as usize);
+    ids
+}
+
+pub fn display_count() -> usize {
+    active_display_ids().len()
 }
 
 pub fn capture_fullscreen(display: usize) -> Result<RgbaImage, CaptureError> {
@@ -37,11 +45,10 @@ pub fn capture_region(display: usize, region: Rect) -> Result<RgbaImage, Capture
 }
 
 fn get_display_id(display: usize) -> Result<u32, CaptureError> {
-    if display == 0 {
-        Ok(unsafe { CGMainDisplayID() })
-    } else {
-        Err(CaptureError::NoDisplay(display))
-    }
+    let ids = active_display_ids();
+    ids.get(display)
+        .copied()
+        .ok_or(CaptureError::NoDisplay(display))
 }
 
 fn cg_image_to_rgba(cg_image: &core_graphics::image::CGImage) -> Result<RgbaImage, CaptureError> {

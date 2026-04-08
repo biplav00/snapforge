@@ -28,3 +28,13 @@ src-tauri/gen/
 
 # FFmpeg binaries (downloaded by scripts/download-ffmpeg.sh)
 src-tauri/binaries/ffmpeg-*
+
+# Coverage
+coverage/
+lcov-rust.info
+
+# Build artifacts
+src-tauri/target/**/*.dmg
+
+# Backups
+src-tauri/icons/icon.ico.bak

@@ -5,30 +5,41 @@ mod hotkeys;
 mod recording;
 mod tray;
 
+use base64::Engine;
+use std::collections::HashMap;
 use std::sync::Mutex;
 use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder};
 
-/// Holds a pre-captured screenshot taken before the overlay window appears.
-pub struct PreCapturedScreen(pub Mutex<Option<String>>);
+/// Holds pre-captured screenshots for each display (display index -> base64 PNG).
+pub struct PreCapturedScreens(pub Mutex<HashMap<usize, String>>);
 
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
-        .manage(PreCapturedScreen(Mutex::new(None)))
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .manage(PreCapturedScreens(Mutex::new(HashMap::new())))
         .manage(recording::RecordingState::new())
         .invoke_handler(tauri::generate_handler![
+            commands::show_toast,
+            commands::get_display_count,
             commands::get_pre_captured_screen,
             commands::capture_screen,
             commands::save_region,
             commands::save_fullscreen,
             commands::save_composited_image,
             commands::copy_composited_image,
+            commands::copy_file_to_clipboard,
             commands::capture_and_copy_region,
             commands::get_config,
             commands::save_config,
             commands::open_save_folder,
             commands::reload_hotkeys,
+            commands::save_last_region_to_config,
+            commands::get_history,
+            commands::add_to_history,
+            commands::open_file_in_folder,
+            commands::clear_history,
             commands::check_ffmpeg,
             commands::start_recording,
             commands::start_recording_and_show_indicator,
@@ -44,59 +55,114 @@ fn main() {
 
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|_app, event| {
+            // Keep app running in the system tray even when all windows are closed.
+            if let tauri::RunEvent::ExitRequested { api, .. } = event {
+                api.prevent_exit();
+            }
+        });
 }
 
-/// Get screen dimensions for edge-to-edge overlay.
-fn get_screen_size(app: &AppHandle) -> (f64, f64) {
-    let monitor = app.primary_monitor().ok().flatten().or_else(|| {
-        app.available_monitors()
-            .ok()
-            .and_then(|m| m.into_iter().next())
-    });
-
-    if let Some(m) = monitor {
-        let size = m.size();
-        let scale = m.scale_factor();
-        (size.width as f64 / scale, size.height as f64 / scale)
-    } else {
-        (3840.0, 2160.0)
+/// Close all existing overlay windows.
+fn close_all_overlays(app: &AppHandle) {
+    let labels: Vec<String> = app
+        .webview_windows()
+        .keys()
+        .filter(|l| l.starts_with("overlay"))
+        .cloned()
+        .collect();
+    for label in labels {
+        if let Some(w) = app.get_webview_window(&label) {
+            let _ = w.close();
+        }
     }
 }
 
-/// Open a fullscreen transparent overlay window.
-fn open_overlay(app: &AppHandle, url: &str) {
-    if let Some(window) = app.get_webview_window("overlay") {
-        let _ = window.close();
+/// Open a fullscreen transparent overlay window on each monitor.
+fn open_overlays(app: &AppHandle, base_url: &str) {
+    close_all_overlays(app);
+
+    let monitors: Vec<_> = app
+        .available_monitors()
+        .unwrap_or_default()
+        .into_iter()
+        .collect();
+
+    for (i, monitor) in monitors.iter().enumerate() {
+        let size = monitor.size();
+        let scale = monitor.scale_factor();
+        let pos = monitor.position();
+        let width = size.width as f64 / scale;
+        let height = size.height as f64 / scale;
+
+        let separator = if base_url.contains('?') { "&" } else { "?" };
+        let url = format!("{base_url}{separator}display={i}");
+        let label = format!("overlay-{i}");
+
+        let _ = WebviewWindowBuilder::new(app, &label, WebviewUrl::App(url.into()))
+            .title("")
+            .inner_size(width, height)
+            .position(pos.x as f64 / scale, pos.y as f64 / scale)
+            .transparent(true)
+            .decorations(false)
+            .always_on_top(true)
+            .skip_taskbar(true)
+            .resizable(false)
+            .build();
     }
-
-    let (width, height) = get_screen_size(app);
-
-    let _ = WebviewWindowBuilder::new(app, "overlay", WebviewUrl::App(url.into()))
-        .title("")
-        .inner_size(width, height)
-        .position(0.0, 0.0)
-        .transparent(true)
-        .decorations(false)
-        .always_on_top(true)
-        .skip_taskbar(true)
-        .resizable(false)
-        .build();
 }
 
-/// Open transparent overlay for region selection (Lightshot-style).
+/// Pre-capture all displays and store in state.
+fn pre_capture_all_displays(app: &AppHandle) {
+    let count = snapforge_core::capture::display_count();
+    if let Ok(mut guard) = app.state::<PreCapturedScreens>().0.lock() {
+        guard.clear();
+        for i in 0..count {
+            if let Ok(image) = snapforge_core::capture::capture_fullscreen(i) {
+                if let Ok(bytes) = snapforge_core::format::encode_image(
+                    &image,
+                    snapforge_core::types::CaptureFormat::Png,
+                    90,
+                ) {
+                    let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
+                    guard.insert(i, b64);
+                }
+            }
+        }
+    }
+}
+
+/// Open transparent overlay for region selection on all monitors.
+/// If "remember last region" is enabled and a last region exists, pre-selects it.
 pub fn trigger_screenshot(app: &AppHandle) {
-    open_overlay(app, "index.html");
-}
+    pre_capture_all_displays(app);
 
-/// Capture last region directly (no overlay).
-pub fn trigger_last_region(app: &AppHandle) {
-    match commands::save_last_region() {
-        Ok(path) => eprintln!("Saved last region to: {}", path),
-        Err(e) => eprintln!("Last region capture failed: {}", e),
+    let config = snapforge_core::config::AppConfig::load().unwrap_or_default();
+    if config.remember_last_region {
+        if let Some(last) = config.last_region {
+            let monitors: Vec<_> = app
+                .available_monitors()
+                .unwrap_or_default()
+                .into_iter()
+                .collect();
+            let idx = last.display.min(monitors.len().saturating_sub(1));
+            let dpr = monitors.get(idx).map_or(2.0, tauri::Monitor::scale_factor);
+            let x = last.rect.x as f64 / dpr;
+            let y = last.rect.y as f64 / dpr;
+            let w = last.rect.width as f64 / dpr;
+            let h = last.rect.height as f64 / dpr;
+            let url = format!(
+                "index.html?lastRegion={},{},{},{}",
+                x as i32, y as i32, w as u32, h as u32
+            );
+            open_overlays(app, &url);
+            return;
+        }
     }
-    let _ = app;
+
+    open_overlays(app, "index.html");
 }
 
 /// Toggle recording. If not recording, open overlay for region selection.
@@ -109,33 +175,98 @@ pub fn trigger_recording(app: &AppHandle) {
                 let _ = handle.stop();
             }
         }
-        if let Some(window) = app.get_webview_window("recording-indicator") {
-            let _ = window.close();
-        }
+        close_recording_indicator(app);
     } else {
-        open_overlay(app, "index.html?mode=record");
+        open_overlays(app, "index.html?mode=record");
     }
 }
 
-/// Open the recording indicator window after recording has started.
+/// Open the recording indicator after recording has started.
+/// On macOS/Windows: floating window excluded from screen capture.
+/// On Linux: no floating window (no reliable capture exclusion API); uses tray menu instead.
 pub fn open_recording_indicator(app: &AppHandle) {
-    if let Some(window) = app.get_webview_window("recording-indicator") {
+    #[cfg(target_os = "linux")]
+    {
+        // On Linux, update tray to show recording status with a stop option.
+        tray::set_recording_tray(app, true);
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        if let Some(window) = app.get_webview_window("recording-indicator") {
+            let _ = window.set_focus();
+            return;
+        }
+
+        if let Ok(window) = WebviewWindowBuilder::new(
+            app,
+            "recording-indicator",
+            WebviewUrl::App("recording.html".into()),
+        )
+        .title("Recording")
+        .inner_size(200.0, 50.0)
+        .resizable(false)
+        .decorations(false)
+        .always_on_top(true)
+        .transparent(true)
+        .build()
+        {
+            #[cfg(target_os = "macos")]
+            {
+                if let Ok(ns_win) = window.ns_window() {
+                    unsafe {
+                        let _: () = objc2::msg_send![
+                            ns_win as *const objc2::runtime::AnyObject,
+                            setSharingType: 0u64
+                        ];
+                    }
+                }
+            }
+
+            #[cfg(target_os = "windows")]
+            {
+                if let Ok(hwnd) = window.hwnd() {
+                    unsafe {
+                        windows_sys::Win32::UI::WindowsAndMessaging::SetWindowDisplayAffinity(
+                            hwnd.0 as _,
+                            0x11,
+                        );
+                    }
+                }
+            }
+
+            let _ = &window;
+        }
+    }
+}
+
+/// Close the recording indicator (window or tray state).
+pub fn close_recording_indicator(app: &AppHandle) {
+    #[cfg(target_os = "linux")]
+    {
+        tray::set_recording_tray(app, false);
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        if let Some(window) = app.get_webview_window("recording-indicator") {
+            let _ = window.close();
+        }
+    }
+}
+
+/// Open history window (or focus if already open).
+pub fn open_history(app: &AppHandle) {
+    if let Some(window) = app.get_webview_window("history") {
         let _ = window.set_focus();
         return;
     }
 
-    let _ = WebviewWindowBuilder::new(
-        app,
-        "recording-indicator",
-        WebviewUrl::App("recording.html".into()),
-    )
-    .title("Recording")
-    .inner_size(200.0, 50.0)
-    .resizable(false)
-    .decorations(false)
-    .always_on_top(true)
-    .transparent(true)
-    .build();
+    let _ = WebviewWindowBuilder::new(app, "history", WebviewUrl::App("history.html".into()))
+        .title("Screenshot History")
+        .inner_size(700.0, 500.0)
+        .resizable(true)
+        .build();
 }
 
 /// Open preferences window (or focus if already open).

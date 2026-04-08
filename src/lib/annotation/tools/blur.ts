@@ -1,4 +1,4 @@
-import type { Tool, AnnotationState, Annotation, BlurAnnotation } from "./types.ts";
+import type { Annotation, AnnotationState, BlurAnnotation, Tool } from "./types.ts";
 import { generateId } from "./types.ts";
 
 const DEFAULT_INTENSITY = 10;

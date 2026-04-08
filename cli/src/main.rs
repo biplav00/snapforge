@@ -168,22 +168,19 @@ fn handle_capture(
             let _ = config.save();
         }
     } else if last_region {
-        match config.last_region {
-            Some(last) => {
-                let path = snapforge_core::screenshot_region(
-                    last.display,
-                    last.rect,
-                    &save_path,
-                    format,
-                    quality,
-                    config.auto_copy_clipboard,
-                )?;
-                println!("Saved to: {}", path.display());
-            }
-            None => {
-                eprintln!("No last region saved. Use --region or capture interactively first.");
-                std::process::exit(1);
-            }
+        if let Some(last) = config.last_region {
+            let path = snapforge_core::screenshot_region(
+                last.display,
+                last.rect,
+                &save_path,
+                format,
+                quality,
+                config.auto_copy_clipboard,
+            )?;
+            println!("Saved to: {}", path.display());
+        } else {
+            eprintln!("No last region saved. Use --region or capture interactively first.");
+            std::process::exit(1);
         }
     } else if fullscreen {
         let path = snapforge_core::screenshot_fullscreen(

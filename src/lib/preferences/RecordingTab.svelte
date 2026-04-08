@@ -1,34 +1,39 @@
 <script lang="ts">
-  interface Props {
-    config: Record<string, unknown>;
-    onChange: (key: string, value: unknown) => void;
-  }
+interface Props {
+  config: Record<string, unknown>;
+  onChange: (key: string, value: unknown) => void;
+}
 
-  let { config, onChange }: Props = $props();
-  let recording = $derived(config.recording as Record<string, unknown>);
+let { config, onChange }: Props = $props();
+let recording = $derived(config.recording as Record<string, unknown>);
 
-  function updateRecording(key: string, value: unknown) {
-    onChange("recording", { ...recording, [key]: value });
-  }
+function updateRecording(key: string, value: unknown) {
+  onChange("recording", { ...recording, [key]: value });
+}
 
-  const FORMATS = [
-    { value: "Mp4", label: "MP4", desc: "H.264, universal playback" },
-    { value: "Gif", label: "GIF", desc: "Animated, larger files" },
-  ];
+const FORMATS = [
+  { value: "Mp4", label: "MP4", desc: "H.264, universal playback" },
+  { value: "Gif", label: "GIF", desc: "Animated, larger files" },
+];
 
-  const FPS_OPTIONS = [
-    { value: 10, label: "10" }, { value: 15, label: "15" },
-    { value: 24, label: "24" }, { value: 30, label: "30" }, { value: 60, label: "60" },
-  ];
+const FPS_OPTIONS = [
+  { value: 10, label: "10" },
+  { value: 15, label: "15" },
+  { value: 24, label: "24" },
+  { value: 30, label: "30" },
+  { value: 60, label: "60" },
+];
 
-  const QUALITY_OPTIONS = [
-    { value: "Low", label: "Low" }, { value: "Medium", label: "Medium" }, { value: "High", label: "High" },
-  ];
+const QUALITY_OPTIONS = [
+  { value: "Low", label: "Low" },
+  { value: "Medium", label: "Medium" },
+  { value: "High", label: "High" },
+];
 </script>
 
 <div class="tab-content">
-  <div class="field">
-    <label>Format</label>
+  <div class="field" role="group" aria-label="Format">
+    <span class="field-label">Format</span>
     <div class="format-group">
       {#each FORMATS as fmt}
         <label class="format-option" class:selected={recording.format === fmt.value}>
@@ -45,8 +50,8 @@
     </div>
   </div>
 
-  <div class="field">
-    <label>Frame Rate (fps)</label>
+  <div class="field" role="group" aria-label="Frame Rate (fps)">
+    <span class="field-label">Frame Rate (fps)</span>
     <div class="pill-group">
       {#each FPS_OPTIONS as opt}
         <label class="pill" class:selected={recording.fps === opt.value}>
@@ -59,8 +64,8 @@
     </div>
   </div>
 
-  <div class="field">
-    <label>Quality</label>
+  <div class="field" role="group" aria-label="Quality">
+    <span class="field-label">Quality</span>
     <div class="pill-group">
       {#each QUALITY_OPTIONS as opt}
         <label class="pill" class:selected={recording.quality === opt.value}>
@@ -77,7 +82,7 @@
 <style>
   .tab-content { display: flex; flex-direction: column; gap: 18px; }
   .field { display: flex; flex-direction: column; gap: 6px; }
-  .field > label { font-size: 13px; font-weight: 500; color: var(--text-secondary); }
+  .field > label, .field > .field-label { font-size: 13px; font-weight: 500; color: var(--text-secondary); }
 
   /* Custom radio card group */
   .format-group { display: flex; gap: 8px; }

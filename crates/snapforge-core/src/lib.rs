@@ -2,6 +2,7 @@ pub mod capture;
 pub mod clipboard;
 pub mod config;
 pub mod format;
+pub mod history;
 pub mod record;
 pub mod types;
 

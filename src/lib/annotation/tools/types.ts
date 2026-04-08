@@ -1,6 +1,19 @@
 // src/lib/annotation/tools/types.ts
 
-export type ToolType = "arrow" | "rect" | "line" | "freehand" | "text" | "circle" | "highlight" | "steps" | "blur" | "colorpicker" | "measure";
+export type ToolType =
+  | "arrow"
+  | "rect"
+  | "line"
+  | "dottedline"
+  | "freehand"
+  | "text"
+  | "circle"
+  | "highlight"
+  | "steps"
+  | "callout"
+  | "blur"
+  | "colorpicker"
+  | "measure";
 
 export interface BaseAnnotation {
   id: string;
@@ -27,6 +40,14 @@ export interface RectAnnotation extends BaseAnnotation {
 
 export interface LineAnnotation extends BaseAnnotation {
   tool: "line";
+  startX: number;
+  startY: number;
+  endX: number;
+  endY: number;
+}
+
+export interface DottedLineAnnotation extends BaseAnnotation {
+  tool: "dottedline";
   startX: number;
   startY: number;
   endX: number;
@@ -69,6 +90,14 @@ export interface StepAnnotation extends BaseAnnotation {
   number: number;
 }
 
+export interface CalloutAnnotation extends BaseAnnotation {
+  tool: "callout";
+  x: number;
+  y: number;
+  number: number;
+  label: string;
+}
+
 export interface BlurAnnotation extends BaseAnnotation {
   tool: "blur";
   x: number;
@@ -96,11 +125,13 @@ export type Annotation =
   | ArrowAnnotation
   | RectAnnotation
   | LineAnnotation
+  | DottedLineAnnotation
   | FreehandAnnotation
   | TextAnnotation
   | CircleAnnotation
   | HighlightAnnotation
   | StepAnnotation
+  | CalloutAnnotation
   | BlurAnnotation
   | MeasureAnnotation
   | ColorPickerAnnotation;

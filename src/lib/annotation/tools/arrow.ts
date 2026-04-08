@@ -1,4 +1,4 @@
-import type { Tool, AnnotationState, Annotation, ArrowAnnotation } from "./types.ts";
+import type { Annotation, AnnotationState, ArrowAnnotation, Tool } from "./types.ts";
 import { generateId } from "./types.ts";
 
 export const arrowTool: Tool = {
@@ -35,18 +35,23 @@ export const arrowTool: Tool = {
 
   render(ctx: CanvasRenderingContext2D, annotation: Annotation) {
     const a = annotation as ArrowAnnotation;
+
+    ctx.save();
     ctx.strokeStyle = a.color;
+    ctx.fillStyle = a.color;
     ctx.lineWidth = a.strokeWidth;
     ctx.lineCap = "round";
+    ctx.lineJoin = "round";
 
+    // Draw shaft
     ctx.beginPath();
     ctx.moveTo(a.startX, a.startY);
     ctx.lineTo(a.endX, a.endY);
     ctx.stroke();
 
+    // Draw arrowhead (fill only, no stroke outline)
     const angle = Math.atan2(a.endY - a.startY, a.endX - a.startX);
     const headLen = Math.max(10, a.strokeWidth * 4);
-    ctx.fillStyle = a.color;
     ctx.beginPath();
     ctx.moveTo(a.endX, a.endY);
     ctx.lineTo(
@@ -59,5 +64,6 @@ export const arrowTool: Tool = {
     );
     ctx.closePath();
     ctx.fill();
+    ctx.restore();
   },
 };

@@ -1,7 +1,10 @@
-import type { Tool, AnnotationState, Annotation, StepAnnotation } from "./types.ts";
+import type { Annotation, AnnotationState, StepAnnotation, Tool } from "./types.ts";
 import { generateId } from "./types.ts";
 
-const RADIUS = 14;
+/** Radius scales with stroke width: S=10, M=14, L=20 */
+function getRadius(strokeWidth: number): number {
+  return 8 + strokeWidth * 3;
+}
 
 export const stepsTool: Tool = {
   onMouseDown(x: number, y: number, state: AnnotationState) {
@@ -27,18 +30,19 @@ export const stepsTool: Tool = {
 
   render(ctx: CanvasRenderingContext2D, annotation: Annotation) {
     const a = annotation as StepAnnotation;
+    const r = getRadius(a.strokeWidth);
+
+    ctx.save();
     ctx.fillStyle = a.color;
     ctx.beginPath();
-    ctx.arc(a.x, a.y, RADIUS, 0, Math.PI * 2);
+    ctx.arc(a.x, a.y, r, 0, Math.PI * 2);
     ctx.fill();
 
     ctx.fillStyle = "white";
-    ctx.font = `bold ${RADIUS}px system-ui, sans-serif`;
+    ctx.font = `bold ${r}px system-ui, sans-serif`;
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
     ctx.fillText(String(a.number), a.x, a.y);
-
-    ctx.textAlign = "start";
-    ctx.textBaseline = "alphabetic";
+    ctx.restore();
   },
 };

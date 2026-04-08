@@ -1,5 +1,8 @@
 <script lang="ts">
-  import Overlay from "./lib/overlay/Overlay.svelte";
+import ErrorBoundary from "./lib/ErrorBoundary.svelte";
+import Overlay from "./lib/overlay/Overlay.svelte";
 </script>
 
-<Overlay />
+<ErrorBoundary>
+  <Overlay />
+</ErrorBoundary>

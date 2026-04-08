@@ -1,4 +1,4 @@
-import type { Tool, AnnotationState, Annotation, CircleAnnotation } from "./types.ts";
+import type { Annotation, AnnotationState, CircleAnnotation, Tool } from "./types.ts";
 import { generateId } from "./types.ts";
 
 export const circleTool: Tool = {

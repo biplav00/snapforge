@@ -1,4 +1,4 @@
-import type { Tool, AnnotationState, Annotation } from "./types.ts";
+import type { Annotation, AnnotationState, Tool } from "./types.ts";
 
 export const colorPickerTool: Tool = {
   onMouseDown(x: number, y: number, state: AnnotationState) {
@@ -20,7 +20,8 @@ export const colorPickerTool: Tool = {
     if (ix < 0 || iy < 0 || ix >= canvas.width || iy >= canvas.height) return;
 
     const pixel = ctx.getImageData(ix, iy, 1, 1).data;
-    const hex = `#${pixel[0].toString(16).padStart(2, "0")}${pixel[1].toString(16).padStart(2, "0")}${pixel[2].toString(16).padStart(2, "0")}`.toUpperCase();
+    const hex =
+      `#${pixel[0].toString(16).padStart(2, "0")}${pixel[1].toString(16).padStart(2, "0")}${pixel[2].toString(16).padStart(2, "0")}`.toUpperCase();
 
     state.setColor(hex);
   },
