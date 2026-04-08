@@ -189,7 +189,6 @@ pub fn open_recording_indicator(app: &AppHandle) {
     {
         // On Linux, update tray to show recording status with a stop option.
         tray::set_recording_tray(app, true);
-        return;
     }
 
     #[cfg(not(target_os = "linux"))]

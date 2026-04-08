@@ -5,7 +5,7 @@ use tauri::{
 };
 
 #[cfg(target_os = "linux")]
-use tauri::{tray::TrayIconId, Manager};
+use tauri::tray::TrayIconId;
 
 const TRAY_ID: &str = "main-tray";
 
