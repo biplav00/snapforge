@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.1](https://github.com/biplav00/snapforge/compare/v1.3.0...v1.3.1) (2026-04-08)
+
+
+### Bug Fixes
+
+* capture screen BEFORE overlay opens — fixes wallpaper-only screenshot ([400ddeb](https://github.com/biplav00/snapforge/commit/400ddeb9cfb096b5e36eaeac271f8efd31574a70))
+* check screen recording permission before capturing ([aaa7157](https://github.com/biplav00/snapforge/commit/aaa71574ee8fbb05107a2f2160eab7dc0316fb72))
+* suppress Node.js 20 deprecation warning in release-please ([22e1b6c](https://github.com/biplav00/snapforge/commit/22e1b6cb698e68ce7c48f1de7b61fa5172aba5bf))
+* sync all version strings to 1.3.0, fix release-please version bumping ([a7c5cbc](https://github.com/biplav00/snapforge/commit/a7c5cbc03ed9f2587a5ee1590806790af1405bf8))
+
 ## [1.3.0](https://github.com/biplav00/snapforge/compare/v1.2.4...v1.3.0) (2026-04-08)
 
 
