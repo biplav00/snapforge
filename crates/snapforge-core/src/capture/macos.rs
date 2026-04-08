@@ -4,6 +4,22 @@ use image::RgbaImage;
 
 use super::CaptureError;
 
+extern "C" {
+    fn CGPreflightScreenCaptureAccess() -> bool;
+    fn CGRequestScreenCaptureAccess() -> bool;
+}
+
+/// Check if screen recording permission is granted.
+pub fn has_screen_capture_permission() -> bool {
+    unsafe { CGPreflightScreenCaptureAccess() }
+}
+
+/// Request screen recording permission. Returns true if granted.
+/// On first call, shows the macOS permission dialog.
+pub fn request_screen_capture_permission() -> bool {
+    unsafe { CGRequestScreenCaptureAccess() }
+}
+
 /// Get IDs of all active displays.
 fn active_display_ids() -> Vec<u32> {
     // CGGetActiveDisplayList: up to 16 displays

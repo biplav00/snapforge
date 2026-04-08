@@ -40,6 +40,30 @@ pub fn capture_region(display: usize, region: Rect) -> Result<RgbaImage, Capture
     }
 }
 
+/// Check if screen capture permission is granted (macOS only, always true on other platforms).
+pub fn has_permission() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        macos::has_screen_capture_permission()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        true
+    }
+}
+
+/// Request screen capture permission (macOS only, no-op on other platforms).
+pub fn request_permission() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        macos::request_screen_capture_permission()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        true
+    }
+}
+
 pub fn display_count() -> usize {
     #[cfg(target_os = "macos")]
     {

@@ -178,8 +178,15 @@ fn pre_capture_all_displays(app: &AppHandle) {
 }
 
 /// Open transparent overlay for region selection on all monitors.
-/// Captures screen first (synchronous), then opens overlay.
+/// Checks permission first, captures screen, then opens overlay.
 pub fn trigger_screenshot(app: &AppHandle) {
+    // Check screen capture permission before doing anything
+    if !snapforge_core::capture::has_permission() {
+        // Request triggers the macOS permission dialog — don't capture or open overlay yet
+        snapforge_core::capture::request_permission();
+        return;
+    }
+
     pre_capture_all_displays(app);
 
     let config = snapforge_core::config::AppConfig::load().unwrap_or_default();
@@ -220,6 +227,10 @@ pub fn trigger_recording(app: &AppHandle) {
         }
         close_recording_indicator(app);
     } else {
+        if !snapforge_core::capture::has_permission() {
+            snapforge_core::capture::request_permission();
+            return;
+        }
         open_overlays(app, "index.html?mode=record");
     }
 }
