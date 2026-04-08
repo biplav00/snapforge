@@ -60,11 +60,17 @@ const TOOLS: { type: ToolType; icon: string; shortcut: string }[] = [
 ];
 
 // Position toolbar — initial position below/above region, then draggable
-let defaultTop = regionY + regionH + 40 > window.innerHeight ? regionY - 36 : regionY + regionH + 6;
-let defaultLeft = regionX + regionW / 2;
+let toolbarTop = $state(0);
+let toolbarLeft = $state(0);
+let initialized = false;
 
-let toolbarTop = $state(defaultTop);
-let toolbarLeft = $state(defaultLeft);
+$effect(() => {
+  if (!initialized) {
+    toolbarTop = regionY + regionH + 40 > window.innerHeight ? regionY - 36 : regionY + regionH + 6;
+    toolbarLeft = regionX + regionW / 2;
+    initialized = true;
+  }
+});
 
 let showColorPicker = $state(false);
 
@@ -123,13 +129,15 @@ function handleWindowClick() {
   onmouseup={handleDragEnd}
 />
 
-<!-- svelte-ignore a11y_no_static_element_interactions -->
 <div
+  role="toolbar"
+  tabindex="-1"
   class="toolbar"
   class:dragging={isDragging}
   style="left:{toolbarLeft}px;top:{toolbarTop}px"
   onmousedown={handleDragStart}
   onclick={stopPropagation}
+  onkeydown={() => {}}
 >
   <!-- Tool buttons -->
   <div class="tool-group">
@@ -158,7 +166,7 @@ function handleWindowClick() {
     </button>
     {#if showColorPicker}
       <!-- svelte-ignore a11y_no_static_element_interactions -->
-      <div class="color-picker" onclick={stopPropagation}>
+      <div class="color-picker" role="listbox" tabindex="-1" onclick={stopPropagation} onkeydown={() => {}}>
         {#each COLORS as c}
           <button
             class="color-swatch"
