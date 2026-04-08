@@ -35,10 +35,10 @@ export function getTool(type: ToolType): Tool {
 
 export function renderAnnotation(
   ctx: CanvasRenderingContext2D,
-  annotation: { tool: ToolType } & Record<string, unknown>,
+  annotation: import("./types.ts").Annotation,
 ) {
   const tool = tools[annotation.tool];
   if (tool) {
-    tool.render(ctx, annotation as never);
+    tool.render(ctx, annotation);
   }
 }
