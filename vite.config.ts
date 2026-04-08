@@ -9,6 +9,7 @@ export default defineConfig({
   plugins: [svelte()],
   clearScreen: false,
   build: {
+    target: "esnext",
     rollupOptions: {
       input: {
         main: resolve(__dirname, "index.html"),

@@ -347,6 +347,7 @@ pub fn start_recording_and_show_indicator(
 }
 
 /// Get screenshot history as JSON, with base64-encoded thumbnail data.
+/// Reads thumbnails in parallel for faster loading.
 #[tauri::command]
 pub fn get_history() -> Result<String, String> {
     let history = snapforge_core::history::ScreenshotHistory::load().map_err(|e| e.to_string())?;
@@ -358,21 +359,30 @@ pub fn get_history() -> Result<String, String> {
         thumbnail_data: String,
     }
 
-    let entries: Vec<EntryWithData> = history
-        .entries
-        .iter()
-        .map(|e| {
-            let thumb_data = std::fs::read(&e.thumbnail_path)
-                .ok()
-                .map(|bytes| format!("data:image/png;base64,{}", STANDARD.encode(&bytes)))
-                .unwrap_or_default();
-            EntryWithData {
-                path: e.path.clone(),
-                timestamp: e.timestamp.clone(),
-                thumbnail_data: thumb_data,
-            }
-        })
-        .collect();
+    // Read all thumbnail files in parallel using thread::scope
+    let entries: Vec<EntryWithData> = std::thread::scope(|s| {
+        let handles: Vec<_> = history
+            .entries
+            .iter()
+            .map(|e| {
+                let path = e.path.clone();
+                let timestamp = e.timestamp.clone();
+                let thumb_path = e.thumbnail_path.clone();
+                s.spawn(move || {
+                    let thumb_data = std::fs::read(&thumb_path)
+                        .ok()
+                        .map(|bytes| format!("data:image/png;base64,{}", STANDARD.encode(&bytes)))
+                        .unwrap_or_default();
+                    EntryWithData {
+                        path,
+                        timestamp,
+                        thumbnail_data: thumb_data,
+                    }
+                })
+            })
+            .collect();
+        handles.into_iter().map(|h| h.join().unwrap()).collect()
+    });
 
     serde_json::to_string(&entries).map_err(|e| e.to_string())
 }

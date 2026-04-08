@@ -114,22 +114,38 @@ fn open_overlays(app: &AppHandle, base_url: &str) {
     }
 }
 
-/// Pre-capture all displays and store in state.
+/// Pre-capture all displays in parallel and store in state.
 fn pre_capture_all_displays(app: &AppHandle) {
     let count = snapforge_core::capture::display_count();
+
+    // Capture and encode all displays in parallel using scoped threads
+    let results: Vec<(usize, String)> = std::thread::scope(|s| {
+        let handles: Vec<_> = (0..count)
+            .map(|i| {
+                s.spawn(move || -> Option<(usize, String)> {
+                    let image = snapforge_core::capture::capture_fullscreen(i).ok()?;
+                    let bytes = snapforge_core::format::encode_image(
+                        &image,
+                        snapforge_core::types::CaptureFormat::Png,
+                        90,
+                    )
+                    .ok()?;
+                    let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
+                    Some((i, b64))
+                })
+            })
+            .collect();
+
+        handles
+            .into_iter()
+            .filter_map(|h| h.join().ok().flatten())
+            .collect()
+    });
+
     if let Ok(mut guard) = app.state::<PreCapturedScreens>().0.lock() {
         guard.clear();
-        for i in 0..count {
-            if let Ok(image) = snapforge_core::capture::capture_fullscreen(i) {
-                if let Ok(bytes) = snapforge_core::format::encode_image(
-                    &image,
-                    snapforge_core::types::CaptureFormat::Png,
-                    90,
-                ) {
-                    let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
-                    guard.insert(i, b64);
-                }
-            }
+        for (i, b64) in results {
+            guard.insert(i, b64);
         }
     }
 }

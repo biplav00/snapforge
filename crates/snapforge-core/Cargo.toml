@@ -14,6 +14,12 @@ chrono = "0.4"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 core-graphics = "0.25"
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", features = ["NSData", "NSString"] }
+objc2-app-kit = { version = "0.3", features = ["NSPasteboard"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+clipboard-win = "5"
 
 [target.'cfg(not(target_os = "macos"))'.dependencies]
 xcap = "0.0.14"
