@@ -82,7 +82,7 @@ const QUALITY_OPTIONS = [
 <style>
   .tab-content { display: flex; flex-direction: column; gap: 18px; }
   .field { display: flex; flex-direction: column; gap: 6px; }
-  .field > label, .field > .field-label { font-size: 13px; font-weight: 500; color: var(--text-secondary); }
+  .field > .field-label { font-size: 13px; font-weight: 500; color: var(--text-secondary); }
 
   /* Custom radio card group */
   .format-group { display: flex; gap: 8px; }

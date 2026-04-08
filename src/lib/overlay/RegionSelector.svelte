@@ -39,27 +39,36 @@ let hasRegion = $state(false);
 // Mode: "select" = drawing region, "annotate" = annotation, "record-select" = recording options
 let mode = $state<"select" | "annotate" | "record-select">("select");
 
-// Pre-select last region if passed via URL
-const lastRegionParam = new URLSearchParams(window.location.search).get("lastRegion");
-if (lastRegionParam) {
-  const parts = lastRegionParam.split(",").map(Number);
-  if (parts.length === 4 && parts.every((n) => !isNaN(n))) {
-    startX = parts[0];
-    startY = parts[1];
-    endX = parts[0] + parts[2];
-    endY = parts[1] + parts[3];
-    hasRegion = true;
-    mode = purpose === "screenshot" ? "annotate" : "record-select";
-  }
-}
-
 // Pre-captured screenshot for blur/colorpicker tools
 let screenshotBase64 = $state("");
-invoke<string>("get_pre_captured_screen", { display })
-  .then((b64) => {
-    screenshotBase64 = b64;
-  })
-  .catch(() => {});
+
+// Initialize on mount — use $effect to properly capture props
+let didInit = false;
+$effect(() => {
+  if (didInit) return;
+  didInit = true;
+
+  // Pre-select last region if passed via URL
+  const lastRegionParam = new URLSearchParams(window.location.search).get("lastRegion");
+  if (lastRegionParam) {
+    const parts = lastRegionParam.split(",").map(Number);
+    if (parts.length === 4 && parts.every((n) => !Number.isNaN(n))) {
+      startX = parts[0];
+      startY = parts[1];
+      endX = parts[0] + parts[2];
+      endY = parts[1] + parts[3];
+      hasRegion = true;
+      mode = purpose === "screenshot" ? "annotate" : "record-select";
+    }
+  }
+
+  // Load pre-captured screenshot
+  invoke<string>("get_pre_captured_screen", { display })
+    .then((b64) => {
+      screenshotBase64 = b64;
+    })
+    .catch(() => {});
+});
 
 // Drag/resize state
 let dragging = $state(false);

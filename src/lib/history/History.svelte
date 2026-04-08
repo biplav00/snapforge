@@ -94,8 +94,7 @@ onMount(() => {
     <div class="grid">
       {#each entries as entry}
         <div class="grid-item" title={entry.path}>
-          <!-- svelte-ignore a11y_no_static_element_interactions -->
-          <div class="thumb-wrapper" onclick={() => copyToClipboard(entry.path)}>
+          <div class="thumb-wrapper" role="button" tabindex="0" onclick={() => copyToClipboard(entry.path)} onkeydown={(e) => { if (e.key === "Enter") copyToClipboard(entry.path); }}>
             {#if entry.thumbnail_data}
               <img
                 class="thumbnail"
@@ -136,9 +135,8 @@ onMount(() => {
   {/if}
 
   {#if previewEntry}
-    <!-- svelte-ignore a11y_no_static_element_interactions -->
-    <div class="preview-overlay" onclick={() => { previewEntry = null; }}>
-      <div class="preview-container" onclick={(e) => e.stopPropagation()}>
+    <div class="preview-overlay" role="button" tabindex="0" onclick={() => { previewEntry = null; }} onkeydown={(e) => { if (e.key === "Escape") previewEntry = null; }}>
+      <div class="preview-container" role="dialog" tabindex="-1" onclick={(e) => e.stopPropagation()} onkeydown={() => {}}>
         <img
           class="preview-img"
           src={previewEntry.thumbnail_data}
