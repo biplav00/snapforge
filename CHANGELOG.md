@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.1](https://github.com/biplav00/snapforge/compare/v1.2.0...v1.2.1) (2026-04-08)
+
+
+### Bug Fixes
+
+* tauri-action v2 compatibility + macOS-only builds ([a35b053](https://github.com/biplav00/snapforge/commit/a35b053e0c09c4987043883be64748acd5ab105f))
+* use tauri-action@dev for Tauri v2, macOS only builds for now ([c5a09a1](https://github.com/biplav00/snapforge/commit/c5a09a1a0d64e13ed6f4a854f5ad90ad61bcf313))
+
 ## [1.2.0](https://github.com/biplav00/snapforge/compare/v1.1.0...v1.2.0) (2026-04-08)
 
 
