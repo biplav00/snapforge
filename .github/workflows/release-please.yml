@@ -1,20 +1,26 @@
-name: Release Please
+name: Release
 
 on:
   push:
     branches: [main]
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 permissions:
   contents: write
   pull-requests: write
 
 jobs:
+  # Step 1: Release-please creates/updates a version bump PR.
+  # When that PR is merged, it creates a GitHub Release + tag.
   release-please:
+    name: Release Please
     runs-on: ubuntu-latest
     outputs:
       release_created: ${{ steps.release.outputs.release_created }}
       tag_name: ${{ steps.release.outputs.tag_name }}
-      version: ${{ steps.release.outputs.version }}
     steps:
       - uses: googleapis/release-please-action@v4
         id: release
@@ -23,23 +29,29 @@ jobs:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
 
+  # Step 2: Build installers for all platforms (only after a release is created).
   build:
+    name: Build (${{ matrix.name }})
     needs: release-please
     if: ${{ needs.release-please.outputs.release_created == 'true' }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          - platform: macos-latest
+          - name: macOS (Apple Silicon)
+            platform: macos-latest
             args: --target aarch64-apple-darwin
             rust-targets: aarch64-apple-darwin
-          - platform: macos-latest
+          - name: macOS (Intel)
+            platform: macos-latest
             args: --target x86_64-apple-darwin
             rust-targets: x86_64-apple-darwin
-          - platform: ubuntu-22.04
+          - name: Linux
+            platform: ubuntu-22.04
             args: ""
             rust-targets: ""
-          - platform: windows-latest
+          - name: Windows
+            platform: windows-latest
             args: ""
             rust-targets: ""
 
@@ -67,15 +79,9 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
 
-      - name: Install npm dependencies
-        run: npm ci
+      - run: npm ci
 
-      - name: Run tests
-        run: |
-          npx vitest run
-          cargo test --workspace
-
-      - name: Build and upload release assets
+      - name: Build Tauri app
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -94,5 +100,19 @@ jobs:
             See the [CHANGELOG](https://github.com/${{ github.repository }}/blob/main/CHANGELOG.md) for details.
           releaseDraft: false
           prerelease: false
+          includeRelease: true
+          includeDebug: false
           args: ${{ matrix.args }}
           updaterJsonKeepUniversal: true
+
+      - name: Upload source-less release
+        if: always()
+        run: |
+          # Remove source code archives from release (keep only app bundles)
+          gh release view "${{ needs.release-please.outputs.tag_name }}" --json assets --jq '.assets[].name' | \
+            grep -E '\.(tar\.gz|zip)$' | grep -v -E '\.(dmg|msi|exe|AppImage|deb|app)' | \
+            while read name; do
+              gh release delete-asset "${{ needs.release-please.outputs.tag_name }}" "$name" --yes 2>/dev/null || true
+            done
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

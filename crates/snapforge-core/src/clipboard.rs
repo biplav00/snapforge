@@ -34,7 +34,7 @@ pub fn copy_image_to_clipboard(image: &RgbaImage) -> Result<(), ClipboardError> 
 
     #[cfg(target_os = "windows")]
     {
-        copy_png_to_clipboard_win(&png_bytes)?;
+        copy_png_to_clipboard_win(image)?;
     }
 
     #[cfg(target_os = "linux")]
@@ -80,62 +80,19 @@ fn copy_png_to_pasteboard(png_bytes: &[u8]) -> Result<(), ClipboardError> {
 /// Write PNG to clipboard on Windows using clipboard-win (direct Win32 API).
 /// Decodes PNG to a DIB bitmap and sets it via the Win32 clipboard API.
 #[cfg(target_os = "windows")]
-fn copy_png_to_clipboard_win(png_bytes: &[u8]) -> Result<(), ClipboardError> {
-    use clipboard_win::{formats, set_clipboard};
+fn copy_png_to_clipboard_win(image: &RgbaImage) -> Result<(), ClipboardError> {
+    let mut clipboard =
+        arboard::Clipboard::new().map_err(|e| ClipboardError::AccessFailed(e.to_string()))?;
 
-    // Decode PNG to raw RGBA pixels, then convert to a BMP/DIB for the clipboard.
-    // clipboard-win's Bitmap format expects a top-down DIB without file header.
-    let img = image::load_from_memory_with_format(png_bytes, image::ImageFormat::Png)
-        .map_err(|e| ClipboardError::SetFailed(format!("PNG decode failed: {}", e)))?;
-    let rgba = img.to_rgba8();
-    let width = rgba.width();
-    let height = rgba.height();
+    let img_data = arboard::ImageData {
+        width: image.width() as usize,
+        height: image.height() as usize,
+        bytes: std::borrow::Cow::Borrowed(image.as_raw()),
+    };
 
-    // Build a BITMAPV5HEADER (124 bytes) for a top-down 32-bit BGRA DIB
-    let header_size: u32 = 124;
-    let row_size = (width * 4) as usize;
-    let pixel_size = row_size * height as usize;
-    let mut dib = Vec::with_capacity(header_size as usize + pixel_size);
-
-    // BITMAPV5HEADER
-    dib.extend_from_slice(&header_size.to_le_bytes()); // biSize
-    dib.extend_from_slice(&(width as i32).to_le_bytes()); // biWidth
-    dib.extend_from_slice(&(-(height as i32)).to_le_bytes()); // biHeight (negative = top-down)
-    dib.extend_from_slice(&1u16.to_le_bytes()); // biPlanes
-    dib.extend_from_slice(&32u16.to_le_bytes()); // biBitCount
-    dib.extend_from_slice(&3u32.to_le_bytes()); // biCompression = BI_BITFIELDS
-    dib.extend_from_slice(&(pixel_size as u32).to_le_bytes()); // biSizeImage
-    dib.extend_from_slice(&0i32.to_le_bytes()); // biXPelsPerMeter
-    dib.extend_from_slice(&0i32.to_le_bytes()); // biYPelsPerMeter
-    dib.extend_from_slice(&0u32.to_le_bytes()); // biClrUsed
-    dib.extend_from_slice(&0u32.to_le_bytes()); // biClrImportant
-                                                // Color masks: R, G, B, A
-    dib.extend_from_slice(&0x00FF0000u32.to_le_bytes()); // bV5RedMask
-    dib.extend_from_slice(&0x0000FF00u32.to_le_bytes()); // bV5GreenMask
-    dib.extend_from_slice(&0x000000FFu32.to_le_bytes()); // bV5BlueMask
-    dib.extend_from_slice(&0xFF000000u32.to_le_bytes()); // bV5AlphaMask
-    dib.extend_from_slice(&0x73524742u32.to_le_bytes()); // bV5CSType = LCS_sRGB
-                                                         // CIEXYZTRIPLE (36 bytes of zeros)
-    dib.extend_from_slice(&[0u8; 36]);
-    // Gamma values (3 × 4 bytes of zeros)
-    dib.extend_from_slice(&[0u8; 12]);
-    dib.extend_from_slice(&4u32.to_le_bytes()); // bV5Intent = LCS_GM_IMAGES
-    dib.extend_from_slice(&0u32.to_le_bytes()); // bV5ProfileData
-    dib.extend_from_slice(&0u32.to_le_bytes()); // bV5ProfileSize
-    dib.extend_from_slice(&0u32.to_le_bytes()); // bV5Reserved
-
-    // Write pixel data as BGRA
-    for pixel in rgba.pixels() {
-        dib.push(pixel[2]); // B
-        dib.push(pixel[1]); // G
-        dib.push(pixel[0]); // R
-        dib.push(pixel[3]); // A
-    }
-
-    set_clipboard(formats::CF_DIB, &dib)
-        .map_err(|e| ClipboardError::SetFailed(format!("Win32 clipboard failed: {}", e)))?;
-
-    Ok(())
+    clipboard
+        .set_image(img_data)
+        .map_err(|e| ClipboardError::SetFailed(e.to_string()))
 }
 
 /// Write PNG to clipboard on Linux using xclip or wl-copy.
