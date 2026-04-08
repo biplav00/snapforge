@@ -14,6 +14,28 @@ pub enum FormatError {
     Unsupported(String),
 }
 
+/// Encode an RgbaImage to PNG with fastest compression (for IPC/preview, not saving).
+pub fn encode_image_fast(image: &RgbaImage) -> Result<Vec<u8>, FormatError> {
+    let (w, h) = (image.width(), image.height());
+    let mut buf = Vec::with_capacity((w * h * 4) as usize);
+    {
+        let encoder = image::codecs::png::PngEncoder::new_with_quality(
+            &mut buf,
+            image::codecs::png::CompressionType::Fast,
+            image::codecs::png::FilterType::NoFilter,
+        );
+        image::ImageEncoder::write_image(
+            encoder,
+            image.as_raw(),
+            w,
+            h,
+            image::ExtendedColorType::Rgba8,
+        )
+        .map_err(|e| FormatError::EncodeFailed(e.to_string()))?;
+    }
+    Ok(buf)
+}
+
 /// Encode an RgbaImage to bytes in the given format.
 pub fn encode_image(
     image: &RgbaImage,

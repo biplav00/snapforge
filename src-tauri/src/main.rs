@@ -124,12 +124,7 @@ fn pre_capture_all_displays(app: &AppHandle) {
             .map(|i| {
                 s.spawn(move || -> Option<(usize, String)> {
                     let image = snapforge_core::capture::capture_fullscreen(i).ok()?;
-                    let bytes = snapforge_core::format::encode_image(
-                        &image,
-                        snapforge_core::types::CaptureFormat::Png,
-                        90,
-                    )
-                    .ok()?;
+                    let bytes = snapforge_core::format::encode_image_fast(&image).ok()?;
                     let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
                     Some((i, b64))
                 })

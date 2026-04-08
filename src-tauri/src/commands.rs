@@ -76,9 +76,7 @@ pub fn get_pre_captured_screen(
 pub fn capture_screen(display: usize) -> Result<String, String> {
     let image = snapforge_core::capture::capture_fullscreen(display).map_err(|e| e.to_string())?;
 
-    let bytes =
-        snapforge_core::format::encode_image(&image, snapforge_core::types::CaptureFormat::Png, 90)
-            .map_err(|e| e.to_string())?;
+    let bytes = snapforge_core::format::encode_image_fast(&image).map_err(|e| e.to_string())?;
 
     Ok(STANDARD.encode(&bytes))
 }
