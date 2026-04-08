@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.0](https://github.com/biplav00/snapforge/compare/v1.1.0...v1.2.0) (2026-04-08)
+
+
+### Features
+
+* performance optimization + streamlined CI ([80876c9](https://github.com/biplav00/snapforge/commit/80876c9338cae7f24d11e74e0c150c5cbdc0d152))
+
+
+### Bug Fixes
+
+* CI build — fix Windows clipboard, remove source archives from releases ([aa5ae37](https://github.com/biplav00/snapforge/commit/aa5ae3785e795ac811f1fa67882cb794d6bbb10d))
+* streamline CI pipeline — parallel jobs, build checks, no duplication ([163a470](https://github.com/biplav00/snapforge/commit/163a47041716c76058a356e396feb6e0ce825890))
+
 ## [1.1.0](https://github.com/biplav00/snapforge/compare/v1.0.0...v1.1.0) (2026-04-08)
 
 
