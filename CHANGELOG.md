@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.0](https://github.com/biplav00/snapforge/compare/v1.0.0...v1.1.0) (2026-04-08)
+
+
+### Features
+
+* performance optimization — native clipboard, parallel capture, RAF canvas ([b9ab11d](https://github.com/biplav00/snapforge/commit/b9ab11dc0222f87a0194259074c567f781a4b59a))
+* performance optimization — native clipboard, parallel capture, RAF canvas, async history ([b185713](https://github.com/biplav00/snapforge/commit/b1857137bb714c819c27dd1e62513ac136ac9850))
+
+
+### Bug Fixes
+
+* build apps in release-please workflow instead of tag-triggered workflow ([86a496a](https://github.com/biplav00/snapforge/commit/86a496a2b98f0f06476c33801d255e58160e7617))
+
 ## 1.0.0 (2026-04-08)
 
 
