@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.0](https://github.com/biplav00/snapforge/compare/v1.2.4...v1.3.0) (2026-04-08)
+
+
+### Features
+
+* add Windows build (.msi + .exe) to release pipeline ([42c28ca](https://github.com/biplav00/snapforge/commit/42c28ca72a6bf8059c5acf34472ee605a8902422))
+
+
+### Bug Fixes
+
+* remove Intel build, ARM64 only ([c37a455](https://github.com/biplav00/snapforge/commit/c37a455ffdc13519f285a207bec7ac7ca07a65a0))
+
+
+### Performance Improvements
+
+* app runtime optimizations for production ([e9a3355](https://github.com/biplav00/snapforge/commit/e9a33550a79305bc93361f3d50c5feae88753bfb))
+* instant overlay + fix tray quit ([7d2866c](https://github.com/biplav00/snapforge/commit/7d2866cdabbc2a8cf636a4b8b8a50d44e12cceb4))
+* pre-warm webview at startup for instant overlay ([f6b3bfc](https://github.com/biplav00/snapforge/commit/f6b3bfc572b328a82ba861d57a2a07e28f414cf4))
+* speed up CI builds — incremental compilation, thin LTO, shared cache keys ([0987e31](https://github.com/biplav00/snapforge/commit/0987e318a8cd2dc1199edaa76adc1a7da1632925))
+
 ## [1.2.4](https://github.com/biplav00/snapforge/compare/v1.2.3...v1.2.4) (2026-04-08)
 
 
