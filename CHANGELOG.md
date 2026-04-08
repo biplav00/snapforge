@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.3](https://github.com/biplav00/snapforge/compare/v1.2.2...v1.2.3) (2026-04-08)
+
+
+### Bug Fixes
+
+* overhaul CI pipeline — direct dmg build, no tauri-action ([4b7956e](https://github.com/biplav00/snapforge/commit/4b7956e18aac30ad45d8c3d1352a575c82241f59))
+
 ## [1.2.2](https://github.com/biplav00/snapforge/compare/v1.2.1...v1.2.2) (2026-04-08)
 
 
