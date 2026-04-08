@@ -62,12 +62,19 @@ $effect(() => {
     }
   }
 
-  // Load pre-captured screenshot
-  invoke<string>("get_pre_captured_screen", { display })
-    .then((b64) => {
-      screenshotBase64 = b64;
-    })
-    .catch(() => {});
+  // Load pre-captured screenshot (may not be ready yet — retry)
+  async function loadPreCapture() {
+    for (let attempt = 0; attempt < 20; attempt++) {
+      try {
+        const b64 = await invoke<string>("get_pre_captured_screen", { display });
+        screenshotBase64 = b64;
+        return;
+      } catch {
+        await new Promise((r) => setTimeout(r, 50));
+      }
+    }
+  }
+  loadPreCapture();
 });
 
 // Drag/resize state
@@ -318,17 +325,20 @@ function enterAnnotateMode() {
   }
 }
 
-/** Hide overlay, wait for it to disappear, capture screen, return base64. */
+/** Get pre-captured screenshot, polling briefly if background capture isn't done yet. */
 async function captureWithOverlayHidden(): Promise<string> {
-  try {
-    const preCaptured = await invoke<string>("get_pre_captured_screen", { display });
-    return preCaptured;
-  } catch {
-    await appWindow.hide();
-    await new Promise((r) => setTimeout(r, 200));
-    const screenshot = await invoke<string>("capture_screen", { display });
-    return screenshot;
+  // Try up to 10 times (500ms max) for pre-capture to finish
+  for (let i = 0; i < 10; i++) {
+    try {
+      return await invoke<string>("get_pre_captured_screen", { display });
+    } catch {
+      await new Promise((r) => setTimeout(r, 50));
+    }
   }
+  // Final fallback: hide overlay, capture fresh
+  await appWindow.hide();
+  await new Promise((r) => setTimeout(r, 100));
+  return await invoke<string>("capture_screen", { display });
 }
 
 function handleKeydown(e: KeyboardEvent) {
