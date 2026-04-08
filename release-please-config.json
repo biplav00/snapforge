@@ -6,10 +6,26 @@
       "bump-minor-pre-major": true,
       "bump-patch-for-minor-pre-major": true,
       "extra-files": [
-        "src-tauri/tauri.conf.json",
-        "src-tauri/Cargo.toml",
-        "crates/snapforge-core/Cargo.toml",
-        "cli/Cargo.toml"
+        {
+          "type": "json",
+          "path": "src-tauri/tauri.conf.json",
+          "jsonpath": "$.version"
+        },
+        {
+          "type": "toml",
+          "path": "src-tauri/Cargo.toml",
+          "key": "package.version"
+        },
+        {
+          "type": "toml",
+          "path": "crates/snapforge-core/Cargo.toml",
+          "key": "package.version"
+        },
+        {
+          "type": "toml",
+          "path": "cli/Cargo.toml",
+          "key": "package.version"
+        }
       ]
     }
   },
