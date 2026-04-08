@@ -11,21 +11,9 @@
           "path": "src-tauri/tauri.conf.json",
           "jsonpath": "$.version"
         },
-        {
-          "type": "toml",
-          "path": "src-tauri/Cargo.toml",
-          "key": "package.version"
-        },
-        {
-          "type": "toml",
-          "path": "crates/snapforge-core/Cargo.toml",
-          "key": "package.version"
-        },
-        {
-          "type": "toml",
-          "path": "cli/Cargo.toml",
-          "key": "package.version"
-        }
+        "src-tauri/Cargo.toml",
+        "crates/snapforge-core/Cargo.toml",
+        "cli/Cargo.toml"
       ]
     }
   },
