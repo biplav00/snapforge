@@ -28,17 +28,9 @@ jobs:
           manifest-file: .release-please-manifest.json
 
   build:
-    name: macOS (${{ matrix.arch }})
+    name: macOS ARM64
     needs: release-please
     if: needs.release-please.outputs.released == 'true'
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - arch: ARM64
-            target: aarch64-apple-darwin
-          - arch: Intel
-            target: x86_64-apple-darwin
     runs-on: macos-latest
     env:
       CARGO_INCREMENTAL: 1
@@ -49,19 +41,19 @@ jobs:
       - uses: actions/setup-node@v6
         with: { node-version: 20, cache: npm }
       - uses: dtolnay/rust-toolchain@stable
-        with: { targets: ${{ matrix.target }} }
+        with: { targets: aarch64-apple-darwin }
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: "src-tauri -> target"
-          shared-key: release-${{ matrix.target }}
+          shared-key: release-arm64
           save-if: true
       - run: npm ci
       - run: npm run build
       - name: Build .dmg
-        run: npx tauri build --target ${{ matrix.target }} --bundles dmg
+        run: npx tauri build --target aarch64-apple-darwin --bundles dmg
       - name: Upload to release
         run: |
-          DMG=$(find target/${{ matrix.target }}/release/bundle/dmg -name "*.dmg" | head -1)
+          DMG=$(find target/aarch64-apple-darwin/release/bundle/dmg -name "*.dmg" | head -1)
           [ -n "$DMG" ] && gh release upload "${{ needs.release-please.outputs.tag }}" "$DMG" --clobber || (echo "No .dmg found" && exit 1)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
