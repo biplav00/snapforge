@@ -10,8 +10,23 @@ extern "C" {
 }
 
 /// Check if screen recording permission is granted.
+/// Uses CGPreflightScreenCaptureAccess first, then falls back to
+/// a test capture to verify (preflight can return stale results).
 pub fn has_screen_capture_permission() -> bool {
-    unsafe { CGPreflightScreenCaptureAccess() }
+    if unsafe { CGPreflightScreenCaptureAccess() } {
+        return true;
+    }
+    // Preflight may return false even when granted (e.g. after app rebuild).
+    // Try a real capture as a fallback check.
+    let ids = active_display_ids();
+    if let Some(&id) = ids.first() {
+        let display = CGDisplay::new(id);
+        if let Some(img) = display.image() {
+            // If we get a non-trivial image, permission is granted
+            return img.width() > 1 && img.height() > 1;
+        }
+    }
+    false
 }
 
 /// Request screen recording permission. Returns true if granted.
