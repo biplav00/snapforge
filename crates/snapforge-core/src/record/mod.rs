@@ -103,3 +103,78 @@ pub fn find_ffmpeg(provided_path: Option<&PathBuf>) -> Result<PathBuf, RecordErr
 pub fn check_ffmpeg() -> Result<(), RecordError> {
     find_ffmpeg(None).map(|_| ())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_record_config_defaults() {
+        let config = RecordConfig {
+            display: 0,
+            region: None,
+            output_path: std::path::PathBuf::from("/tmp/test.mp4"),
+            format: crate::config::RecordingFormat::Mp4,
+            fps: 30,
+            quality: crate::config::RecordingQuality::Medium,
+            ffmpeg_path: None,
+        };
+        assert_eq!(config.fps, 30);
+        assert!(config.region.is_none());
+    }
+
+    #[test]
+    fn test_record_config_with_region() {
+        let config = RecordConfig {
+            display: 0,
+            region: Some(Rect {
+                x: 100,
+                y: 100,
+                width: 800,
+                height: 600,
+            }),
+            output_path: std::path::PathBuf::from("/tmp/test.mp4"),
+            format: crate::config::RecordingFormat::Mp4,
+            fps: 30,
+            quality: crate::config::RecordingQuality::High,
+            ffmpeg_path: None,
+        };
+        assert!(config.region.is_some());
+        let r = config.region.unwrap();
+        assert_eq!(r.width, 800);
+        assert_eq!(r.height, 600);
+    }
+
+    #[test]
+    fn test_find_ffmpeg_system_path() {
+        // This may fail in environments without ffmpeg, but should not panic
+        let result = find_ffmpeg(None);
+        // We just verify it returns a result (Ok or Err), no panic
+        let _ = result;
+    }
+
+    #[test]
+    fn test_find_ffmpeg_nonexistent_path() {
+        let bad_path = std::path::PathBuf::from("/nonexistent/ffmpeg");
+        let result = find_ffmpeg(Some(&bad_path));
+        // Should fall through to system PATH search, not panic
+        let _ = result;
+    }
+
+    #[test]
+    fn test_check_ffmpeg() {
+        // Should not panic regardless of whether ffmpeg is installed
+        let _ = check_ffmpeg();
+    }
+
+    #[test]
+    fn test_record_error_display() {
+        let err = RecordError::FfmpegNotFound;
+        let msg = format!("{}", err);
+        assert!(msg.contains("ffmpeg"));
+
+        let err = RecordError::NotActive;
+        let msg = format!("{}", err);
+        assert!(msg.contains("not active"));
+    }
+}

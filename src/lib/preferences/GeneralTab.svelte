@@ -1,10 +1,26 @@
 <script lang="ts">
-  interface Props {
-    config: Record<string, unknown>;
-    onChange: (key: string, value: unknown) => void;
-  }
+interface Props {
+  config: Record<string, unknown>;
+  onChange: (key: string, value: unknown) => void;
+}
 
-  let { config, onChange }: Props = $props();
+let { config, onChange }: Props = $props();
+
+let dirError = $state("");
+
+function validateAndSetDir(value: string) {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    dirError = "Directory cannot be empty";
+    return;
+  }
+  if (!trimmed.startsWith("/") && !trimmed.match(/^[A-Z]:\\/i) && !trimmed.startsWith("~")) {
+    dirError = "Must be an absolute path";
+    return;
+  }
+  dirError = "";
+  onChange("save_directory", trimmed);
+}
 </script>
 
 <div class="tab-content">
@@ -13,9 +29,13 @@
     <input
       id="save-dir"
       type="text"
+      class:invalid={!!dirError}
       value={config.save_directory as string}
-      onchange={(e) => onChange("save_directory", (e.target as HTMLInputElement).value)}
+      onchange={(e) => validateAndSetDir((e.target as HTMLInputElement).value)}
     />
+    {#if dirError}
+      <span class="field-error">{dirError}</span>
+    {/if}
   </div>
 
   <div class="divider"></div>
@@ -61,6 +81,9 @@
     font-size: 13px; font-family: monospace; background: var(--bg-input); color: var(--text);
   }
   input[type="text"]:focus { outline: none; border-color: var(--accent); background: var(--bg-input-focus); }
+  input[type="text"].invalid { border-color: #ff4444; }
+
+  .field-error { font-size: 11px; color: #ff4444; margin-top: 2px; }
 
   .divider { height: 1px; background: var(--border-light); margin: 4px 0; }
 

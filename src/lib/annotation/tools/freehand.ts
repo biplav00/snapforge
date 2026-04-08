@@ -1,4 +1,4 @@
-import type { Tool, AnnotationState, Annotation, FreehandAnnotation } from "./types.ts";
+import type { Annotation, AnnotationState, FreehandAnnotation, Tool } from "./types.ts";
 import { generateId } from "./types.ts";
 
 export const freehandTool: Tool = {

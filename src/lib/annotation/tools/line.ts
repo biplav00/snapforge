@@ -1,4 +1,4 @@
-import type { Tool, AnnotationState, Annotation, LineAnnotation } from "./types.ts";
+import type { Annotation, AnnotationState, LineAnnotation, Tool } from "./types.ts";
 import { generateId } from "./types.ts";
 
 export const lineTool: Tool = {

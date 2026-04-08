@@ -1,39 +1,44 @@
 <script lang="ts">
-  import { invoke } from "@tauri-apps/api/core";
-  import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
+import { invoke } from "@tauri-apps/api/core";
+import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
+import { onDestroy } from "svelte";
 
-  import { onDestroy } from "svelte";
+let elapsed = $state(0);
+let stopping = $state(false);
 
-  let elapsed = $state(0);
+const appWindow = getCurrentWebviewWindow();
 
-  const appWindow = getCurrentWebviewWindow();
+function formatTime(seconds: number): string {
+  const m = Math.floor(seconds / 60);
+  const s = seconds % 60;
+  return `${m.toString().padStart(2, "0")}:${s.toString().padStart(2, "0")}`;
+}
 
-  function formatTime(seconds: number): string {
-    const m = Math.floor(seconds / 60);
-    const s = seconds % 60;
-    return `${m.toString().padStart(2, "0")}:${s.toString().padStart(2, "0")}`;
+async function stopRecording() {
+  if (stopping) return;
+  stopping = true;
+  try {
+    await invoke("stop_recording");
+    await invoke("show_toast", { message: "Recording saved!" });
+  } catch (e) {
+    console.error("Failed to stop:", e);
   }
+  appWindow.close();
+}
 
-  async function stopRecording() {
-    try {
-      await invoke("stop_recording");
-    } catch (e) {
-      console.error("Failed to stop:", e);
-    }
-    appWindow.close();
-  }
+const interval = setInterval(() => {
+  elapsed += 1;
+}, 1000);
 
-  const interval = setInterval(() => {
-    elapsed += 1;
-  }, 1000);
-
-  onDestroy(() => clearInterval(interval));
+onDestroy(() => clearInterval(interval));
 </script>
 
 <div class="indicator">
   <div class="dot"></div>
   <span class="time">{formatTime(elapsed)}</span>
-  <button class="stop-btn" onclick={stopRecording}>■ Stop</button>
+  <button class="stop-btn" onclick={stopRecording} disabled={stopping}>
+    {stopping ? "Saving..." : "■ Stop"}
+  </button>
 </div>
 
 <style>
@@ -47,7 +52,7 @@
     border-radius: 20px;
     padding: 6px 14px;
     font-family: system-ui, sans-serif;
-    cursor: default;
+    cursor: grab;
     user-select: none;
     -webkit-app-region: drag;
   }
@@ -87,5 +92,10 @@
   .stop-btn:hover {
     background: rgba(255, 60, 60, 0.4);
     color: white;
+  }
+
+  .stop-btn:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
   }
 </style>

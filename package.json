@@ -16,27 +16,42 @@
     "format": "biome format --write src/",
     "format:check": "biome format src/",
     "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "test:coverage:rust": "cargo llvm-cov --workspace --lcov --output-path lcov-rust.info",
+    "test:all": "vitest run && cargo test",
     "check": "biome check src/ && tsc --noEmit",
     "prepare": "husky"
   },
   "keywords": [],
   "author": "",
-  "license": "ISC",
+  "license": "MIT",
   "type": "module",
   "devDependencies": {
     "@biomejs/biome": "^2.4.10",
     "@sveltejs/vite-plugin-svelte": "^7.0.0",
+    "@vitest/coverage-v8": "^4.1.3",
     "husky": "^9.1.7",
+    "jsdom": "^29.0.2",
     "lint-staged": "^16.4.0",
     "svelte": "^5.55.1",
     "typescript": "^6.0.2",
-    "vite": "^8.0.3"
+    "vite": "^8.0.3",
+    "vitest": "^4.1.3"
   },
   "lint-staged": {
-    "src/**/*.{ts,svelte}": ["biome check --fix", "biome format --write"]
+    "src/**/*.{ts,svelte}": [
+      "biome check --fix",
+      "biome format --write"
+    ],
+    "src/**/*.test.ts": [
+      "vitest related --run"
+    ]
   },
   "dependencies": {
     "@tauri-apps/api": "^2.10.1",
-    "@tauri-apps/plugin-shell": "^2.3.5"
+    "@tauri-apps/plugin-shell": "^2.3.5",
+    "@tauri-apps/plugin-updater": "^2.10.1"
   }
 }

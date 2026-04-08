@@ -1,55 +1,64 @@
 <script lang="ts">
-  import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
-  import RegionSelector from "./RegionSelector.svelte";
+import { invoke } from "@tauri-apps/api/core";
+import { emit, listen } from "@tauri-apps/api/event";
+import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
+import RegionSelector from "./RegionSelector.svelte";
 
-  let saved = $state(false);
-  let savedMessage = $state("");
+const appWindow = getCurrentWebviewWindow();
 
-  const appWindow = getCurrentWebviewWindow();
+const urlParams = new URLSearchParams(window.location.search);
+const overlayPurpose: "screenshot" | "record" =
+  urlParams.get("mode") === "record" ? "record" : "screenshot";
+const displayIndex = Number(urlParams.get("display") ?? "0");
 
-  // Determine overlay purpose from URL query param
-  const urlParams = new URLSearchParams(window.location.search);
-  const overlayPurpose: "screenshot" | "record" = urlParams.get("mode") === "record" ? "record" : "screenshot";
+// Listen for signals from sibling overlays
+listen("overlay-done", () => {
+  appWindow.close();
+});
+listen("overlay-cancel", () => {
+  appWindow.close();
+});
 
-  function handleCancel() {
-    appWindow.close();
+function handleCancel() {
+  emit("overlay-cancel");
+  appWindow.close();
+}
+
+function handleKeydown(event: KeyboardEvent) {
+  if (event.key === "Escape") {
+    handleCancel();
   }
+}
 
-  function handleKeydown(event: KeyboardEvent) {
-    if (event.key === "Escape") {
-      handleCancel();
-    }
-  }
+function handleSaved(path: string) {
+  invoke("show_toast", { message: `Saved to: ${path}` });
+  emit("overlay-done");
+  appWindow.close();
+}
 
-  function handleSaved(path: string) {
-    saved = true;
-    savedMessage = `Saved to: ${path}`;
-    setTimeout(() => appWindow.close(), 800);
-  }
+function handleCopied() {
+  invoke("show_toast", { message: "Copied to clipboard!" });
+  emit("overlay-done");
+  appWindow.close();
+}
 
-  function handleCopied() {
-    // Don't close — stay in annotation mode (handled by RegionSelector toast)
-  }
-
-  function handleRecordingStarted(path: string) {
-    appWindow.close();
-  }
+function handleRecordingStarted(path: string) {
+  emit("overlay-done");
+  appWindow.close();
+}
 </script>
 
 <svelte:window onkeydown={handleKeydown} />
 
 <div class="overlay">
-  {#if saved}
-    <div class="status-msg success">{savedMessage}</div>
-  {:else}
-    <RegionSelector
-      purpose={overlayPurpose}
-      onSave={handleSaved}
-      onCopy={handleCopied}
-      onRecordingStarted={handleRecordingStarted}
-      onCancel={handleCancel}
-    />
-  {/if}
+  <RegionSelector
+    purpose={overlayPurpose}
+    display={displayIndex}
+    onSave={handleSaved}
+    onCopy={handleCopied}
+    onRecordingStarted={handleRecordingStarted}
+    onCancel={handleCancel}
+  />
 </div>
 
 <style>
@@ -61,17 +70,4 @@
     height: 100vh;
     overflow: hidden;
   }
-
-  .status-msg {
-    position: absolute;
-    top: 50%;
-    left: 50%;
-    transform: translate(-50%, -50%);
-    color: white;
-    font-size: 24px;
-    font-family: system-ui, sans-serif;
-    text-shadow: 0 2px 4px rgba(0, 0, 0, 0.5);
-  }
-
-  .success { color: #44ff44; }
 </style>

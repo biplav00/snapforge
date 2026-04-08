@@ -26,22 +26,6 @@ pub fn register_hotkeys(app: &AppHandle) -> tauri::Result<()> {
             });
     }
 
-    // Register last-region hotkey
-    if let Ok(shortcut) = config
-        .hotkey_bindings
-        .capture_last_region
-        .parse::<Shortcut>()
-    {
-        let app_handle = app.clone();
-        let _ = app
-            .global_shortcut()
-            .on_shortcut(shortcut, move |_app, _shortcut, event| {
-                if event.state == ShortcutState::Pressed {
-                    crate::trigger_last_region(&app_handle);
-                }
-            });
-    }
-
     // Register record-screen hotkey
     if let Ok(shortcut) = config.hotkey_bindings.record_screen.parse::<Shortcut>() {
         let app_handle = app.clone();
@@ -50,6 +34,30 @@ pub fn register_hotkeys(app: &AppHandle) -> tauri::Result<()> {
             .on_shortcut(shortcut, move |_app, _shortcut, event| {
                 if event.state == ShortcutState::Pressed {
                     crate::trigger_recording(&app_handle);
+                }
+            });
+    }
+
+    // Register open-history hotkey
+    if let Ok(shortcut) = config.hotkey_bindings.open_history.parse::<Shortcut>() {
+        let app_handle = app.clone();
+        let _ = app
+            .global_shortcut()
+            .on_shortcut(shortcut, move |_app, _shortcut, event| {
+                if event.state == ShortcutState::Pressed {
+                    crate::open_history(&app_handle);
+                }
+            });
+    }
+
+    // Register open-preferences hotkey
+    if let Ok(shortcut) = config.hotkey_bindings.open_preferences.parse::<Shortcut>() {
+        let app_handle = app.clone();
+        let _ = app
+            .global_shortcut()
+            .on_shortcut(shortcut, move |_app, _shortcut, event| {
+                if event.state == ShortcutState::Pressed {
+                    crate::open_preferences(&app_handle);
                 }
             });
     }

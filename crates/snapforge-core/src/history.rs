@@ -1,0 +1,113 @@
+use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
+use thiserror::Error;
+
+const MAX_ENTRIES: usize = 100;
+
+#[derive(Debug, Error)]
+pub enum HistoryError {
+    #[error("history IO error: {0}")]
+    Io(#[from] std::io::Error),
+    #[error("failed to parse history: {0}")]
+    Parse(#[from] serde_json::Error),
+    #[error("image error: {0}")]
+    Image(#[from] image::ImageError),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HistoryEntry {
+    pub path: String,
+    pub timestamp: String,
+    pub thumbnail_path: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ScreenshotHistory {
+    pub entries: Vec<HistoryEntry>,
+}
+
+impl ScreenshotHistory {
+    /// Directory that holds history.json and the thumbnails/ subfolder.
+    fn history_dir() -> PathBuf {
+        dirs::config_dir()
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join("snapforge")
+    }
+
+    fn history_path() -> PathBuf {
+        Self::history_dir().join("history.json")
+    }
+
+    fn thumbnails_dir() -> PathBuf {
+        Self::history_dir().join("thumbnails")
+    }
+
+    pub fn load() -> Result<Self, HistoryError> {
+        let path = Self::history_path();
+        if !path.exists() {
+            return Ok(Self::default());
+        }
+        let contents = std::fs::read_to_string(&path)?;
+        let history: Self = serde_json::from_str(&contents)?;
+        Ok(history)
+    }
+
+    pub fn save(&self) -> Result<(), HistoryError> {
+        let path = Self::history_path();
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let contents = serde_json::to_string_pretty(self)?;
+        std::fs::write(&path, contents)?;
+        Ok(())
+    }
+
+    /// Add an entry for the screenshot at `image_path`, generating a 200px-wide thumbnail.
+    pub fn add_entry(&mut self, image_path: &str) -> Result<(), HistoryError> {
+        let thumb_dir = Self::thumbnails_dir();
+        std::fs::create_dir_all(&thumb_dir)?;
+
+        // Generate thumbnail
+        let img = image::open(image_path)?;
+        let thumb = img.thumbnail(200, 200);
+        let stem = std::path::Path::new(image_path)
+            .file_stem()
+            .unwrap_or_default()
+            .to_string_lossy();
+        let thumb_filename = format!("{}_thumb.png", stem);
+        let thumb_path = thumb_dir.join(&thumb_filename);
+        thumb.save(&thumb_path)?;
+
+        let timestamp = chrono::Local::now().to_rfc3339();
+
+        let entry = HistoryEntry {
+            path: image_path.to_string(),
+            timestamp,
+            thumbnail_path: thumb_path.display().to_string(),
+        };
+
+        self.entries.push(entry);
+
+        // Cap at MAX_ENTRIES, remove oldest first
+        if self.entries.len() > MAX_ENTRIES {
+            let excess = self.entries.len() - MAX_ENTRIES;
+            // Remove old thumbnail files
+            for old in self.entries.drain(..excess) {
+                let _ = std::fs::remove_file(&old.thumbnail_path);
+            }
+        }
+
+        self.save()?;
+        Ok(())
+    }
+
+    /// Clear all entries and remove thumbnail files.
+    pub fn clear(&mut self) -> Result<(), HistoryError> {
+        for entry in &self.entries {
+            let _ = std::fs::remove_file(&entry.thumbnail_path);
+        }
+        self.entries.clear();
+        self.save()?;
+        Ok(())
+    }
+}

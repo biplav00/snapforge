@@ -1,64 +1,66 @@
 <script lang="ts">
-  import { invoke } from "@tauri-apps/api/core";
-  import GeneralTab from "./GeneralTab.svelte";
-  import HotkeysTab from "./HotkeysTab.svelte";
-  import ScreenshotsTab from "./ScreenshotsTab.svelte";
-  import RecordingTab from "./RecordingTab.svelte";
+import { invoke } from "@tauri-apps/api/core";
+import GeneralTab from "./GeneralTab.svelte";
+import HotkeysTab from "./HotkeysTab.svelte";
+import RecordingTab from "./RecordingTab.svelte";
+import ScreenshotsTab from "./ScreenshotsTab.svelte";
 
-  let activeTab = $state("general");
-  let config = $state<Record<string, unknown> | null>(null);
-  let loadError = $state("");
-  let saving = $state(false);
-  let statusMessage = $state("");
-  let statusType = $state<"success" | "error">("success");
+let activeTab = $state("general");
+let config = $state<Record<string, unknown> | null>(null);
+let loadError = $state("");
+let saving = $state(false);
+let statusMessage = $state("");
+let statusType = $state<"success" | "error">("success");
 
-  const TABS = [
-    { id: "general", label: "General" },
-    { id: "hotkeys", label: "Hotkeys" },
-    { id: "screenshots", label: "Screenshots" },
-    { id: "recording", label: "Recording" },
-  ];
+const TABS = [
+  { id: "general", label: "General" },
+  { id: "hotkeys", label: "Hotkeys" },
+  { id: "screenshots", label: "Screenshots" },
+  { id: "recording", label: "Recording" },
+];
 
-  async function loadConfig() {
-    try {
-      const json = await invoke<string>("get_config");
-      config = JSON.parse(json);
-    } catch (e) {
-      console.error("Failed to load config:", e);
-      loadError = `Failed to load settings: ${e}`;
-    }
+async function loadConfig() {
+  try {
+    const json = await invoke<string>("get_config");
+    config = JSON.parse(json);
+  } catch (e) {
+    console.error("Failed to load config:", e);
+    loadError = `Failed to load settings: ${e}`;
   }
+}
 
-  function updateConfig(key: string, value: unknown) {
-    if (!config) return;
-    config = { ...config, [key]: value };
+function updateConfig(key: string, value: unknown) {
+  if (!config) return;
+  config = { ...config, [key]: value };
+}
+
+function updateHotkeyBinding(action: string, binding: string) {
+  if (!config) return;
+  const bindings = { ...(config.hotkey_bindings as Record<string, string>) };
+  bindings[action] = binding;
+  config = { ...config, hotkey_bindings: bindings };
+}
+
+async function saveConfig() {
+  if (!config || saving) return;
+  saving = true;
+  statusMessage = "";
+  try {
+    await invoke("save_config", { configJson: JSON.stringify(config) });
+    await invoke("reload_hotkeys");
+    statusMessage = "Settings saved!";
+    statusType = "success";
+    setTimeout(() => {
+      statusMessage = "";
+    }, 2500);
+  } catch (e) {
+    statusMessage = `Error: ${e}`;
+    statusType = "error";
   }
+  saving = false;
+}
 
-  function updateHotkeyBinding(action: string, binding: string) {
-    if (!config) return;
-    const bindings = { ...(config.hotkey_bindings as Record<string, string>) };
-    bindings[action] = binding;
-    config = { ...config, hotkey_bindings: bindings };
-  }
-
-  async function saveConfig() {
-    if (!config || saving) return;
-    saving = true;
-    statusMessage = "";
-    try {
-      await invoke("save_config", { configJson: JSON.stringify(config) });
-      await invoke("reload_hotkeys");
-      statusMessage = "Settings saved!";
-      statusType = "success";
-      setTimeout(() => { statusMessage = ""; }, 2500);
-    } catch (e) {
-      statusMessage = `Error: ${e}`;
-      statusType = "error";
-    }
-    saving = false;
-  }
-
-  loadConfig();
+loadConfig();
 </script>
 
 <main>

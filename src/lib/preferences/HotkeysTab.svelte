@@ -1,82 +1,146 @@
 <script lang="ts">
-  interface Props {
-    bindings: Record<string, string>;
-    onChangeBinding: (action: string, newBinding: string) => void;
+interface Props {
+  bindings: Record<string, string>;
+  onChangeBinding: (action: string, newBinding: string) => void;
+}
+
+let { bindings, onChangeBinding }: Props = $props();
+
+let recording = $state<string | null>(null);
+
+interface HotkeyEntry {
+  id: string;
+  label: string;
+}
+
+const GLOBAL_ACTIONS: HotkeyEntry[] = [
+  { id: "screenshot", label: "Screenshot" },
+  { id: "capture_last_region", label: "Capture Last Region" },
+  { id: "record_screen", label: "Record Screen" },
+  { id: "open_history", label: "Open History" },
+  { id: "open_preferences", label: "Open Preferences" },
+];
+
+const TOOL_ACTIONS: HotkeyEntry[] = [
+  { id: "tool_arrow", label: "Arrow" },
+  { id: "tool_rect", label: "Rectangle" },
+  { id: "tool_circle", label: "Circle" },
+  { id: "tool_line", label: "Line" },
+  { id: "tool_dottedline", label: "Dotted Line" },
+  { id: "tool_freehand", label: "Freehand" },
+  { id: "tool_text", label: "Text" },
+  { id: "tool_highlight", label: "Highlight" },
+  { id: "tool_blur", label: "Blur" },
+  { id: "tool_steps", label: "Step Numbers" },
+  { id: "tool_callout", label: "Callout" },
+  { id: "tool_colorpicker", label: "Color Picker" },
+  { id: "tool_measure", label: "Measurement" },
+];
+
+const SIZE_ACTIONS: HotkeyEntry[] = [
+  { id: "size_small", label: "Small" },
+  { id: "size_medium", label: "Medium" },
+  { id: "size_large", label: "Large" },
+];
+
+const OVERLAY_ACTIONS: HotkeyEntry[] = [
+  { id: "action_save", label: "Save" },
+  { id: "action_copy", label: "Copy to Clipboard" },
+  { id: "action_undo", label: "Undo" },
+  { id: "action_redo", label: "Redo" },
+  { id: "action_cancel", label: "Cancel" },
+];
+
+let conflictMsg = $state("");
+
+function startRecording(action: string) {
+  recording = action;
+  conflictMsg = "";
+}
+function cancelRecording() {
+  recording = null;
+  conflictMsg = "";
+}
+
+/** Find which action already uses a given binding string. */
+function findConflict(newBinding: string, excludeAction: string): string | null {
+  const allActions = [...GLOBAL_ACTIONS, ...TOOL_ACTIONS, ...SIZE_ACTIONS, ...OVERLAY_ACTIONS];
+  for (const a of allActions) {
+    if (a.id !== excludeAction && bindings[a.id] === newBinding) {
+      return a.label;
+    }
   }
+  return null;
+}
 
-  let { bindings, onChangeBinding }: Props = $props();
-
-  let recording = $state<string | null>(null);
-
-  interface HotkeyEntry { id: string; label: string; }
-
-  const GLOBAL_ACTIONS: HotkeyEntry[] = [
-    { id: "screenshot", label: "Screenshot" },
-    { id: "capture_last_region", label: "Capture Last Region" },
-    { id: "record_screen", label: "Record Screen" },
-  ];
-
-  const TOOL_ACTIONS: HotkeyEntry[] = [
-    { id: "tool_arrow", label: "Arrow" },
-    { id: "tool_rect", label: "Rectangle" },
-    { id: "tool_circle", label: "Circle" },
-    { id: "tool_line", label: "Line" },
-    { id: "tool_freehand", label: "Freehand" },
-    { id: "tool_text", label: "Text" },
-    { id: "tool_highlight", label: "Highlight" },
-    { id: "tool_blur", label: "Blur" },
-    { id: "tool_steps", label: "Step Numbers" },
-    { id: "tool_colorpicker", label: "Color Picker" },
-    { id: "tool_measure", label: "Measurement" },
-  ];
-
-  const OVERLAY_ACTIONS: HotkeyEntry[] = [
-    { id: "action_save", label: "Save" },
-    { id: "action_copy", label: "Copy to Clipboard" },
-    { id: "action_undo", label: "Undo" },
-    { id: "action_redo", label: "Redo" },
-  ];
-
-  function startRecording(action: string) { recording = action; }
-  function cancelRecording() { recording = null; }
-
-  function handleKeydown(e: KeyboardEvent) {
-    if (!recording) return;
-    e.preventDefault();
-    e.stopPropagation();
-    if (e.key === "Escape") { recording = null; return; }
-    if (["Control", "Shift", "Alt", "Meta"].includes(e.key)) return;
-
-    const parts: string[] = [];
-    if (e.ctrlKey || e.metaKey) parts.push("CmdOrCtrl");
-    if (e.shiftKey) parts.push("Shift");
-    if (e.altKey) parts.push("Alt");
-
-    let key = e.key.length === 1 ? e.key.toUpperCase() : e.code;
-    if (key.startsWith("Key")) key = key.slice(3);
-    if (key.startsWith("Digit")) key = key.slice(5);
-    parts.push(key);
-
-    onChangeBinding(recording, parts.join("+"));
+function handleKeydown(e: KeyboardEvent) {
+  if (!recording) return;
+  e.preventDefault();
+  e.stopPropagation();
+  if (e.key === "Escape") {
     recording = null;
+    conflictMsg = "";
+    return;
+  }
+  if (["Control", "Shift", "Alt", "Meta"].includes(e.key)) return;
+
+  const parts: string[] = [];
+  if (e.ctrlKey || e.metaKey) parts.push("CmdOrCtrl");
+  if (e.shiftKey) parts.push("Shift");
+  if (e.altKey) parts.push("Alt");
+
+  let key = e.key.length === 1 ? e.key.toUpperCase() : e.code;
+  if (key.startsWith("Key")) key = key.slice(3);
+  if (key.startsWith("Digit")) key = key.slice(5);
+  parts.push(key);
+
+  const newBinding = parts.join("+");
+  const conflict = findConflict(newBinding, recording);
+  if (conflict) {
+    conflictMsg = `"${fmt(newBinding)}" is already used by "${conflict}"`;
+    return;
   }
 
-  function resetDefaults() {
-    const defaults: Record<string, string> = {
-      screenshot: "CmdOrCtrl+Shift+S", capture_last_region: "CmdOrCtrl+Shift+L",
-      record_screen: "CmdOrCtrl+Shift+R",
-      tool_arrow: "A", tool_rect: "R", tool_circle: "C", tool_line: "L",
-      tool_freehand: "F", tool_text: "T", tool_highlight: "H", tool_blur: "B",
-      tool_steps: "N", tool_colorpicker: "I", tool_measure: "M",
-      action_save: "CmdOrCtrl+S", action_copy: "CmdOrCtrl+C",
-      action_undo: "CmdOrCtrl+Z", action_redo: "CmdOrCtrl+Shift+Z",
-    };
-    for (const [k, v] of Object.entries(defaults)) onChangeBinding(k, v);
-  }
+  onChangeBinding(recording, newBinding);
+  recording = null;
+  conflictMsg = "";
+}
 
-  function fmt(s: string): string {
-    return s.replace("CmdOrCtrl", "⌘").replace("Shift", "⇧").replace("Alt", "⌥").replace(/\+/g, " ");
-  }
+function resetDefaults() {
+  const defaults: Record<string, string> = {
+    screenshot: "CmdOrCtrl+Shift+S",
+    capture_last_region: "CmdOrCtrl+Shift+L",
+    record_screen: "CmdOrCtrl+Shift+R",
+    open_history: "CmdOrCtrl+Shift+H",
+    open_preferences: "CmdOrCtrl+Comma",
+    tool_arrow: "A",
+    tool_rect: "R",
+    tool_circle: "C",
+    tool_line: "L",
+    tool_dottedline: "D",
+    tool_freehand: "F",
+    tool_text: "T",
+    tool_highlight: "H",
+    tool_blur: "B",
+    tool_steps: "N",
+    tool_callout: "K",
+    tool_colorpicker: "I",
+    tool_measure: "M",
+    size_small: "1",
+    size_medium: "2",
+    size_large: "3",
+    action_save: "CmdOrCtrl+S",
+    action_copy: "CmdOrCtrl+C",
+    action_undo: "CmdOrCtrl+Z",
+    action_redo: "CmdOrCtrl+Shift+Z",
+    action_cancel: "Escape",
+  };
+  for (const [k, v] of Object.entries(defaults)) onChangeBinding(k, v);
+}
+
+function fmt(s: string): string {
+  return s.replace("CmdOrCtrl", "⌘").replace("Shift", "⇧").replace("Alt", "⌥").replace(/\+/g, " ");
+}
 </script>
 
 <svelte:window onkeydown={handleKeydown} />
@@ -85,6 +149,7 @@
   {#each [
     { title: "Global Shortcuts", items: GLOBAL_ACTIONS, col: "Action" },
     { title: "Annotation Tools", items: TOOL_ACTIONS, col: "Tool" },
+    { title: "Stroke Size", items: SIZE_ACTIONS, col: "Size" },
     { title: "Overlay Actions", items: OVERLAY_ACTIONS, col: "Action" },
   ] as section}
     <section>
@@ -115,6 +180,10 @@
       </table>
     </section>
   {/each}
+
+  {#if conflictMsg}
+    <div class="conflict-warning">{conflictMsg}</div>
+  {/if}
 
   <button class="reset" onclick={resetDefaults}>Reset All to Defaults</button>
 </div>
@@ -172,4 +241,13 @@
     color: var(--text-secondary);
   }
   .reset:hover { background: var(--bg-hover); }
+
+  .conflict-warning {
+    background: rgba(255, 80, 0, 0.1);
+    border: 1px solid rgba(255, 80, 0, 0.3);
+    color: #ff6633;
+    padding: 6px 12px;
+    border-radius: 6px;
+    font-size: 12px;
+  }
 </style>

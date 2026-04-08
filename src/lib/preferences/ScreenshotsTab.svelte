@@ -1,21 +1,21 @@
 <script lang="ts">
-  interface Props {
-    config: Record<string, unknown>;
-    onChange: (key: string, value: unknown) => void;
-  }
+interface Props {
+  config: Record<string, unknown>;
+  onChange: (key: string, value: unknown) => void;
+}
 
-  let { config, onChange }: Props = $props();
+let { config, onChange }: Props = $props();
 
-  const FORMATS = [
-    { value: "Png", label: "PNG", desc: "Lossless, best quality" },
-    { value: "Jpg", label: "JPG", desc: "Smaller files, lossy" },
-    { value: "WebP", label: "WebP", desc: "Modern, good compression" },
-  ];
+const FORMATS = [
+  { value: "Png", label: "PNG", desc: "Lossless, best quality" },
+  { value: "Jpg", label: "JPG", desc: "Smaller files, lossy" },
+  { value: "WebP", label: "WebP", desc: "Modern, good compression" },
+];
 </script>
 
 <div class="tab-content">
-  <div class="field">
-    <label>Default Format</label>
+  <div class="field" role="group" aria-label="Default Format">
+    <span class="field-label">Default Format</span>
     <div class="format-group">
       {#each FORMATS as fmt}
         <label class="format-option" class:selected={config.screenshot_format === fmt.value}>
@@ -54,7 +54,7 @@
 <style>
   .tab-content { display: flex; flex-direction: column; gap: 18px; }
   .field { display: flex; flex-direction: column; gap: 6px; }
-  .field > label { font-size: 13px; font-weight: 500; color: var(--text-secondary); }
+  .field > label, .field > .field-label { font-size: 13px; font-weight: 500; color: var(--text-secondary); }
 
   /* Custom radio card group */
   .format-group { display: flex; gap: 8px; }

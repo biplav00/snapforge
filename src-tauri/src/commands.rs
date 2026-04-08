@@ -1,15 +1,74 @@
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 
-/// Return the pre-captured screenshot (taken before the overlay window appeared).
+/// Show a temporary toast window with a message.
+#[tauri::command]
+pub fn show_toast(app: tauri::AppHandle, message: String) -> Result<(), String> {
+    use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
+
+    // Close existing toast if any
+    if let Some(w) = app.get_webview_window("toast") {
+        let _ = w.close();
+    }
+
+    let encoded = urlencoding::encode(&message);
+    let url = format!("toast.html?msg={encoded}");
+
+    // Position at bottom-right of primary monitor
+    let (pos_x, pos_y) = {
+        let monitor = app.primary_monitor().ok().flatten();
+        if let Some(m) = monitor {
+            let size = m.size();
+            let scale = m.scale_factor();
+            let w = size.width as f64 / scale;
+            let h = size.height as f64 / scale;
+            (w - 320.0, h - 70.0)
+        } else {
+            (1600.0, 1000.0)
+        }
+    };
+
+    let _ = WebviewWindowBuilder::new(&app, "toast", WebviewUrl::App(url.into()))
+        .title("")
+        .inner_size(300.0, 50.0)
+        .position(pos_x, pos_y)
+        .resizable(false)
+        .decorations(false)
+        .always_on_top(true)
+        .transparent(true)
+        .skip_taskbar(true)
+        .focused(false)
+        .build();
+
+    // Auto-close after 3 seconds
+    let app_clone = app.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_secs(3));
+        if let Some(w) = app_clone.get_webview_window("toast") {
+            let _ = w.close();
+        }
+    });
+
+    Ok(())
+}
+
+/// Get the number of available displays.
+#[tauri::command]
+pub fn get_display_count() -> usize {
+    snapforge_core::capture::display_count()
+}
+
+/// Return the pre-captured screenshot for a specific display.
 #[tauri::command]
 pub fn get_pre_captured_screen(
-    state: tauri::State<'_, crate::PreCapturedScreen>,
+    state: tauri::State<'_, crate::PreCapturedScreens>,
+    display: usize,
 ) -> Result<String, String> {
     let guard = state.0.lock().map_err(|e| e.to_string())?;
     guard
-        .clone()
-        .ok_or_else(|| "No pre-captured screen available".to_string())
+        .get(&display)
+        .cloned()
+        .ok_or_else(|| format!("No pre-captured screen for display {display}"))
 }
 
 /// Capture fullscreen and return base64-encoded PNG for the overlay background.
@@ -105,10 +164,14 @@ pub fn save_composited_image(image_base64: String) -> Result<String, String> {
     )
     .map_err(|e| e.to_string())?;
 
+    // Record in history
+    let _ = add_to_history(save_path.display().to_string());
+
     Ok(save_path.display().to_string())
 }
 
 /// Copy a composited image (screenshot + annotations) to clipboard from base64 PNG.
+/// Also saves a copy to disk and records in history.
 #[tauri::command]
 pub fn copy_composited_image(image_base64: String) -> Result<(), String> {
     let bytes = STANDARD
@@ -121,7 +184,31 @@ pub fn copy_composited_image(image_base64: String) -> Result<(), String> {
     let rgba = img.to_rgba8();
     snapforge_core::clipboard::copy_image_to_clipboard(&rgba).map_err(|e| e.to_string())?;
 
+    // Save a copy to disk for history
+    let config = snapforge_core::config::AppConfig::load().map_err(|e| e.to_string())?;
+    let save_path = config.save_file_path();
+    if let Some(parent) = save_path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    snapforge_core::format::save_image(
+        &rgba,
+        &save_path,
+        config.screenshot_format,
+        config.jpg_quality,
+    )
+    .map_err(|e| e.to_string())?;
+
+    let _ = add_to_history(save_path.display().to_string());
+
     Ok(())
+}
+
+/// Copy an image file to the system clipboard.
+#[tauri::command]
+pub fn copy_file_to_clipboard(path: String) -> Result<(), String> {
+    let img = image::open(&path).map_err(|e| format!("failed to open image: {e}"))?;
+    let rgba = img.to_rgba8();
+    snapforge_core::clipboard::copy_image_to_clipboard(&rgba).map_err(|e| e.to_string())
 }
 
 /// Get the current app config as JSON.
@@ -259,24 +346,107 @@ pub fn start_recording_and_show_indicator(
     Ok(path)
 }
 
-/// Save a screenshot of the last remembered region.
-pub fn save_last_region() -> Result<String, String> {
-    let config = snapforge_core::config::AppConfig::load().map_err(|e| e.to_string())?;
+/// Get screenshot history as JSON, with base64-encoded thumbnail data.
+#[tauri::command]
+pub fn get_history() -> Result<String, String> {
+    let history = snapforge_core::history::ScreenshotHistory::load().map_err(|e| e.to_string())?;
 
-    let last = config
-        .last_region
-        .ok_or_else(|| "No last region saved".to_string())?;
+    #[derive(serde::Serialize)]
+    struct EntryWithData {
+        path: String,
+        timestamp: String,
+        thumbnail_data: String,
+    }
 
-    let save_path = config.save_file_path();
-    let path = snapforge_core::screenshot_region(
-        last.display,
-        last.rect,
-        &save_path,
-        config.screenshot_format,
-        config.jpg_quality,
-        config.auto_copy_clipboard,
-    )
-    .map_err(|e| e.to_string())?;
+    let entries: Vec<EntryWithData> = history
+        .entries
+        .iter()
+        .map(|e| {
+            let thumb_data = std::fs::read(&e.thumbnail_path)
+                .ok()
+                .map(|bytes| format!("data:image/png;base64,{}", STANDARD.encode(&bytes)))
+                .unwrap_or_default();
+            EntryWithData {
+                path: e.path.clone(),
+                timestamp: e.timestamp.clone(),
+                thumbnail_data: thumb_data,
+            }
+        })
+        .collect();
 
-    Ok(path.display().to_string())
+    serde_json::to_string(&entries).map_err(|e| e.to_string())
+}
+
+/// Add a screenshot to history and generate a thumbnail.
+#[tauri::command]
+pub fn add_to_history(path: String) -> Result<(), String> {
+    let mut history =
+        snapforge_core::history::ScreenshotHistory::load().map_err(|e| e.to_string())?;
+    history.add_entry(&path).map_err(|e| e.to_string())
+}
+
+/// Open the folder containing the file, with the file selected.
+#[tauri::command]
+pub fn open_file_in_folder(path: String) -> Result<(), String> {
+    let p = std::path::Path::new(&path);
+    if p.parent().is_some() {
+        #[cfg(target_os = "macos")]
+        {
+            std::process::Command::new("open")
+                .arg("-R")
+                .arg(&path)
+                .spawn()
+                .map_err(|e| e.to_string())?;
+            return Ok(());
+        }
+        #[cfg(target_os = "windows")]
+        {
+            std::process::Command::new("explorer")
+                .arg(format!("/select,{}", &path))
+                .spawn()
+                .map_err(|e| e.to_string())?;
+            return Ok(());
+        }
+        #[cfg(target_os = "linux")]
+        {
+            open::that(p.parent().unwrap()).map_err(|e| e.to_string())?;
+            return Ok(());
+        }
+        #[allow(unreachable_code)]
+        {
+            open::that(p.parent().unwrap()).map_err(|e| e.to_string())
+        }
+    } else {
+        Err("Invalid file path".to_string())
+    }
+}
+
+/// Clear all screenshot history.
+#[tauri::command]
+pub fn clear_history() -> Result<(), String> {
+    let mut history =
+        snapforge_core::history::ScreenshotHistory::load().map_err(|e| e.to_string())?;
+    history.clear().map_err(|e| e.to_string())
+}
+
+/// Remember the selected region for "capture last region" hotkey.
+#[tauri::command]
+pub fn save_last_region_to_config(
+    display: usize,
+    x: i32,
+    y: i32,
+    width: u32,
+    height: u32,
+) -> Result<(), String> {
+    let mut config = snapforge_core::config::AppConfig::load().map_err(|e| e.to_string())?;
+    config.last_region = Some(snapforge_core::types::LastRegion {
+        display,
+        rect: snapforge_core::types::Rect {
+            x,
+            y,
+            width,
+            height,
+        },
+    });
+    config.save().map_err(|e| e.to_string())
 }

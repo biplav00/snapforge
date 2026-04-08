@@ -1,4 +1,4 @@
-import type { Tool, AnnotationState, Annotation, RectAnnotation } from "./types.ts";
+import type { Annotation, AnnotationState, RectAnnotation, Tool } from "./types.ts";
 import { generateId } from "./types.ts";
 
 export const rectTool: Tool = {

@@ -1,7 +1,7 @@
-import Indicator from "./lib/recording/Indicator.svelte";
 import { mount } from "svelte";
+import RecordingApp from "./lib/recording/RecordingApp.svelte";
 
-const app = mount(Indicator, {
+const app = mount(RecordingApp, {
   target: document.getElementById("app")!,
 });
 
