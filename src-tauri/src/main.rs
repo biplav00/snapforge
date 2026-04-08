@@ -7,18 +7,18 @@ mod tray;
 
 use base64::Engine;
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder};
 
 /// Holds pre-captured screenshots for each display (display index -> base64 PNG).
-pub struct PreCapturedScreens(pub Arc<Mutex<HashMap<usize, String>>>);
+pub struct PreCapturedScreens(pub Mutex<HashMap<usize, String>>);
 
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_updater::Builder::new().build())
-        .manage(PreCapturedScreens(Arc::new(Mutex::new(HashMap::new()))))
+        .manage(PreCapturedScreens(Mutex::new(HashMap::new())))
         .manage(recording::RecordingState::new())
         .invoke_handler(tauri::generate_handler![
             commands::show_toast,
@@ -146,51 +146,41 @@ fn prewarm_overlay(app: &AppHandle) {
     }
 }
 
-/// Pre-capture all displays in background (non-blocking).
-/// Overlay opens instantly while capture runs in parallel.
-fn pre_capture_all_displays_async(app: &AppHandle) {
-    let mutex = app.state::<PreCapturedScreens>().0.clone();
-
-    // Clear existing captures immediately
-    if let Ok(mut guard) = mutex.lock() {
-        guard.clear();
-    }
-
+/// Pre-capture all displays synchronously (must run BEFORE overlay opens).
+/// Uses parallel threads + fast PNG encoding for speed.
+fn pre_capture_all_displays(app: &AppHandle) {
     let count = snapforge_core::capture::display_count();
-    let mutex_clone = mutex.clone();
 
-    // Spawn background thread — overlay opens immediately without waiting
-    std::thread::spawn(move || {
-        let results: Vec<(usize, String)> = std::thread::scope(|s| {
-            let handles: Vec<_> = (0..count)
-                .map(|i| {
-                    s.spawn(move || -> Option<(usize, String)> {
-                        let image = snapforge_core::capture::capture_fullscreen(i).ok()?;
-                        let bytes = snapforge_core::format::encode_image_fast(&image).ok()?;
-                        let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
-                        Some((i, b64))
-                    })
+    let results: Vec<(usize, String)> = std::thread::scope(|s| {
+        let handles: Vec<_> = (0..count)
+            .map(|i| {
+                s.spawn(move || -> Option<(usize, String)> {
+                    let image = snapforge_core::capture::capture_fullscreen(i).ok()?;
+                    let bytes = snapforge_core::format::encode_image_fast(&image).ok()?;
+                    let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
+                    Some((i, b64))
                 })
-                .collect();
+            })
+            .collect();
 
-            handles
-                .into_iter()
-                .filter_map(|h| h.join().ok().flatten())
-                .collect()
-        });
-
-        if let Ok(mut guard) = mutex_clone.lock() {
-            for (i, b64) in results {
-                guard.insert(i, b64);
-            }
-        }
+        handles
+            .into_iter()
+            .filter_map(|h| h.join().ok().flatten())
+            .collect()
     });
+
+    if let Ok(mut guard) = app.state::<PreCapturedScreens>().0.lock() {
+        guard.clear();
+        for (i, b64) in results {
+            guard.insert(i, b64);
+        }
+    }
 }
 
 /// Open transparent overlay for region selection on all monitors.
-/// Overlay opens instantly — pre-capture runs in background.
+/// Captures screen first (synchronous), then opens overlay.
 pub fn trigger_screenshot(app: &AppHandle) {
-    pre_capture_all_displays_async(app);
+    pre_capture_all_displays(app);
 
     let config = snapforge_core::config::AppConfig::load().unwrap_or_default();
     if config.remember_last_region {
