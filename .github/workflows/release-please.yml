@@ -81,7 +81,7 @@ jobs:
 
       - run: npm ci
 
-      - name: Build and upload release assets
+      - name: Build Tauri app
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -100,5 +100,19 @@ jobs:
             See the [CHANGELOG](https://github.com/${{ github.repository }}/blob/main/CHANGELOG.md) for details.
           releaseDraft: false
           prerelease: false
+          includeRelease: true
+          includeDebug: false
           args: ${{ matrix.args }}
           updaterJsonKeepUniversal: true
+
+      - name: Upload source-less release
+        if: always()
+        run: |
+          # Remove source code archives from release (keep only app bundles)
+          gh release view "${{ needs.release-please.outputs.tag_name }}" --json assets --jq '.assets[].name' | \
+            grep -E '\.(tar\.gz|zip)$' | grep -v -E '\.(dmg|msi|exe|AppImage|deb|app)' | \
+            while read name; do
+              gh release delete-asset "${{ needs.release-please.outputs.tag_name }}" "$name" --yes 2>/dev/null || true
+            done
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

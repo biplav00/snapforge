@@ -4325,7 +4325,6 @@ version = "0.1.0"
 dependencies = [
  "arboard",
  "chrono",
- "clipboard-win",
  "core-graphics 0.25.0",
  "dirs",
  "image",
