@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.2](https://github.com/biplav00/snapforge/compare/v1.2.1...v1.2.2) (2026-04-08)
+
+
+### Bug Fixes
+
+* add @tauri-apps/cli as dev dependency for CI builds ([61e347e](https://github.com/biplav00/snapforge/commit/61e347e8a835a4579af3e12d7e490f7385e73289))
+* CI build — add @tauri-apps/cli for npx tauri ([2fdcf10](https://github.com/biplav00/snapforge/commit/2fdcf106cec922133ce87a839bf44af03f55a5ec))
+
 ## [1.2.1](https://github.com/biplav00/snapforge/compare/v1.2.0...v1.2.1) (2026-04-08)
 
 
