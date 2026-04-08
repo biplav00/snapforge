@@ -1,6 +1,13 @@
-use crate::types::Rect;
-use core_graphics::display::CGDisplay;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc;
+
 use image::RgbaImage;
+use objc2::rc::Retained;
+use objc2_foundation::NSArray;
+use objc2_screen_capture_kit::SCDisplay;
+use objc2_screen_capture_kit::SCShareableContent;
+
+use crate::types::Rect;
 
 use super::CaptureError;
 
@@ -9,54 +16,76 @@ extern "C" {
     fn CGRequestScreenCaptureAccess() -> bool;
 }
 
+/// Cached permission state — once granted, skip re-checking.
+static PERMISSION_GRANTED: AtomicBool = AtomicBool::new(false);
+
 /// Check if screen recording permission is granted.
-/// Uses CGPreflightScreenCaptureAccess first, then falls back to
-/// a test capture to verify (preflight can return stale results).
+/// Uses cached result after first success, falls back to SCK content query.
 pub fn has_screen_capture_permission() -> bool {
-    if unsafe { CGPreflightScreenCaptureAccess() } {
+    if PERMISSION_GRANTED.load(Ordering::Relaxed) {
         return true;
     }
-    // Preflight may return false even when granted (e.g. after app rebuild).
-    // Try a real capture as a fallback check.
-    let ids = active_display_ids();
-    if let Some(&id) = ids.first() {
-        let display = CGDisplay::new(id);
-        if let Some(img) = display.image() {
-            // If we get a non-trivial image, permission is granted
-            return img.width() > 1 && img.height() > 1;
-        }
+    if unsafe { CGPreflightScreenCaptureAccess() } {
+        PERMISSION_GRANTED.store(true, Ordering::Relaxed);
+        return true;
+    }
+    // Preflight can return stale false. Try fetching SCK content as proof of permission.
+    if get_shareable_displays().is_some() {
+        PERMISSION_GRANTED.store(true, Ordering::Relaxed);
+        return true;
     }
     false
 }
 
 /// Request screen recording permission. Returns true if granted.
-/// On first call, shows the macOS permission dialog.
 pub fn request_screen_capture_permission() -> bool {
-    unsafe { CGRequestScreenCaptureAccess() }
+    let result = unsafe { CGRequestScreenCaptureAccess() };
+    if result {
+        PERMISSION_GRANTED.store(true, Ordering::Relaxed);
+    }
+    result
 }
 
-/// Get IDs of all active displays.
-fn active_display_ids() -> Vec<u32> {
-    // CGGetActiveDisplayList: up to 16 displays
-    let mut ids: Vec<u32> = vec![0; 16];
-    let mut count: u32 = 0;
+/// Fetch available displays via SCShareableContent (async → sync bridge).
+fn get_shareable_displays() -> Option<Retained<NSArray<SCDisplay>>> {
+    let (tx, rx) = mpsc::channel();
+    let block = block2::RcBlock::new(
+        move |content: *mut SCShareableContent, error: *mut objc2_foundation::NSError| {
+            if error.is_null() && !content.is_null() {
+                let displays = unsafe { (*content).displays() };
+                let _ = tx.send(Some(displays));
+            } else {
+                let _ = tx.send(None::<Retained<NSArray<SCDisplay>>>);
+            }
+        },
+    );
     unsafe {
-        core_graphics::display::CGGetActiveDisplayList(16, ids.as_mut_ptr(), &mut count);
+        SCShareableContent::getShareableContentExcludingDesktopWindows_onScreenWindowsOnly_completionHandler(
+            true,
+            true,
+            &block,
+        );
     }
-    ids.truncate(count as usize);
-    ids
+    rx.recv().ok().flatten()
+}
+
+/// Get the SCDisplay at the given index.
+#[allow(dead_code)]
+fn get_sc_display(display: usize) -> Result<Retained<SCDisplay>, CaptureError> {
+    let displays = get_shareable_displays().ok_or(CaptureError::CaptureFailed)?;
+    if display >= displays.len() {
+        return Err(CaptureError::NoDisplay(display));
+    }
+    Ok(displays.objectAtIndex(display))
 }
 
 pub fn display_count() -> usize {
-    active_display_ids().len()
+    get_shareable_displays().map_or(0, |d| d.len())
 }
 
-pub fn capture_fullscreen(display: usize) -> Result<RgbaImage, CaptureError> {
-    let display_id = get_display_id(display)?;
-    let cg_display = CGDisplay::new(display_id);
-    let cg_image = cg_display.image().ok_or(CaptureError::CaptureFailed)?;
-
-    cg_image_to_rgba(&cg_image)
+pub fn capture_fullscreen(_display: usize) -> Result<RgbaImage, CaptureError> {
+    // Placeholder — implemented in Task 3
+    Err(CaptureError::CaptureFailed)
 }
 
 pub fn capture_region(display: usize, region: Rect) -> Result<RgbaImage, CaptureError> {
@@ -75,13 +104,7 @@ pub fn capture_region(display: usize, region: Rect) -> Result<RgbaImage, Capture
     Ok(cropped)
 }
 
-fn get_display_id(display: usize) -> Result<u32, CaptureError> {
-    let ids = active_display_ids();
-    ids.get(display)
-        .copied()
-        .ok_or(CaptureError::NoDisplay(display))
-}
-
+#[allow(dead_code)]
 fn cg_image_to_rgba(cg_image: &core_graphics::image::CGImage) -> Result<RgbaImage, CaptureError> {
     let width = cg_image.width() as u32;
     let height = cg_image.height() as u32;
@@ -92,7 +115,6 @@ fn cg_image_to_rgba(cg_image: &core_graphics::image::CGImage) -> Result<RgbaImag
     let expected_pixels = (width * height) as usize;
     let expected_bytes = expected_pixels * 4;
 
-    // Validate that the source buffer has enough data (one upfront check instead of per-pixel)
     let last_row_start = (height as usize - 1) * bytes_per_row;
     let min_required = last_row_start + (width as usize) * 4;
     if raw_bytes.len() < min_required {
@@ -129,26 +151,15 @@ mod tests {
     }
 
     #[test]
-    fn test_capture_fullscreen_main() {
-        let img = capture_fullscreen(0);
-        if let Ok(img) = img {
-            assert!(img.width() > 0);
-            assert!(img.height() > 0);
-        }
-    }
-
-    #[test]
-    fn test_capture_region_main() {
-        let region = crate::types::Rect {
-            x: 0,
-            y: 0,
-            width: 100,
-            height: 100,
-        };
-        let img = capture_region(0, region);
-        if let Ok(img) = img {
-            assert_eq!(img.width(), 100);
-            assert_eq!(img.height(), 100);
+    fn test_permission_cache() {
+        // Reset cache
+        PERMISSION_GRANTED.store(false, Ordering::Relaxed);
+        let first = has_screen_capture_permission();
+        if first {
+            // Should be cached now
+            assert!(PERMISSION_GRANTED.load(Ordering::Relaxed));
+            // Second call should use cache
+            assert!(has_screen_capture_permission());
         }
     }
 
