@@ -62,22 +62,19 @@ impl ScreenshotHistory {
         Ok(())
     }
 
-    /// Add an entry for the screenshot at `image_path`, generating a 200px-wide thumbnail.
+    /// Add an entry for the screenshot at `image_path`.
+    /// Thumbnail is generated in a background thread to avoid blocking the UI.
     pub fn add_entry(&mut self, image_path: &str) -> Result<(), HistoryError> {
         let thumb_dir = Self::thumbnails_dir();
         std::fs::create_dir_all(&thumb_dir)?;
 
-        // Generate thumbnail
-        let img = image::open(image_path)?;
-        let thumb = img.thumbnail(200, 200);
         let stem = std::path::Path::new(image_path)
             .file_stem()
             .unwrap_or_default()
-            .to_string_lossy();
-        let thumb_filename = format!("{}_thumb.png", stem);
+            .to_string_lossy()
+            .to_string();
+        let thumb_filename = format!("{stem}_thumb.png");
         let thumb_path = thumb_dir.join(&thumb_filename);
-        thumb.save(&thumb_path)?;
-
         let timestamp = chrono::Local::now().to_rfc3339();
 
         let entry = HistoryEntry {
@@ -91,13 +88,22 @@ impl ScreenshotHistory {
         // Cap at MAX_ENTRIES, remove oldest first
         if self.entries.len() > MAX_ENTRIES {
             let excess = self.entries.len() - MAX_ENTRIES;
-            // Remove old thumbnail files
             for old in self.entries.drain(..excess) {
                 let _ = std::fs::remove_file(&old.thumbnail_path);
             }
         }
 
         self.save()?;
+
+        // Generate thumbnail in background — don't block the caller
+        let img_path = image_path.to_string();
+        std::thread::spawn(move || {
+            if let Ok(img) = image::open(&img_path) {
+                let thumb = img.thumbnail(200, 200);
+                let _ = thumb.save(&thumb_path);
+            }
+        });
+
         Ok(())
     }
 

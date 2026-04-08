@@ -20,34 +20,46 @@ pub fn encode_image(
     format: CaptureFormat,
     quality: u8,
 ) -> Result<Vec<u8>, FormatError> {
-    let mut buf = Cursor::new(Vec::new());
+    let quality = quality.clamp(1, 100);
+    let (w, h) = (image.width() as usize, image.height() as usize);
 
     match format {
         CaptureFormat::Png => {
+            let mut buf = Cursor::new(Vec::with_capacity(w * h * 4));
             image
                 .write_to(&mut buf, image::ImageFormat::Png)
                 .map_err(|e| FormatError::EncodeFailed(e.to_string()))?;
+            Ok(buf.into_inner())
         }
         CaptureFormat::Jpg => {
-            let rgb = image::DynamicImage::ImageRgba8(image.clone()).to_rgb8();
+            // Convert RGBA to RGB without cloning into DynamicImage
+            let mut rgb_buf = Vec::with_capacity(w * h * 3);
+            for pixel in image.pixels() {
+                rgb_buf.push(pixel[0]);
+                rgb_buf.push(pixel[1]);
+                rgb_buf.push(pixel[2]);
+            }
+
+            let mut buf = Cursor::new(Vec::with_capacity(w * h * 3));
             let mut encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buf, quality);
             encoder
                 .encode(
-                    rgb.as_raw(),
-                    rgb.width(),
-                    rgb.height(),
+                    &rgb_buf,
+                    image.width(),
+                    image.height(),
                     image::ExtendedColorType::Rgb8,
                 )
                 .map_err(|e| FormatError::EncodeFailed(e.to_string()))?;
+            Ok(buf.into_inner())
         }
         CaptureFormat::WebP => {
+            let mut buf = Cursor::new(Vec::with_capacity(w * h * 4));
             image
                 .write_to(&mut buf, image::ImageFormat::WebP)
                 .map_err(|e| FormatError::EncodeFailed(e.to_string()))?;
+            Ok(buf.into_inner())
         }
     }
-
-    Ok(buf.into_inner())
 }
 
 /// Save an RgbaImage to a file path. Creates parent directories if needed.

@@ -44,22 +44,54 @@ let showTextInput = $state(false);
 let textInputX = $state(0);
 let textInputY = $state(0);
 
-// Re-render whenever annotations or activeAnnotation changes
+// Cache the background (screenshot) as an offscreen canvas — drawn once
+let bgCanvas: OffscreenCanvas | null = null;
+let bgDpr = 0;
+let bgRegionX = 0;
+let bgRegionY = 0;
+
+// Build or rebuild background cache when screenshot or region changes
 $effect(() => {
+  if (!screenshotImg || regionW <= 0 || regionH <= 0) {
+    bgCanvas = null;
+    return;
+  }
+  const dpr = window.devicePixelRatio || 1;
+  bgCanvas = new OffscreenCanvas(regionW, regionH);
+  const bgCtx = bgCanvas.getContext("2d");
+  if (bgCtx) {
+    const sx = Math.round(regionX * dpr);
+    const sy = Math.round(regionY * dpr);
+    const sw = Math.round(regionW * dpr);
+    const sh = Math.round(regionH * dpr);
+    bgCtx.drawImage(screenshotImg, sx, sy, sw, sh, 0, 0, regionW, regionH);
+  }
+  bgDpr = dpr;
+  bgRegionX = regionX;
+  bgRegionY = regionY;
+});
+
+// RAF-batched rendering — only schedule one repaint per frame
+let rafId = 0;
+
+function scheduleRender() {
+  if (rafId) return;
+  rafId = requestAnimationFrame(() => {
+    rafId = 0;
+    renderCanvas();
+  });
+}
+
+function renderCanvas() {
   if (!canvas) return;
   const ctx = canvas.getContext("2d");
   if (!ctx) return;
 
   ctx.clearRect(0, 0, regionW, regionH);
 
-  // Draw the screenshot region as background so blur/colorpicker can read pixels
-  if (screenshotImg) {
-    const dpr = window.devicePixelRatio || 1;
-    const sx = Math.round(regionX * dpr);
-    const sy = Math.round(regionY * dpr);
-    const sw = Math.round(regionW * dpr);
-    const sh = Math.round(regionH * dpr);
-    ctx.drawImage(screenshotImg, sx, sy, sw, sh, 0, 0, regionW, regionH);
+  // Blit cached background
+  if (bgCanvas) {
+    ctx.drawImage(bgCanvas, 0, 0);
   }
 
   for (const a of annotations.value) {
@@ -69,6 +101,14 @@ $effect(() => {
   if (activeAnnotation.value && activeAnnotation.value.tool !== "text") {
     renderAnnotation(ctx, activeAnnotation.value);
   }
+}
+
+// Trigger render when annotations change
+$effect(() => {
+  // Touch reactive deps so Svelte tracks them
+  annotations.value;
+  activeAnnotation.value;
+  scheduleRender();
 });
 
 // Focus text input when it appears

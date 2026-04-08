@@ -70,22 +70,31 @@ pub fn start_recording(config: RecordConfig) -> Result<RecordingHandle, RecordEr
     let display = config.display;
 
     let thread = std::thread::spawn(move || -> Result<(), RecordError> {
-        let mut writer =
-            std::io::BufWriter::with_capacity((width * height * 4) as usize, &mut stdin);
+        // Use 256KB buffer — better for pipe throughput than full-frame buffer
+        let mut writer = std::io::BufWriter::with_capacity(256 * 1024, &mut stdin);
 
+        // Write the test frame as first frame
         writer
             .write_all(test_frame.as_raw())
             .map_err(|e| RecordError::WriteFailed(e.to_string()))?;
 
         let start = Instant::now();
-        let mut next_frame_time = start + frame_interval;
+        let mut frame_count: u64 = 1;
 
         while !stop_clone.load(Ordering::SeqCst) {
+            // Target-based timing: compute when next frame should land
+            // This prevents drift — we always target absolute time from start
+            frame_count += 1;
+            let target_time = start + frame_interval * frame_count as u32;
             let now = Instant::now();
-            if now < next_frame_time {
-                std::thread::sleep(next_frame_time - now);
+
+            if now < target_time {
+                std::thread::sleep(target_time - now);
+            } else if now > target_time + frame_interval {
+                // We're more than one frame behind — skip to catch up
+                frame_count = ((now - start).as_secs_f64() / frame_interval.as_secs_f64()) as u64;
+                continue;
             }
-            next_frame_time += frame_interval;
 
             let frame = if let Some(r) = &region {
                 capture::capture_region(display, *r)

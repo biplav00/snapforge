@@ -58,22 +58,30 @@ fn cg_image_to_rgba(cg_image: &core_graphics::image::CGImage) -> Result<RgbaImag
     let data = cg_image.data();
     let raw_bytes: &[u8] = &data;
 
-    let mut rgba_buf = Vec::with_capacity((width * height * 4) as usize);
+    let expected_pixels = (width * height) as usize;
+    let expected_bytes = expected_pixels * 4;
 
-    for y in 0..height {
-        let row_start = (y as usize) * bytes_per_row;
-        for x in 0..width {
-            let pixel_start = row_start + (x as usize) * 4;
-            // Bounds check to avoid panic on unexpected pixel formats or padding
-            if pixel_start + 3 >= raw_bytes.len() {
-                return Err(CaptureError::ImageDataFailed);
-            }
-            // CoreGraphics uses BGRA byte order
-            let b = raw_bytes[pixel_start];
-            let g = raw_bytes[pixel_start + 1];
-            let r = raw_bytes[pixel_start + 2];
-            let a = raw_bytes[pixel_start + 3];
-            rgba_buf.extend_from_slice(&[r, g, b, a]);
+    // Validate that the source buffer has enough data (one upfront check instead of per-pixel)
+    let last_row_start = (height as usize - 1) * bytes_per_row;
+    let min_required = last_row_start + (width as usize) * 4;
+    if raw_bytes.len() < min_required {
+        return Err(CaptureError::ImageDataFailed);
+    }
+
+    let mut rgba_buf = vec![0u8; expected_bytes];
+
+    for y in 0..height as usize {
+        let row_start = y * bytes_per_row;
+        let dst_row_start = y * (width as usize) * 4;
+        let src_row = &raw_bytes[row_start..row_start + (width as usize) * 4];
+        let dst_row = &mut rgba_buf[dst_row_start..dst_row_start + (width as usize) * 4];
+
+        // Swap B and R channels: BGRA → RGBA
+        for (src, dst) in src_row.chunks_exact(4).zip(dst_row.chunks_exact_mut(4)) {
+            dst[0] = src[2]; // R
+            dst[1] = src[1]; // G
+            dst[2] = src[0]; // B
+            dst[3] = src[3]; // A
         }
     }
 
