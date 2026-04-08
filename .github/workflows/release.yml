@@ -42,27 +42,12 @@ jobs:
         with: { workspaces: "src-tauri -> target" }
       - run: npm ci
       - run: npm run build
-
       - name: Build .dmg
         run: npx tauri build --target aarch64-apple-darwin --bundles dmg
-        env:
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-
       - name: Upload to release
         run: |
           DMG=$(find target/aarch64-apple-darwin/release/bundle/dmg -name "*.dmg" | head -1)
-          if [ -n "$DMG" ]; then
-            gh release upload "${{ needs.release-please.outputs.tag }}" "$DMG" --clobber
-          else
-            echo "No .dmg found!" && exit 1
-          fi
+          [ -n "$DMG" ] && gh release upload "${{ needs.release-please.outputs.tag }}" "$DMG" --clobber || (echo "No .dmg found" && exit 1)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -81,26 +66,11 @@ jobs:
         with: { workspaces: "src-tauri -> target" }
       - run: npm ci
       - run: npm run build
-
       - name: Build .dmg
         run: npx tauri build --target x86_64-apple-darwin --bundles dmg
-        env:
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-
       - name: Upload to release
         run: |
           DMG=$(find target/x86_64-apple-darwin/release/bundle/dmg -name "*.dmg" | head -1)
-          if [ -n "$DMG" ]; then
-            gh release upload "${{ needs.release-please.outputs.tag }}" "$DMG" --clobber
-          else
-            echo "No .dmg found!" && exit 1
-          fi
+          [ -n "$DMG" ] && gh release upload "${{ needs.release-please.outputs.tag }}" "$DMG" --clobber || (echo "No .dmg found" && exit 1)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
