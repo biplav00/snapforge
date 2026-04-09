@@ -152,63 +152,69 @@ fn pre_capture_all_displays(app: &AppHandle) {
 
 /// Open transparent overlay for region selection on all monitors.
 /// Checks permission first, captures screen, then opens overlay.
+/// Runs SCK work on a background thread to avoid deadlocking the main RunLoop
+/// (SCK completion handlers need the main RunLoop to be free).
 pub fn trigger_screenshot(app: &AppHandle) {
-    // Check screen capture permission before doing anything
-    if !snapforge_core::capture::has_permission() {
-        // Request permission — if it succeeds (already granted or user approved), proceed.
-        // If it fails (user denied or pending), bail out.
-        if !snapforge_core::capture::request_permission() {
-            return;
-        }
-    }
-
-    pre_capture_all_displays(app);
-
-    let config = snapforge_core::config::AppConfig::load().unwrap_or_default();
-    if config.remember_last_region {
-        if let Some(last) = config.last_region {
-            let monitors: Vec<_> = app
-                .available_monitors()
-                .unwrap_or_default()
-                .into_iter()
-                .collect();
-            let idx = last.display.min(monitors.len().saturating_sub(1));
-            let dpr = monitors.get(idx).map_or(2.0, tauri::Monitor::scale_factor);
-            let x = last.rect.x as f64 / dpr;
-            let y = last.rect.y as f64 / dpr;
-            let w = last.rect.width as f64 / dpr;
-            let h = last.rect.height as f64 / dpr;
-            let url = format!(
-                "index.html?lastRegion={},{},{},{}",
-                x as i32, y as i32, w as u32, h as u32
-            );
-            open_overlays(app, &url);
-            return;
-        }
-    }
-
-    open_overlays(app, "index.html");
-}
-
-/// Toggle recording. If not recording, open overlay for region selection.
-/// If recording, stop and close indicator.
-pub fn trigger_recording(app: &AppHandle) {
-    let state = app.state::<recording::RecordingState>();
-    if state.is_recording() {
-        if let Ok(mut guard) = state.handle.lock() {
-            if let Some(handle) = guard.take() {
-                let _ = handle.stop();
-            }
-        }
-        close_recording_indicator(app);
-    } else {
+    let app = app.clone();
+    std::thread::spawn(move || {
+        // Check screen capture permission before doing anything
         if !snapforge_core::capture::has_permission()
             && !snapforge_core::capture::request_permission()
         {
             return;
         }
-        open_overlays(app, "index.html?mode=record");
-    }
+
+        pre_capture_all_displays(&app);
+
+        let config = snapforge_core::config::AppConfig::load().unwrap_or_default();
+        if config.remember_last_region {
+            if let Some(last) = config.last_region {
+                let monitors: Vec<_> = app
+                    .available_monitors()
+                    .unwrap_or_default()
+                    .into_iter()
+                    .collect();
+                let idx = last.display.min(monitors.len().saturating_sub(1));
+                let dpr = monitors.get(idx).map_or(2.0, tauri::Monitor::scale_factor);
+                let x = last.rect.x as f64 / dpr;
+                let y = last.rect.y as f64 / dpr;
+                let w = last.rect.width as f64 / dpr;
+                let h = last.rect.height as f64 / dpr;
+                let url = format!(
+                    "index.html?lastRegion={},{},{},{}",
+                    x as i32, y as i32, w as u32, h as u32
+                );
+                open_overlays(&app, &url);
+                return;
+            }
+        }
+
+        open_overlays(&app, "index.html");
+    });
+}
+
+/// Toggle recording. If not recording, open overlay for region selection.
+/// If recording, stop and close indicator.
+pub fn trigger_recording(app: &AppHandle) {
+    let app = app.clone();
+    std::thread::spawn(move || {
+        let state = app.state::<recording::RecordingState>();
+        if state.is_recording() {
+            if let Ok(mut guard) = state.handle.lock() {
+                if let Some(handle) = guard.take() {
+                    let _ = handle.stop();
+                }
+            }
+            close_recording_indicator(&app);
+        } else {
+            if !snapforge_core::capture::has_permission()
+                && !snapforge_core::capture::request_permission()
+            {
+                return;
+            }
+            open_overlays(&app, "index.html?mode=record");
+        }
+    });
 }
 
 /// Open the recording indicator after recording has started.

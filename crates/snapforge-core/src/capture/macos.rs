@@ -76,49 +76,20 @@ fn get_shareable_displays() -> Option<Retained<NSArray<SCDisplay>>> {
         .flatten()
 }
 
-/// Get the display ID for the display at the given index.
-fn get_display_id_at(display: usize) -> Result<u32, CaptureError> {
+pub fn display_count() -> usize {
+    get_shareable_displays().map_or(0, |d| d.len())
+}
+
+/// Capture the full screen for a given display index.
+/// IMPORTANT: Must be called from a background thread, not the main thread.
+/// SCK completion handlers need the main RunLoop to be free.
+pub fn capture_fullscreen(display: usize) -> Result<RgbaImage, CaptureError> {
     let displays = get_shareable_displays().ok_or(CaptureError::CaptureFailed)?;
     if display >= displays.len() {
         return Err(CaptureError::NoDisplay(display));
     }
     let sc_display = displays.objectAtIndex(display);
-    Ok(unsafe { sc_display.displayID() })
-}
-
-pub fn display_count() -> usize {
-    get_shareable_displays().map_or(0, |d| d.len())
-}
-
-pub fn capture_fullscreen(display: usize) -> Result<RgbaImage, CaptureError> {
-    // Get the display ID (u32, Send-safe) so we can do SCK work on a background thread.
-    let display_id = get_display_id_at(display)?;
-    capture_display(display_id)
-}
-
-/// Perform SCK capture for a given display ID on a background thread.
-/// This avoids deadlocking the main thread — SCK dispatches its completion
-/// handler on a system queue, which may need the main RunLoop to be free.
-fn capture_display(display_id: u32) -> Result<RgbaImage, CaptureError> {
-    let (tx, rx) = mpsc::channel::<Option<RgbaImage>>();
-    std::thread::spawn(move || {
-        let result = capture_display_inner(display_id);
-        let _ = tx.send(result.ok());
-    });
-
-    rx.recv_timeout(std::time::Duration::from_secs(6))
-        .map_err(|_| CaptureError::CaptureFailed)?
-        .ok_or(CaptureError::CaptureFailed)
-}
-
-/// Inner SCK capture — runs on a background thread.
-fn capture_display_inner(display_id: u32) -> Result<RgbaImage, CaptureError> {
-    // Re-fetch the SCDisplay for this display ID
-    let displays = get_shareable_displays().ok_or(CaptureError::CaptureFailed)?;
-    let sc_display = (0..displays.len())
-        .map(|i| displays.objectAtIndex(i))
-        .find(|d| unsafe { d.displayID() } == display_id)
-        .ok_or(CaptureError::CaptureFailed)?;
+    let display_id = unsafe { sc_display.displayID() };
 
     let filter = unsafe {
         let excluded: Retained<NSArray<SCWindow>> = NSArray::new();
