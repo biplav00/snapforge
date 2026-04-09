@@ -17,8 +17,25 @@ use super::CaptureError;
 extern "C" {
     fn CGPreflightScreenCaptureAccess() -> bool;
     fn CGRequestScreenCaptureAccess() -> bool;
-    fn CGDisplayPixelsWide(display: u32) -> usize;
-    fn CGDisplayPixelsHigh(display: u32) -> usize;
+    fn CGDisplayCopyDisplayMode(display: u32) -> *const std::ffi::c_void;
+    fn CGDisplayModeGetPixelWidth(mode: *const std::ffi::c_void) -> usize;
+    fn CGDisplayModeGetPixelHeight(mode: *const std::ffi::c_void) -> usize;
+    fn CGDisplayModeRelease(mode: *const std::ffi::c_void);
+}
+
+/// Get the true backing pixel dimensions for a display (Retina-aware).
+fn display_pixel_size(display_id: u32) -> (usize, usize) {
+    unsafe {
+        let mode = CGDisplayCopyDisplayMode(display_id);
+        if mode.is_null() {
+            // Fallback: use SCDisplay point dimensions * 2
+            return (0, 0);
+        }
+        let w = CGDisplayModeGetPixelWidth(mode);
+        let h = CGDisplayModeGetPixelHeight(mode);
+        CGDisplayModeRelease(mode);
+        (w, h)
+    }
 }
 
 /// Cached permission state — once granted, skip re-checking.
@@ -102,10 +119,11 @@ pub fn capture_fullscreen(display: usize) -> Result<RgbaImage, CaptureError> {
 
     let config = unsafe {
         let config = SCStreamConfiguration::new();
-        let w = CGDisplayPixelsWide(display_id);
-        let h = CGDisplayPixelsHigh(display_id);
-        config.setWidth(w);
-        config.setHeight(h);
+        let (w, h) = display_pixel_size(display_id);
+        if w > 0 && h > 0 {
+            config.setWidth(w);
+            config.setHeight(h);
+        }
         config.setShowsCursor(false);
         config
     };
