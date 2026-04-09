@@ -95,31 +95,31 @@ pub fn start_recording(config: RecordConfig) -> Result<RecordingHandle, RecordEr
         // Use 256KB buffer — better for pipe throughput than full-frame buffer
         let mut writer = std::io::BufWriter::with_capacity(256 * 1024, &mut stdin);
 
-        // Write the test frame as first frame
+        // Cache the last successfully captured frame so we can duplicate it
+        // when capture fails or we fall behind. This keeps the output's
+        // wall-clock duration in sync with the recording duration.
+        let mut last_frame: image::RgbaImage = test_frame;
+
+        // Write the first frame
         writer
-            .write_all(test_frame.as_raw())
+            .write_all(last_frame.as_raw())
             .map_err(|e| RecordError::WriteFailed(e.to_string()))?;
 
         let start = Instant::now();
         let mut frame_count: u64 = 1;
 
         while !stop_clone.load(Ordering::SeqCst) {
-            // Target-based timing: compute when next frame should land
-            // This prevents drift — we always target absolute time from start
             frame_count += 1;
             let target_time = start + frame_interval * frame_count as u32;
             let now = Instant::now();
 
+            // Sleep until the next tick if we're early
             if now < target_time {
                 std::thread::sleep(target_time - now);
-            } else if now > target_time + frame_interval {
-                // We're more than one frame behind — skip to catch up
-                frame_count = ((now - start).as_secs_f64() / frame_interval.as_secs_f64()) as u64;
-                continue;
             }
 
-            let frame = if let Some(r) = &region {
-                // Region capture: use context for full frame, then crop
+            // Capture the next frame
+            let frame_result = if let Some(r) = &region {
                 #[cfg(target_os = "macos")]
                 {
                     capture_ctx.capture_frame().and_then(|full| {
@@ -148,26 +148,38 @@ pub fn start_recording(config: RecordConfig) -> Result<RecordingHandle, RecordEr
                 }
             };
 
-            if let Ok(img) = frame {
-                // Ensure frame matches the announced dimensions (crop to even size if needed)
-                let mut final_frame = if img.width() != width || img.height() != height {
+            // Determine how many frames we need to write to stay in sync.
+            // If we're behind, duplicate the most recent frame to fill the gap.
+            let elapsed_frames =
+                (start.elapsed().as_secs_f64() / frame_interval.as_secs_f64()) as u64;
+            let frames_to_write = elapsed_frames.saturating_sub(frame_count - 1).max(1);
+
+            // Update the cached frame if capture succeeded
+            if let Ok(img) = frame_result {
+                let cropped = if img.width() != width || img.height() != height {
                     image::imageops::crop_imm(&img, 0, 0, width, height).to_image()
                 } else {
                     img
                 };
+                last_frame = cropped;
+            }
 
-                // Draw recent click markers onto the frame
+            // Compose with click markers (re-drawn each write to animate the fade)
+            for _ in 0..frames_to_write {
+                let mut composed = last_frame.clone();
                 draw_clicks(
-                    &mut final_frame,
+                    &mut composed,
                     &click_tracker,
                     region.as_ref(),
                     point_to_pixel_scale,
                 );
-
-                if writer.write_all(final_frame.as_raw()).is_err() {
+                if writer.write_all(composed.as_raw()).is_err() {
                     break;
                 }
             }
+
+            // Advance frame_count to match what we actually wrote
+            frame_count = frame_count + frames_to_write - 1;
         }
 
         drop(writer);

@@ -106,7 +106,7 @@ fn open_overlays(app: &AppHandle, base_url: &str) {
         let url = format!("{base_url}{separator}display=0");
         let label = "overlay-0";
 
-        let _ = WebviewWindowBuilder::new(app, label, WebviewUrl::App(url.into()))
+        if let Ok(window) = WebviewWindowBuilder::new(app, label, WebviewUrl::App(url.into()))
             .title("")
             .inner_size(width, height)
             .position(pos.x as f64 / scale, pos.y as f64 / scale)
@@ -115,7 +115,26 @@ fn open_overlays(app: &AppHandle, base_url: &str) {
             .always_on_top(true)
             .skip_taskbar(true)
             .resizable(false)
-            .build();
+            .visible_on_all_workspaces(true)
+            .build()
+        {
+            // Make the overlay follow the user across Spaces on macOS
+            #[cfg(target_os = "macos")]
+            {
+                if let Ok(ns_win) = window.ns_window() {
+                    unsafe {
+                        // NSWindowCollectionBehaviorCanJoinAllSpaces (1<<0)
+                        // | NSWindowCollectionBehaviorFullScreenAuxiliary (1<<8)
+                        let behavior: u64 = (1 << 0) | (1 << 8);
+                        let _: () = objc2::msg_send![
+                            ns_win as *const objc2::runtime::AnyObject,
+                            setCollectionBehavior: behavior
+                        ];
+                    }
+                }
+            }
+            let _ = &window;
+        }
     }
 }
 
@@ -192,12 +211,26 @@ pub fn trigger_recording(app: &AppHandle) {
     std::thread::spawn(move || {
         let state = app.state::<recording::RecordingState>();
         if state.is_recording() {
+            // Stop the recording handle
             if let Ok(mut guard) = state.handle.lock() {
                 if let Some(handle) = guard.take() {
                     let _ = handle.stop();
                 }
             }
+            close_region_outline(&app);
             close_recording_indicator(&app);
+
+            // Add to history and copy to clipboard
+            let path = state
+                .output_path
+                .lock()
+                .ok()
+                .and_then(|mut g| g.take())
+                .unwrap_or_default();
+            if !path.is_empty() {
+                let _ = commands::add_to_history(path.clone());
+                let _ = commands::copy_file_to_clipboard(path);
+            }
         } else {
             // Try a quick display count to verify SCK access works
             if snapforge_core::capture::display_count() == 0 {
@@ -210,62 +243,9 @@ pub fn trigger_recording(app: &AppHandle) {
 }
 
 /// Open the recording indicator after recording has started.
-/// On macOS/Windows: floating window excluded from screen capture.
-/// On Linux: no floating window (no reliable capture exclusion API); uses tray menu instead.
+/// Switch the system tray to recording mode (shows ● Recording... and ■ Stop).
 pub fn open_recording_indicator(app: &AppHandle) {
-    #[cfg(target_os = "linux")]
-    {
-        // On Linux, update tray to show recording status with a stop option.
-        tray::set_recording_tray(app, true);
-    }
-
-    #[cfg(not(target_os = "linux"))]
-    {
-        if let Some(window) = app.get_webview_window("recording-indicator") {
-            let _ = window.set_focus();
-            return;
-        }
-
-        if let Ok(window) = WebviewWindowBuilder::new(
-            app,
-            "recording-indicator",
-            WebviewUrl::App("recording.html".into()),
-        )
-        .title("Recording")
-        .inner_size(200.0, 50.0)
-        .resizable(false)
-        .decorations(false)
-        .always_on_top(true)
-        .transparent(true)
-        .build()
-        {
-            #[cfg(target_os = "macos")]
-            {
-                if let Ok(ns_win) = window.ns_window() {
-                    unsafe {
-                        let _: () = objc2::msg_send![
-                            ns_win as *const objc2::runtime::AnyObject,
-                            setSharingType: 0u64
-                        ];
-                    }
-                }
-            }
-
-            #[cfg(target_os = "windows")]
-            {
-                if let Ok(hwnd) = window.hwnd() {
-                    unsafe {
-                        windows_sys::Win32::UI::WindowsAndMessaging::SetWindowDisplayAffinity(
-                            hwnd.0 as _,
-                            0x11,
-                        );
-                    }
-                }
-            }
-
-            let _ = &window;
-        }
-    }
+    tray::set_recording_tray(app, true);
 }
 
 /// Open a fullscreen transparent overlay window that dims everything outside
@@ -312,6 +292,7 @@ pub fn open_region_outline(app: &AppHandle, x: f64, y: f64, w: f64, h: f64) {
                 .transparent(true)
                 .skip_taskbar(true)
                 .shadow(false)
+                .visible_on_all_workspaces(true)
                 .build()
         {
             #[cfg(target_os = "macos")]
@@ -327,6 +308,12 @@ pub fn open_region_outline(app: &AppHandle, x: f64, y: f64, w: f64, h: f64) {
                         let _: () = objc2::msg_send![
                             ns_win as *const objc2::runtime::AnyObject,
                             setIgnoresMouseEvents: true
+                        ];
+                        // Follow user across Spaces
+                        let behavior: u64 = (1 << 0) | (1 << 8);
+                        let _: () = objc2::msg_send![
+                            ns_win as *const objc2::runtime::AnyObject,
+                            setCollectionBehavior: behavior
                         ];
                     }
                 }
@@ -360,19 +347,9 @@ pub fn close_region_outline(app: &AppHandle) {
     }
 }
 
-/// Close the recording indicator (window or tray state).
+/// Restore the default system tray menu.
 pub fn close_recording_indicator(app: &AppHandle) {
-    #[cfg(target_os = "linux")]
-    {
-        tray::set_recording_tray(app, false);
-    }
-
-    #[cfg(not(target_os = "linux"))]
-    {
-        if let Some(window) = app.get_webview_window("recording-indicator") {
-            let _ = window.close();
-        }
-    }
+    tray::set_recording_tray(app, false);
 }
 
 /// Open history window (or focus if already open).

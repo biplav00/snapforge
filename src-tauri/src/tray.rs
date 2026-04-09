@@ -1,11 +1,8 @@
 use tauri::{
     menu::{Menu, MenuItem, PredefinedMenuItem},
-    tray::TrayIconBuilder,
+    tray::{TrayIconBuilder, TrayIconId},
     AppHandle,
 };
-
-#[cfg(target_os = "linux")]
-use tauri::tray::TrayIconId;
 
 const TRAY_ID: &str = "main-tray";
 
@@ -57,7 +54,6 @@ fn build_default_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     )
 }
 
-#[cfg(target_os = "linux")]
 fn build_recording_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     let recording_label = MenuItem::with_id(
         app,
@@ -101,9 +97,7 @@ fn handle_menu_event(app: &AppHandle, event: tauri::menu::MenuEvent) {
     }
 }
 
-/// On Linux: swap the tray menu between default and recording mode.
-/// On other platforms this is a no-op (they use the floating indicator window).
-#[cfg(target_os = "linux")]
+/// Swap the tray menu between default and recording mode.
 pub fn set_recording_tray(app: &AppHandle, recording: bool) {
     let tray_id = TrayIconId::new(TRAY_ID);
     if let Some(tray) = app.tray_by_id(&tray_id) {

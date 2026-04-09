@@ -68,7 +68,19 @@ impl ClickTracker {
 }
 
 #[cfg(target_os = "macos")]
-pub use macos_tap::MacOSClickTapHandle;
+pub use macos_tap::{has_accessibility_permission, MacOSClickTapHandle};
+
+/// Check if click tracking is available (Accessibility permission granted on macOS).
+pub fn has_click_tracking_permission() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        has_accessibility_permission()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        true
+    }
+}
 
 #[cfg(target_os = "macos")]
 mod macos_tap {
@@ -107,6 +119,8 @@ mod macos_tap {
         user_info: *mut c_void,
     ) -> CGEventRef;
 
+    type CFDictionaryRef = *const c_void;
+
     extern "C" {
         fn CGEventTapCreate(
             tap: u32,
@@ -129,6 +143,12 @@ mod macos_tap {
         fn CGEventGetLocation(event: CGEventRef) -> CGPoint;
         fn CFRelease(cf: *const c_void);
         static kCFRunLoopCommonModes: CFStringRef;
+        fn AXIsProcessTrustedWithOptions(options: CFDictionaryRef) -> bool;
+    }
+
+    /// Check if Accessibility permission is granted.
+    pub fn has_accessibility_permission() -> bool {
+        unsafe { AXIsProcessTrustedWithOptions(ptr::null()) }
     }
 
     /// Wrapper to make CFRunLoopRef Send/Sync — we only use it to signal stop.
