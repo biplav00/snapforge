@@ -85,7 +85,7 @@ fn close_all_overlays(app: &AppHandle) {
     }
 }
 
-/// Open a fullscreen transparent overlay window on each monitor.
+/// Open a fullscreen transparent overlay window on the primary monitor only.
 fn open_overlays(app: &AppHandle, base_url: &str) {
     close_all_overlays(app);
 
@@ -95,7 +95,7 @@ fn open_overlays(app: &AppHandle, base_url: &str) {
         .into_iter()
         .collect();
 
-    for (i, monitor) in monitors.iter().enumerate() {
+    if let Some(monitor) = monitors.first() {
         let size = monitor.size();
         let scale = monitor.scale_factor();
         let pos = monitor.position();
@@ -103,10 +103,10 @@ fn open_overlays(app: &AppHandle, base_url: &str) {
         let height = size.height as f64 / scale;
 
         let separator = if base_url.contains('?') { "&" } else { "?" };
-        let url = format!("{base_url}{separator}display={i}");
-        let label = format!("overlay-{i}");
+        let url = format!("{base_url}{separator}display=0");
+        let label = "overlay-0";
 
-        let _ = WebviewWindowBuilder::new(app, &label, WebviewUrl::App(url.into()))
+        let _ = WebviewWindowBuilder::new(app, label, WebviewUrl::App(url.into()))
             .title("")
             .inner_size(width, height)
             .position(pos.x as f64 / scale, pos.y as f64 / scale)
@@ -119,34 +119,19 @@ fn open_overlays(app: &AppHandle, base_url: &str) {
     }
 }
 
-/// Pre-capture all displays synchronously (must run BEFORE overlay opens).
-/// Uses parallel threads + fast PNG encoding for speed.
+/// Pre-capture the primary display (must run BEFORE overlay opens).
 fn pre_capture_all_displays(app: &AppHandle) {
-    let count = snapforge_core::capture::display_count();
-
-    let results: Vec<(usize, String)> = std::thread::scope(|s| {
-        let handles: Vec<_> = (0..count)
-            .map(|i| {
-                s.spawn(move || -> Option<(usize, String)> {
-                    let image = snapforge_core::capture::capture_fullscreen(i).ok()?;
-                    let bytes = snapforge_core::format::encode_image_fast(&image).ok()?;
-                    let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
-                    Some((i, b64))
-                })
-            })
-            .collect();
-
-        handles
-            .into_iter()
-            .filter_map(|h| h.join().ok().flatten())
-            .collect()
-    });
+    let Ok(image) = snapforge_core::capture::capture_fullscreen(0) else {
+        return;
+    };
+    let Ok(bytes) = snapforge_core::format::encode_image_fast(&image) else {
+        return;
+    };
+    let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
 
     if let Ok(mut guard) = app.state::<PreCapturedScreens>().0.lock() {
         guard.clear();
-        for (i, b64) in results {
-            guard.insert(i, b64);
-        }
+        guard.insert(0, b64);
     }
 }
 
