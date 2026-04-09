@@ -220,7 +220,8 @@ pub fn trigger_recording(app: &AppHandle) {
             close_region_outline(&app);
             close_recording_indicator(&app);
 
-            // Add to history and copy to clipboard
+            // Add to history (skip clipboard — calling NSPasteboard from a
+            // background thread is unsafe and video files can't be copied anyway)
             let path = state
                 .output_path
                 .lock()
@@ -228,8 +229,7 @@ pub fn trigger_recording(app: &AppHandle) {
                 .and_then(|mut g| g.take())
                 .unwrap_or_default();
             if !path.is_empty() {
-                let _ = commands::add_to_history(path.clone());
-                let _ = commands::copy_file_to_clipboard(path);
+                let _ = commands::add_to_history(path);
             }
         } else {
             // Try a quick display count to verify SCK access works
@@ -252,6 +252,13 @@ pub fn open_recording_indicator(app: &AppHandle) {
 /// the recording region and shows a dashed white border around it.
 /// Excluded from capture so it doesn't appear in the recording.
 pub fn open_region_outline(app: &AppHandle, x: f64, y: f64, w: f64, h: f64) {
+    let app_clone = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        open_region_outline_impl(&app_clone, x, y, w, h);
+    });
+}
+
+fn open_region_outline_impl(app: &AppHandle, x: f64, y: f64, w: f64, h: f64) {
     #[cfg(not(target_os = "linux"))]
     {
         close_region_outline(app);
@@ -342,9 +349,12 @@ pub fn open_region_outline(app: &AppHandle, x: f64, y: f64, w: f64, h: f64) {
 }
 
 pub fn close_region_outline(app: &AppHandle) {
-    if let Some(window) = app.get_webview_window("region-outline") {
-        let _ = window.close();
-    }
+    let app_clone = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        if let Some(window) = app_clone.get_webview_window("region-outline") {
+            let _ = window.close();
+        }
+    });
 }
 
 /// Restore the default system tray menu.

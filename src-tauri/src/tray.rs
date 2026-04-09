@@ -98,22 +98,26 @@ fn handle_menu_event(app: &AppHandle, event: tauri::menu::MenuEvent) {
 }
 
 /// Swap the tray menu between default and recording mode.
+/// Dispatches to the main thread because tray/menu APIs require it on macOS.
 pub fn set_recording_tray(app: &AppHandle, recording: bool) {
-    let tray_id = TrayIconId::new(TRAY_ID);
-    if let Some(tray) = app.tray_by_id(&tray_id) {
-        let menu = if recording {
-            build_recording_menu(app)
-        } else {
-            build_default_menu(app)
-        };
-        if let Ok(menu) = menu {
-            let _ = tray.set_menu(Some(menu));
+    let app_clone = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        let tray_id = TrayIconId::new(TRAY_ID);
+        if let Some(tray) = app_clone.tray_by_id(&tray_id) {
+            let menu = if recording {
+                build_recording_menu(&app_clone)
+            } else {
+                build_default_menu(&app_clone)
+            };
+            if let Ok(menu) = menu {
+                let _ = tray.set_menu(Some(menu));
+            }
+            let tooltip = if recording {
+                "Snapforge — Recording..."
+            } else {
+                "Snapforge"
+            };
+            let _ = tray.set_tooltip(Some(tooltip));
         }
-        let tooltip = if recording {
-            "Snapforge — Recording..."
-        } else {
-            "Snapforge"
-        };
-        let _ = tray.set_tooltip(Some(tooltip));
-    }
+    });
 }
