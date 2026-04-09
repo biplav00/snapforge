@@ -18,8 +18,18 @@ async function stopRecording() {
   if (stopping) return;
   stopping = true;
   try {
-    await invoke("stop_recording");
-    await invoke("show_toast", { message: "Recording saved!" });
+    const path = await invoke<string>("stop_recording");
+    if (path) {
+      // Try copying to clipboard — works for GIF, may fail for MP4 (that's OK)
+      try {
+        await invoke("copy_file_to_clipboard", { path });
+        await invoke("show_toast", { message: "Recording saved & copied!" });
+      } catch {
+        await invoke("show_toast", { message: "Recording saved!" });
+      }
+    } else {
+      await invoke("show_toast", { message: "Recording saved!" });
+    }
   } catch (e) {
     console.error("Failed to stop:", e);
   }

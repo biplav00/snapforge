@@ -310,22 +310,42 @@ pub fn start_recording(
             .map_err(|_| "recording thread panicked".to_string())?
             .map_err(|e| e.to_string())?;
 
+    let path_str = output_path.display().to_string();
+
     let mut guard = state.handle.lock().map_err(|e| e.to_string())?;
     *guard = Some(handle);
 
-    Ok(output_path.display().to_string())
+    if let Ok(mut path_guard) = state.output_path.lock() {
+        *path_guard = Some(path_str.clone());
+    }
+
+    Ok(path_str)
 }
 
-/// Stop recording.
+/// Stop recording. Returns the output file path.
+/// Adds the recording to history automatically.
 #[tauri::command]
 pub fn stop_recording(
     state: tauri::State<'_, crate::recording::RecordingState>,
-) -> Result<(), String> {
+) -> Result<String, String> {
     let mut guard = state.handle.lock().map_err(|e| e.to_string())?;
     if let Some(handle) = guard.take() {
         handle.stop().map_err(|e| e.to_string())?;
     }
-    Ok(())
+
+    let path = state
+        .output_path
+        .lock()
+        .map_err(|e| e.to_string())?
+        .take()
+        .unwrap_or_default();
+
+    // Add to history
+    if !path.is_empty() {
+        let _ = add_to_history(path.clone());
+    }
+
+    Ok(path)
 }
 
 /// Check if currently recording.

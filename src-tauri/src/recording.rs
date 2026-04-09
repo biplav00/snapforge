@@ -4,12 +4,14 @@ use std::sync::Mutex;
 
 pub struct RecordingState {
     pub handle: Mutex<Option<RecordingHandle>>,
+    pub output_path: Mutex<Option<String>>,
 }
 
 impl RecordingState {
     pub fn new() -> Self {
         Self {
             handle: Mutex::new(None),
+            output_path: Mutex::new(None),
         }
     }
 
