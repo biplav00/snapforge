@@ -268,6 +268,75 @@ pub fn open_recording_indicator(app: &AppHandle) {
     }
 }
 
+/// Open a transparent red-border window around the recording region.
+/// Excluded from capture so it doesn't appear in the recording.
+pub fn open_region_outline(app: &AppHandle, x: f64, y: f64, w: f64, h: f64) {
+    #[cfg(not(target_os = "linux"))]
+    {
+        close_region_outline(app);
+
+        if let Ok(window) = WebviewWindowBuilder::new(
+            app,
+            "region-outline",
+            WebviewUrl::App("outline.html".into()),
+        )
+        .title("")
+        .inner_size(w, h)
+        .position(x, y)
+        .resizable(false)
+        .decorations(false)
+        .always_on_top(true)
+        .transparent(true)
+        .skip_taskbar(true)
+        .shadow(false)
+        .build()
+        {
+            #[cfg(target_os = "macos")]
+            {
+                if let Ok(ns_win) = window.ns_window() {
+                    unsafe {
+                        // Exclude from screen capture
+                        let _: () = objc2::msg_send![
+                            ns_win as *const objc2::runtime::AnyObject,
+                            setSharingType: 0u64
+                        ];
+                        // Make click-through
+                        let _: () = objc2::msg_send![
+                            ns_win as *const objc2::runtime::AnyObject,
+                            setIgnoresMouseEvents: true
+                        ];
+                    }
+                }
+            }
+
+            #[cfg(target_os = "windows")]
+            {
+                if let Ok(hwnd) = window.hwnd() {
+                    unsafe {
+                        windows_sys::Win32::UI::WindowsAndMessaging::SetWindowDisplayAffinity(
+                            hwnd.0 as _,
+                            0x11,
+                        );
+                    }
+                }
+            }
+
+            let _ = &window;
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        let _ = (app, x, y, w, h);
+    }
+}
+
+pub fn close_region_outline(app: &AppHandle) {
+    if let Some(window) = app.get_webview_window("region-outline") {
+        let _ = window.close();
+    }
+}
+
 /// Close the recording indicator (window or tray state).
 pub fn close_recording_indicator(app: &AppHandle) {
     #[cfg(target_os = "linux")]

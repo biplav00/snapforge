@@ -326,12 +326,16 @@ pub fn start_recording(
 /// Adds the recording to history automatically.
 #[tauri::command]
 pub fn stop_recording(
+    app: tauri::AppHandle,
     state: tauri::State<'_, crate::recording::RecordingState>,
 ) -> Result<String, String> {
     let mut guard = state.handle.lock().map_err(|e| e.to_string())?;
     if let Some(handle) = guard.take() {
         handle.stop().map_err(|e| e.to_string())?;
     }
+
+    // Close the region outline if it's open
+    crate::close_region_outline(&app);
 
     let path = state
         .output_path
@@ -356,6 +360,7 @@ pub fn is_recording(state: tauri::State<'_, crate::recording::RecordingState>) -
 
 /// Start recording and open the indicator window.
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub fn start_recording_and_show_indicator(
     app: tauri::AppHandle,
     state: tauri::State<'_, crate::recording::RecordingState>,
@@ -364,9 +369,25 @@ pub fn start_recording_and_show_indicator(
     region_y: Option<i32>,
     region_w: Option<u32>,
     region_h: Option<u32>,
+    // Region in logical points (for window positioning)
+    region_point_x: Option<f64>,
+    region_point_y: Option<f64>,
+    region_point_w: Option<f64>,
+    region_point_h: Option<f64>,
 ) -> Result<String, String> {
     let path = start_recording(state, display, region_x, region_y, region_w, region_h)?;
     crate::open_recording_indicator(&app);
+
+    // Show region outline window if region recording
+    if let (Some(x), Some(y), Some(w), Some(h)) = (
+        region_point_x,
+        region_point_y,
+        region_point_w,
+        region_point_h,
+    ) {
+        crate::open_region_outline(&app, x, y, w, h);
+    }
+
     Ok(path)
 }
 

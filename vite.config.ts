@@ -16,6 +16,7 @@ export default defineConfig({
         preferences: resolve(__dirname, "preferences.html"),
         recording: resolve(__dirname, "recording.html"),
         history: resolve(__dirname, "history.html"),
+        outline: resolve(__dirname, "outline.html"),
       },
     },
   },

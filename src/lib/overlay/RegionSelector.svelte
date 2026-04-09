@@ -458,6 +458,10 @@ async function startRecordingRegion() {
       regionY: Math.round(regionY * dpr),
       regionW: Math.round(regionW * dpr),
       regionH: Math.round(regionH * dpr),
+      regionPointX: regionX,
+      regionPointY: regionY,
+      regionPointW: regionW,
+      regionPointH: regionH,
     });
     onRecordingStarted(path);
   } catch (err) {
