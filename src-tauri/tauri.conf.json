@@ -26,6 +26,9 @@
       "icons/icon.ico",
       "icons/icon.png"
     ],
+    "externalBin": [
+      "binaries/ffmpeg"
+    ],
     "macOS": {
       "entitlements": null,
       "signingIdentity": null,

@@ -44,34 +44,48 @@ pub fn find_ffmpeg(provided_path: Option<&PathBuf>) -> Result<PathBuf, RecordErr
         }
     }
 
+    // Platform-suffixed name used by Tauri's externalBin sidecars
+    let platform_name = if cfg!(target_os = "macos") && cfg!(target_arch = "aarch64") {
+        "ffmpeg-aarch64-apple-darwin"
+    } else if cfg!(target_os = "macos") && cfg!(target_arch = "x86_64") {
+        "ffmpeg-x86_64-apple-darwin"
+    } else if cfg!(target_os = "windows") {
+        "ffmpeg-x86_64-pc-windows-msvc.exe"
+    } else {
+        "ffmpeg"
+    };
+
     // Check adjacent to current executable (bundled in app)
     if let Ok(exe) = std::env::current_exe() {
         if let Some(exe_dir) = exe.parent() {
-            // Check in binaries/ subfolder (Tauri resources)
-            let bundled = exe_dir.join("binaries").join("ffmpeg");
-            if bundled.exists() {
-                return Ok(bundled);
+            // Tauri places externalBin sidecars directly next to the main binary
+            // in Contents/MacOS/ with the platform suffix
+            let sidecar = exe_dir.join(platform_name);
+            if sidecar.exists() {
+                return Ok(sidecar);
             }
 
-            // Check with platform suffix
-            let target = if cfg!(target_os = "macos") && cfg!(target_arch = "aarch64") {
-                "ffmpeg-aarch64-apple-darwin"
-            } else if cfg!(target_os = "macos") && cfg!(target_arch = "x86_64") {
-                "ffmpeg-x86_64-apple-darwin"
-            } else if cfg!(target_os = "windows") {
-                "ffmpeg-x86_64-pc-windows-msvc.exe"
-            } else {
-                "ffmpeg"
-            };
-            let bundled_platform = exe_dir.join("binaries").join(target);
-            if bundled_platform.exists() {
-                return Ok(bundled_platform);
+            // Also check in a binaries/ subfolder (dev build copies)
+            let bundled_in_subdir = exe_dir.join("binaries").join(platform_name);
+            if bundled_in_subdir.exists() {
+                return Ok(bundled_in_subdir);
             }
 
-            // Check directly next to exe
+            // Plain "ffmpeg" next to exe (fallback)
             let beside_exe = exe_dir.join("ffmpeg");
             if beside_exe.exists() {
                 return Ok(beside_exe);
+            }
+
+            // Walk up to find the workspace binaries/ folder in dev builds
+            for ancestor in exe_dir.ancestors().take(5) {
+                let dev_path = ancestor
+                    .join("src-tauri")
+                    .join("binaries")
+                    .join(platform_name);
+                if dev_path.exists() {
+                    return Ok(dev_path);
+                }
             }
         }
     }
