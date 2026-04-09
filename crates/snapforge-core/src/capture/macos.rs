@@ -3,9 +3,12 @@ use std::sync::mpsc;
 
 use image::RgbaImage;
 use objc2::rc::Retained;
+use objc2::AnyThread;
 use objc2_foundation::NSArray;
-use objc2_screen_capture_kit::SCDisplay;
-use objc2_screen_capture_kit::SCShareableContent;
+use objc2_screen_capture_kit::{
+    SCContentFilter, SCDisplay, SCScreenshotManager, SCShareableContent, SCStreamConfiguration,
+    SCWindow,
+};
 
 use crate::types::Rect;
 
@@ -70,7 +73,6 @@ fn get_shareable_displays() -> Option<Retained<NSArray<SCDisplay>>> {
 }
 
 /// Get the SCDisplay at the given index.
-#[allow(dead_code)]
 fn get_sc_display(display: usize) -> Result<Retained<SCDisplay>, CaptureError> {
     let displays = get_shareable_displays().ok_or(CaptureError::CaptureFailed)?;
     if display >= displays.len() {
@@ -83,9 +85,50 @@ pub fn display_count() -> usize {
     get_shareable_displays().map_or(0, |d| d.len())
 }
 
-pub fn capture_fullscreen(_display: usize) -> Result<RgbaImage, CaptureError> {
-    // Placeholder — implemented in Task 3
-    Err(CaptureError::CaptureFailed)
+pub fn capture_fullscreen(display: usize) -> Result<RgbaImage, CaptureError> {
+    let sc_display = get_sc_display(display)?;
+
+    let filter = unsafe {
+        let excluded: Retained<NSArray<SCWindow>> = NSArray::new();
+        SCContentFilter::initWithDisplay_excludingWindows(
+            SCContentFilter::alloc(),
+            &sc_display,
+            &excluded,
+        )
+    };
+
+    let config = unsafe {
+        let config = SCStreamConfiguration::new();
+        let w = sc_display.width() as usize;
+        let h = sc_display.height() as usize;
+        config.setWidth(w);
+        config.setHeight(h);
+        config.setShowsCursor(false);
+        config
+    };
+
+    let (tx, rx) = mpsc::channel::<Option<RgbaImage>>();
+    unsafe {
+        SCScreenshotManager::captureImageWithFilter_configuration_completionHandler(
+            &filter,
+            &config,
+            Some(&*block2::RcBlock::new(
+                move |cg_image: *mut objc2_core_graphics::CGImage,
+                      error: *mut objc2_foundation::NSError| {
+                    if error.is_null() && !cg_image.is_null() {
+                        let img = &*cg_image;
+                        let _ = tx.send(cg_image_to_rgba(img).ok());
+                    } else {
+                        let _ = tx.send(None);
+                    }
+                },
+            )),
+        );
+    }
+
+    rx.recv()
+        .map_err(|_| CaptureError::CaptureFailed)?
+        .ok_or(CaptureError::CaptureFailed)
 }
 
 pub fn capture_region(display: usize, region: Rect) -> Result<RgbaImage, CaptureError> {
@@ -104,16 +147,23 @@ pub fn capture_region(display: usize, region: Rect) -> Result<RgbaImage, Capture
     Ok(cropped)
 }
 
-#[allow(dead_code)]
-fn cg_image_to_rgba(cg_image: &core_graphics::image::CGImage) -> Result<RgbaImage, CaptureError> {
-    let width = cg_image.width() as u32;
-    let height = cg_image.height() as u32;
-    let bytes_per_row = cg_image.bytes_per_row();
-    let data = cg_image.data();
-    let raw_bytes: &[u8] = &data;
+fn cg_image_to_rgba(cg_image: &objc2_core_graphics::CGImage) -> Result<RgbaImage, CaptureError> {
+    use objc2_core_graphics::{CGDataProvider, CGImage};
+
+    let width = CGImage::width(Some(cg_image)) as u32;
+    let height = CGImage::height(Some(cg_image)) as u32;
+    let bytes_per_row = CGImage::bytes_per_row(Some(cg_image));
+
+    let provider = CGImage::data_provider(Some(cg_image)).ok_or(CaptureError::ImageDataFailed)?;
+    let cf_data = CGDataProvider::data(Some(&provider)).ok_or(CaptureError::ImageDataFailed)?;
+    let raw_bytes: &[u8] = unsafe { cf_data.as_bytes_unchecked() };
 
     let expected_pixels = (width * height) as usize;
     let expected_bytes = expected_pixels * 4;
+
+    if height == 0 || width == 0 {
+        return Err(CaptureError::ImageDataFailed);
+    }
 
     let last_row_start = (height as usize - 1) * bytes_per_row;
     let min_required = last_row_start + (width as usize) * 4;
