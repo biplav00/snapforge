@@ -268,28 +268,51 @@ pub fn open_recording_indicator(app: &AppHandle) {
     }
 }
 
-/// Open a transparent red-border window around the recording region.
+/// Open a fullscreen transparent overlay window that dims everything outside
+/// the recording region and shows a dashed white border around it.
 /// Excluded from capture so it doesn't appear in the recording.
 pub fn open_region_outline(app: &AppHandle, x: f64, y: f64, w: f64, h: f64) {
     #[cfg(not(target_os = "linux"))]
     {
         close_region_outline(app);
 
-        if let Ok(window) = WebviewWindowBuilder::new(
-            app,
-            "region-outline",
-            WebviewUrl::App("outline.html".into()),
-        )
-        .title("")
-        .inner_size(w, h)
-        .position(x, y)
-        .resizable(false)
-        .decorations(false)
-        .always_on_top(true)
-        .transparent(true)
-        .skip_taskbar(true)
-        .shadow(false)
-        .build()
+        // Find the monitor containing the region
+        let monitors: Vec<_> = app
+            .available_monitors()
+            .unwrap_or_default()
+            .into_iter()
+            .collect();
+
+        let monitor = monitors.first();
+        let (mon_x, mon_y, mon_w, mon_h) = monitor.map_or((0.0, 0.0, w, h), |m| {
+            let pos = m.position();
+            let size = m.size();
+            let scale = m.scale_factor();
+            (
+                f64::from(pos.x) / scale,
+                f64::from(pos.y) / scale,
+                f64::from(size.width) / scale,
+                f64::from(size.height) / scale,
+            )
+        });
+
+        // Region coordinates relative to the monitor's top-left
+        let rel_x = x - mon_x;
+        let rel_y = y - mon_y;
+        let url = format!("outline.html?x={rel_x}&y={rel_y}&w={w}&h={h}");
+
+        if let Ok(window) =
+            WebviewWindowBuilder::new(app, "region-outline", WebviewUrl::App(url.into()))
+                .title("")
+                .inner_size(mon_w, mon_h)
+                .position(mon_x, mon_y)
+                .resizable(false)
+                .decorations(false)
+                .always_on_top(true)
+                .transparent(true)
+                .skip_taskbar(true)
+                .shadow(false)
+                .build()
         {
             #[cfg(target_os = "macos")]
             {
