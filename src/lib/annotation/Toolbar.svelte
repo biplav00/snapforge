@@ -65,8 +65,31 @@ let initialized = false;
 
 $effect(() => {
   if (!initialized) {
-    toolbarTop = regionY + regionH + 40 > window.innerHeight ? regionY - 36 : regionY + regionH + 6;
+    const TOOLBAR_HEIGHT = 36;
+    const MARGIN = 6;
+    const PADDING = 10;
+    const winH = window.innerHeight;
+    const winW = window.innerWidth;
+
+    // Try below the region
+    if (regionY + regionH + TOOLBAR_HEIGHT + MARGIN <= winH) {
+      toolbarTop = regionY + regionH + MARGIN;
+    }
+    // Try above the region
+    else if (regionY - TOOLBAR_HEIGHT - MARGIN >= 0) {
+      toolbarTop = regionY - TOOLBAR_HEIGHT;
+    }
+    // Inside region, near the bottom
+    else {
+      toolbarTop = Math.max(PADDING, regionY + regionH - TOOLBAR_HEIGHT - PADDING);
+    }
+
+    // Center horizontally on the region, but keep within window bounds
     toolbarLeft = regionX + regionW / 2;
+    // Approximate toolbar half-width for clamping (~280px wide)
+    const halfWidth = 280;
+    toolbarLeft = Math.max(halfWidth + PADDING, Math.min(winW - halfWidth - PADDING, toolbarLeft));
+
     initialized = true;
   }
 });
