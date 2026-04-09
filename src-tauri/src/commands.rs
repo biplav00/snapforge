@@ -269,6 +269,8 @@ pub fn check_ffmpeg() -> Result<(), String> {
 }
 
 /// Start recording. Returns the output file path.
+/// Runs the actual recording start on a background thread since SCK capture
+/// (used for the test frame) needs the main RunLoop to be free.
 #[tauri::command]
 pub fn start_recording(
     state: tauri::State<'_, crate::recording::RecordingState>,
@@ -301,8 +303,12 @@ pub fn start_recording(
         ffmpeg_path: None, // will search bundled sidecar then system PATH
     };
 
-    let handle = snapforge_core::record::ffmpeg::start_recording(record_config)
-        .map_err(|e| e.to_string())?;
+    // Run on background thread — SCK capture (test frame) needs the main RunLoop free
+    let handle =
+        std::thread::spawn(move || snapforge_core::record::ffmpeg::start_recording(record_config))
+            .join()
+            .map_err(|_| "recording thread panicked".to_string())?
+            .map_err(|e| e.to_string())?;
 
     let mut guard = state.handle.lock().map_err(|e| e.to_string())?;
     *guard = Some(handle);
