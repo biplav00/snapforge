@@ -45,7 +45,7 @@ pub fn start_recording(config: RecordConfig) -> Result<RecordingHandle, RecordEr
     let ffmpeg_path = super::find_ffmpeg(config.ffmpeg_path.as_ref())?;
 
     // Capture one test frame to get dimensions
-    let test_frame = if let Some(region) = &config.region {
+    let raw_test_frame = if let Some(region) = &config.region {
         capture::capture_region(config.display, *region)
             .map_err(|e| RecordError::CaptureFailed(e.to_string()))?
     } else {
@@ -53,8 +53,14 @@ pub fn start_recording(config: RecordConfig) -> Result<RecordingHandle, RecordEr
             .map_err(|e| RecordError::CaptureFailed(e.to_string()))?
     };
 
-    let width = test_frame.width();
-    let height = test_frame.height();
+    // libx264 with yuv420p requires even dimensions — crop to nearest even size if needed
+    let width = raw_test_frame.width() & !1;
+    let height = raw_test_frame.height() & !1;
+    let test_frame = if width != raw_test_frame.width() || height != raw_test_frame.height() {
+        image::imageops::crop_imm(&raw_test_frame, 0, 0, width, height).to_image()
+    } else {
+        raw_test_frame
+    };
 
     let mut child = spawn_ffmpeg(&ffmpeg_path, &config, width, height)?;
     let mut stdin = child
@@ -132,7 +138,13 @@ pub fn start_recording(config: RecordConfig) -> Result<RecordingHandle, RecordEr
             };
 
             if let Ok(img) = frame {
-                if writer.write_all(img.as_raw()).is_err() {
+                // Ensure frame matches the announced dimensions (crop to even size if needed)
+                let final_frame = if img.width() != width || img.height() != height {
+                    image::imageops::crop_imm(&img, 0, 0, width, height).to_image()
+                } else {
+                    img
+                };
+                if writer.write_all(final_frame.as_raw()).is_err() {
                     break;
                 }
             }
