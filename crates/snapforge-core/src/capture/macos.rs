@@ -218,8 +218,40 @@ mod tests {
     }
 
     #[test]
+    fn test_capture_fullscreen_main() {
+        let img = capture_fullscreen(0);
+        if let Ok(img) = img {
+            assert!(img.width() > 0);
+            assert!(img.height() > 0);
+        }
+    }
+
+    #[test]
+    fn test_capture_region_main() {
+        let region = crate::types::Rect {
+            x: 0,
+            y: 0,
+            width: 100,
+            height: 100,
+        };
+        let img = capture_region(0, region);
+        if let Ok(img) = img {
+            assert_eq!(img.width(), 100);
+            assert_eq!(img.height(), 100);
+        }
+    }
+
+    #[test]
     fn test_invalid_display() {
         let result = capture_fullscreen(99);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_get_shareable_displays() {
+        let displays = get_shareable_displays();
+        if let Some(displays) = displays {
+            assert!(displays.len() > 0);
+        }
     }
 }
