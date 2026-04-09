@@ -9,6 +9,25 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+#[derive(Copy, Clone)]
+enum PixelFormat {
+    #[cfg(not(target_os = "macos"))]
+    Rgba,
+    #[cfg(target_os = "macos")]
+    Bgra,
+}
+
+impl PixelFormat {
+    fn ffmpeg_name(self) -> &'static str {
+        match self {
+            #[cfg(not(target_os = "macos"))]
+            Self::Rgba => "rgba",
+            #[cfg(target_os = "macos")]
+            Self::Bgra => "bgra",
+        }
+    }
+}
+
 pub struct RecordingHandle {
     stop_flag: Arc<AtomicBool>,
     thread: Option<std::thread::JoinHandle<Result<(), RecordError>>>,
@@ -45,6 +64,24 @@ pub fn start_recording(config: RecordConfig) -> Result<RecordingHandle, RecordEr
     // Find FFmpeg binary (bundled or system)
     let ffmpeg_path = super::find_ffmpeg(config.ffmpeg_path.as_ref())?;
 
+    // For macOS, use the fast BGRA path and downscale large captures for performance.
+    #[cfg(target_os = "macos")]
+    {
+        start_recording_macos_bgra(config, ffmpeg_path)
+    }
+
+    // Non-macOS: RGBA path via xcap (unchanged legacy flow).
+    #[cfg(not(target_os = "macos"))]
+    {
+        start_recording_rgba(config, ffmpeg_path)
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn start_recording_rgba(
+    config: RecordConfig,
+    ffmpeg_path: std::path::PathBuf,
+) -> Result<RecordingHandle, RecordError> {
     // Capture one test frame to get dimensions
     let raw_test_frame = if let Some(region) = &config.region {
         capture::capture_region(config.display, *region)
@@ -63,7 +100,7 @@ pub fn start_recording(config: RecordConfig) -> Result<RecordingHandle, RecordEr
         raw_test_frame
     };
 
-    let mut child = spawn_ffmpeg(&ffmpeg_path, &config, width, height)?;
+    let mut child = spawn_ffmpeg(&ffmpeg_path, &config, width, height, PixelFormat::Rgba)?;
     let mut stdin = child
         .stdin
         .take()
@@ -76,31 +113,13 @@ pub fn start_recording(config: RecordConfig) -> Result<RecordingHandle, RecordEr
     let region = config.region;
     let display = config.display;
 
-    // Start click tracker — captures global clicks for visualization.
-    // Requires Accessibility permission on macOS; silently no-op if denied.
-    let click_tracker = ClickTracker::new();
-    #[cfg(target_os = "macos")]
-    let _click_tap_handle = click_tracker.start_macos_tap();
-
-    // Scale factor for converting CG event coordinates (points) to frame pixels.
-    // Queried from the primary display's mode (1.0 for non-Retina, 2.0 for Retina).
-    let point_to_pixel_scale = capture::display_scale_factor();
-
     let thread = std::thread::spawn(move || -> Result<(), RecordError> {
-        // Create a reusable capture context on this thread — avoids per-frame SCK setup
-        #[cfg(target_os = "macos")]
-        let capture_ctx = capture::CaptureContext::new(display)
-            .map_err(|e| RecordError::CaptureFailed(e.to_string()))?;
-
         // Use 256KB buffer — better for pipe throughput than full-frame buffer
         let mut writer = std::io::BufWriter::with_capacity(256 * 1024, &mut stdin);
 
         // Cache the last successfully captured frame so we can duplicate it
-        // when capture fails or we fall behind. This keeps the output's
-        // wall-clock duration in sync with the recording duration.
         let mut last_frame: image::RgbaImage = test_frame;
 
-        // Write the first frame
         writer
             .write_all(last_frame.as_raw())
             .map_err(|e| RecordError::WriteFailed(e.to_string()))?;
@@ -113,48 +132,20 @@ pub fn start_recording(config: RecordConfig) -> Result<RecordingHandle, RecordEr
             let target_time = start + frame_interval * frame_count as u32;
             let now = Instant::now();
 
-            // Sleep until the next tick if we're early
             if now < target_time {
                 std::thread::sleep(target_time - now);
             }
 
-            // Capture the next frame
             let frame_result = if let Some(r) = &region {
-                #[cfg(target_os = "macos")]
-                {
-                    capture_ctx.capture_frame().and_then(|full| {
-                        let x = r.x.max(0) as u32;
-                        let y = r.y.max(0) as u32;
-                        let w = r.width.min(full.width().saturating_sub(x));
-                        let h = r.height.min(full.height().saturating_sub(y));
-                        if w == 0 || h == 0 {
-                            return Err(capture::CaptureError::CaptureFailed);
-                        }
-                        Ok(image::imageops::crop_imm(&full, x, y, w, h).to_image())
-                    })
-                }
-                #[cfg(not(target_os = "macos"))]
-                {
-                    capture::capture_region(display, *r)
-                }
+                capture::capture_region(display, *r)
             } else {
-                #[cfg(target_os = "macos")]
-                {
-                    capture_ctx.capture_frame()
-                }
-                #[cfg(not(target_os = "macos"))]
-                {
-                    capture::capture_fullscreen(display)
-                }
+                capture::capture_fullscreen(display)
             };
 
-            // Determine how many frames we need to write to stay in sync.
-            // If we're behind, duplicate the most recent frame to fill the gap.
             let elapsed_frames =
                 (start.elapsed().as_secs_f64() / frame_interval.as_secs_f64()) as u64;
             let frames_to_write = elapsed_frames.saturating_sub(frame_count - 1).max(1);
 
-            // Update the cached frame if capture succeeded
             if let Ok(img) = frame_result {
                 let cropped = if img.width() != width || img.height() != height {
                     image::imageops::crop_imm(&img, 0, 0, width, height).to_image()
@@ -164,21 +155,12 @@ pub fn start_recording(config: RecordConfig) -> Result<RecordingHandle, RecordEr
                 last_frame = cropped;
             }
 
-            // Compose with click markers (re-drawn each write to animate the fade)
             for _ in 0..frames_to_write {
-                let mut composed = last_frame.clone();
-                draw_clicks(
-                    &mut composed,
-                    &click_tracker,
-                    region.as_ref(),
-                    point_to_pixel_scale,
-                );
-                if writer.write_all(composed.as_raw()).is_err() {
+                if writer.write_all(last_frame.as_raw()).is_err() {
                     break;
                 }
             }
 
-            // Advance frame_count to match what we actually wrote
             frame_count = frame_count + frames_to_write - 1;
         }
 
@@ -222,6 +204,324 @@ pub fn start_recording(config: RecordConfig) -> Result<RecordingHandle, RecordEr
         stop_flag,
         thread: Some(thread),
     })
+}
+
+/// macOS fast path: capture directly in BGRA and pipe to FFmpeg without
+/// per-pixel channel swapping. Downscales large captures to keep up with fps.
+#[cfg(target_os = "macos")]
+fn start_recording_macos_bgra(
+    config: RecordConfig,
+    ffmpeg_path: std::path::PathBuf,
+) -> Result<RecordingHandle, RecordError> {
+    // Cap output at ~1080p for recording to keep per-frame cost reasonable.
+    // For screenshots we always use native resolution; this cap is recording-only.
+    let max_dimension = Some(1920u32);
+
+    // Build the capture context upfront to determine the output dimensions.
+    // We create it once here and then recreate it on the recording thread
+    // (ObjC objects are not Send).
+    let ctx_probe = capture::CaptureContext::new(config.display, max_dimension)
+        .map_err(|e| RecordError::CaptureFailed(e.to_string()))?;
+    let full_width = ctx_probe.output_width;
+    let full_height = ctx_probe.output_height;
+    drop(ctx_probe);
+
+    // Scale factor from native pixel coords → downscaled output coords.
+    // The region from the frontend is in native pixels; we need to scale it.
+    let native_w = capture::macos::primary_display_pixel_width() as f64;
+    let native_h = capture::macos::primary_display_pixel_height() as f64;
+    let sx = if native_w > 0.0 {
+        f64::from(full_width) / native_w
+    } else {
+        1.0
+    };
+    let sy = if native_h > 0.0 {
+        f64::from(full_height) / native_h
+    } else {
+        1.0
+    };
+
+    #[allow(clippy::cast_possible_wrap)]
+    let (width, height, region_in_scaled) = if let Some(r) = &config.region {
+        let rx = ((f64::from(r.x) * sx) as u32) & !1;
+        let ry = ((f64::from(r.y) * sy) as u32) & !1;
+        let rw = ((f64::from(r.width) * sx) as u32) & !1;
+        let rh = ((f64::from(r.height) * sy) as u32) & !1;
+        (
+            rw,
+            rh,
+            Some(crate::types::Rect {
+                x: rx as i32,
+                y: ry as i32,
+                width: rw,
+                height: rh,
+            }),
+        )
+    } else {
+        (full_width, full_height, None)
+    };
+
+    if width == 0 || height == 0 {
+        return Err(RecordError::CaptureFailed("invalid dimensions".into()));
+    }
+
+    let mut child = spawn_ffmpeg(&ffmpeg_path, &config, width, height, PixelFormat::Bgra)?;
+    let mut stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| RecordError::FfmpegSpawnFailed("no stdin".into()))?;
+    let stderr = child.stderr.take();
+
+    let stop_flag = Arc::new(AtomicBool::new(false));
+    let stop_clone = stop_flag.clone();
+    let frame_interval = Duration::from_secs_f64(1.0 / config.fps as f64);
+    let display = config.display;
+
+    // Click tracking
+    let click_tracker = ClickTracker::new();
+    let _click_tap_handle = click_tracker.start_macos_tap();
+
+    // Clicks come in points; convert to scaled-frame pixels.
+    let native_scale = capture::display_scale_factor();
+    let point_to_scaled_pixel_x = native_scale * sx;
+    let point_to_scaled_pixel_y = native_scale * sy;
+
+    let thread = std::thread::spawn(move || -> Result<(), RecordError> {
+        let ctx = capture::CaptureContext::new(display, max_dimension)
+            .map_err(|e| RecordError::CaptureFailed(e.to_string()))?;
+
+        let mut writer = std::io::BufWriter::with_capacity(256 * 1024, &mut stdin);
+
+        // Capture the initial frame
+        let mut last_frame_bytes: Vec<u8> = match ctx.capture_frame_raw_bgra() {
+            Ok(f) => crop_bgra_to_region(
+                &f.bytes,
+                f.width,
+                f.height,
+                region_in_scaled.as_ref(),
+                width,
+                height,
+            ),
+            Err(_) => vec![0u8; (width as usize) * (height as usize) * 4],
+        };
+
+        writer
+            .write_all(&last_frame_bytes)
+            .map_err(|e| RecordError::WriteFailed(e.to_string()))?;
+
+        let start = Instant::now();
+        let mut frame_count: u64 = 1;
+
+        while !stop_clone.load(Ordering::SeqCst) {
+            frame_count += 1;
+            let target_time = start + frame_interval * frame_count as u32;
+            let now = Instant::now();
+
+            if now < target_time {
+                std::thread::sleep(target_time - now);
+            }
+
+            if let Ok(raw) = ctx.capture_frame_raw_bgra() {
+                last_frame_bytes = crop_bgra_to_region(
+                    &raw.bytes,
+                    raw.width,
+                    raw.height,
+                    region_in_scaled.as_ref(),
+                    width,
+                    height,
+                );
+            }
+
+            let elapsed_frames =
+                (start.elapsed().as_secs_f64() / frame_interval.as_secs_f64()) as u64;
+            let frames_to_write = elapsed_frames.saturating_sub(frame_count - 1).max(1);
+
+            // For each frame we need to write, draw clicks onto a copy and send it
+            for _ in 0..frames_to_write {
+                let mut composed = last_frame_bytes.clone();
+                draw_clicks_bgra(
+                    &mut composed,
+                    width,
+                    height,
+                    &click_tracker,
+                    region_in_scaled.as_ref(),
+                    point_to_scaled_pixel_x,
+                    point_to_scaled_pixel_y,
+                );
+                if writer.write_all(&composed).is_err() {
+                    break;
+                }
+            }
+
+            frame_count = frame_count + frames_to_write - 1;
+        }
+
+        drop(writer);
+        drop(stdin);
+
+        let status = child
+            .wait()
+            .map_err(|e| RecordError::WriteFailed(e.to_string()))?;
+
+        if !status.success() {
+            let stderr_msg = if let Some(mut err) = stderr {
+                let mut buf = String::new();
+                let _ = err.read_to_string(&mut buf);
+                if buf.is_empty() {
+                    format!("ffmpeg exited with code: {:?}", status.code())
+                } else {
+                    let trimmed = if buf.len() > 500 {
+                        &buf[buf.len() - 500..]
+                    } else {
+                        &buf
+                    };
+                    format!(
+                        "ffmpeg exited with code {:?}: {}",
+                        status.code(),
+                        trimmed.trim()
+                    )
+                }
+            } else {
+                format!("ffmpeg exited with code: {:?}", status.code())
+            };
+            return Err(RecordError::WriteFailed(stderr_msg));
+        }
+
+        Ok(())
+    });
+
+    Ok(RecordingHandle {
+        stop_flag,
+        thread: Some(thread),
+    })
+}
+
+/// Crop a BGRA buffer to the target region (or return as-is if no region).
+/// If the source and target sizes already match and there's no region, returns a copy.
+#[cfg(target_os = "macos")]
+fn crop_bgra_to_region(
+    src: &[u8],
+    src_w: u32,
+    src_h: u32,
+    region: Option<&crate::types::Rect>,
+    dst_w: u32,
+    dst_h: u32,
+) -> Vec<u8> {
+    let src_stride = (src_w as usize) * 4;
+    let dst_stride = (dst_w as usize) * 4;
+
+    if let Some(r) = region {
+        let rx = r.x.max(0) as usize;
+        let ry = r.y.max(0) as usize;
+        let rw = (r.width as usize).min((src_w as usize).saturating_sub(rx));
+        let rh = (r.height as usize).min((src_h as usize).saturating_sub(ry));
+        let rw = rw.min(dst_w as usize);
+        let rh = rh.min(dst_h as usize);
+
+        let mut dst = vec![0u8; dst_stride * (dst_h as usize)];
+        for y in 0..rh {
+            let src_off = (ry + y) * src_stride + rx * 4;
+            let dst_off = y * dst_stride;
+            dst[dst_off..dst_off + rw * 4].copy_from_slice(&src[src_off..src_off + rw * 4]);
+        }
+        dst
+    } else if src_w == dst_w && src_h == dst_h {
+        src.to_vec()
+    } else {
+        // Fallback: crop to top-left dst_w x dst_h
+        let mut dst = vec![0u8; dst_stride * (dst_h as usize)];
+        let copy_w = (dst_w as usize).min(src_w as usize) * 4;
+        let copy_h = (dst_h as usize).min(src_h as usize);
+        for y in 0..copy_h {
+            let src_off = y * src_stride;
+            let dst_off = y * dst_stride;
+            dst[dst_off..dst_off + copy_w].copy_from_slice(&src[src_off..src_off + copy_w]);
+        }
+        dst
+    }
+}
+
+/// Draw click markers onto a BGRA buffer (in-place).
+#[cfg(target_os = "macos")]
+#[allow(
+    clippy::too_many_arguments,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_precision_loss,
+    clippy::cast_possible_wrap
+)]
+fn draw_clicks_bgra(
+    buf: &mut [u8],
+    width: u32,
+    height: u32,
+    tracker: &ClickTracker,
+    region: Option<&crate::types::Rect>,
+    scale_x: f64,
+    scale_y: f64,
+) {
+    const CLICK_LIFETIME_MS: u64 = 800;
+    const BASE_RADIUS: f64 = 24.0;
+    const RING_THICKNESS: f64 = 4.0;
+
+    let clicks = tracker.recent(CLICK_LIFETIME_MS);
+    if clicks.is_empty() {
+        return;
+    }
+
+    let now = Instant::now();
+    let fw = f64::from(width);
+    let fh = f64::from(height);
+    let stride = (width as usize) * 4;
+
+    let (region_x, region_y) = region.map_or((0, 0), |r| (r.x, r.y));
+
+    for click in &clicks {
+        let age_ms = now.duration_since(click.timestamp).as_millis() as f64;
+        let t = age_ms / CLICK_LIFETIME_MS as f64;
+        let alpha = ((1.0 - t) * 255.0).clamp(0.0, 255.0) as u8;
+        let radius = BASE_RADIUS + t * 16.0;
+
+        // Click in scaled-frame coordinates, then offset by region
+        let px = click.x * scale_x - f64::from(region_x);
+        let py = click.y * scale_y - f64::from(region_y);
+
+        if px < -radius || py < -radius || px > fw + radius || py > fh + radius {
+            continue;
+        }
+
+        let inner = radius - RING_THICKNESS;
+        let inner_sq = inner * inner;
+        let outer_sq = radius * radius;
+
+        let min_x = (px - radius).floor().max(0.0) as u32;
+        let max_x = ((px + radius).ceil() as u32).min(width.saturating_sub(1));
+        let min_y = (py - radius).floor().max(0.0) as u32;
+        let max_y = ((py + radius).ceil() as u32).min(height.saturating_sub(1));
+
+        let src_a = f32::from(alpha) / 255.0;
+        if src_a <= 0.0 {
+            continue;
+        }
+        let inv_a = 1.0 - src_a;
+
+        // Red ring in BGRA: B=60, G=60, R=255
+        let (sb, sg, sr) = (60u8, 60u8, 255u8);
+
+        for y in min_y..=max_y {
+            for x in min_x..=max_x {
+                let dx = f64::from(x) - px;
+                let dy = f64::from(y) - py;
+                let dist_sq = dx * dx + dy * dy;
+                if dist_sq <= outer_sq && dist_sq >= inner_sq {
+                    let off = (y as usize) * stride + (x as usize) * 4;
+                    buf[off] = (f32::from(sb) * src_a + f32::from(buf[off]) * inv_a) as u8;
+                    buf[off + 1] = (f32::from(sg) * src_a + f32::from(buf[off + 1]) * inv_a) as u8;
+                    buf[off + 2] = (f32::from(sr) * src_a + f32::from(buf[off + 2]) * inv_a) as u8;
+                    buf[off + 3] = 255;
+                }
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -293,111 +593,12 @@ mod tests {
     }
 }
 
-/// Draw click indicators on a frame. Recent clicks appear as a fading red ring.
-/// Click coordinates are in screen points and need to be converted to frame pixels.
-#[allow(
-    clippy::cast_possible_wrap,
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    clippy::cast_precision_loss
-)]
-fn draw_clicks(
-    frame: &mut image::RgbaImage,
-    tracker: &ClickTracker,
-    region: Option<&crate::types::Rect>,
-    point_to_pixel_scale: f64,
-) {
-    const CLICK_LIFETIME_MS: u64 = 800;
-    const BASE_RADIUS: f64 = 24.0;
-    const RING_THICKNESS: f64 = 4.0;
-
-    let clicks = tracker.recent(CLICK_LIFETIME_MS);
-    if clicks.is_empty() {
-        return;
-    }
-
-    let now = Instant::now();
-    let fw = f64::from(frame.width());
-    let fh = f64::from(frame.height());
-
-    // Region offset in pixels (0,0 for fullscreen)
-    let (region_x, region_y) = region.map_or((0, 0), |r| (r.x, r.y));
-
-    for click in &clicks {
-        let age_ms = now.duration_since(click.timestamp).as_millis() as f64;
-        let t = age_ms / CLICK_LIFETIME_MS as f64; // 0.0 → 1.0
-
-        // Fade out alpha and grow radius
-        let alpha = ((1.0 - t) * 255.0).clamp(0.0, 255.0) as u8;
-        let radius = BASE_RADIUS + t * 16.0;
-
-        // Convert click screen-point to frame-pixel coordinates
-        let px = click.x * point_to_pixel_scale - f64::from(region_x);
-        let py = click.y * point_to_pixel_scale - f64::from(region_y);
-
-        // Skip clicks outside the frame
-        if px < -radius || py < -radius || px > fw + radius || py > fh + radius {
-            continue;
-        }
-
-        draw_ring(frame, px, py, radius, RING_THICKNESS, [255, 60, 60, alpha]);
-    }
-}
-
-/// Draw a filled ring (hollow circle) onto an RGBA image with alpha blending.
-#[allow(
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss,
-    clippy::cast_precision_loss
-)]
-fn draw_ring(
-    img: &mut image::RgbaImage,
-    cx: f64,
-    cy: f64,
-    outer_radius: f64,
-    thickness: f64,
-    color: [u8; 4],
-) {
-    let inner = outer_radius - thickness;
-    let inner_sq = inner * inner;
-    let outer_sq = outer_radius * outer_radius;
-    let w = img.width();
-    let h = img.height();
-
-    let min_x = (cx - outer_radius).floor().max(0.0) as u32;
-    let max_x = ((cx + outer_radius).ceil() as u32).min(w.saturating_sub(1));
-    let min_y = (cy - outer_radius).floor().max(0.0) as u32;
-    let max_y = ((cy + outer_radius).ceil() as u32).min(h.saturating_sub(1));
-
-    let src_a = f32::from(color[3]) / 255.0;
-    if src_a <= 0.0 {
-        return;
-    }
-
-    for y in min_y..=max_y {
-        for x in min_x..=max_x {
-            let dx = f64::from(x) - cx;
-            let dy = f64::from(y) - cy;
-            let dist_sq = dx * dx + dy * dy;
-            if dist_sq <= outer_sq && dist_sq >= inner_sq {
-                let pixel = img.get_pixel_mut(x, y);
-                // Alpha blend src over dst
-                let inv_a = 1.0 - src_a;
-                pixel.0[0] = (f32::from(color[0]) * src_a + f32::from(pixel.0[0]) * inv_a) as u8;
-                pixel.0[1] = (f32::from(color[1]) * src_a + f32::from(pixel.0[1]) * inv_a) as u8;
-                pixel.0[2] = (f32::from(color[2]) * src_a + f32::from(pixel.0[2]) * inv_a) as u8;
-                // Keep alpha channel saturated
-                pixel.0[3] = 255;
-            }
-        }
-    }
-}
-
 fn spawn_ffmpeg(
     ffmpeg_path: &Path,
     config: &RecordConfig,
     width: u32,
     height: u32,
+    pixel_format: PixelFormat,
 ) -> Result<Child, RecordError> {
     let crf = match config.quality {
         RecordingQuality::Low => "28",
@@ -419,7 +620,7 @@ fn spawn_ffmpeg(
         "-f".into(),
         "rawvideo".into(),
         "-pix_fmt".into(),
-        "rgba".into(),
+        pixel_format.ffmpeg_name().into(),
         "-s".into(),
         size_arg,
         "-r".into(),

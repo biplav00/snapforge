@@ -45,6 +45,34 @@ pub fn primary_display_scale_factor() -> f64 {
     }
 }
 
+/// Get the native pixel width of the primary display.
+pub fn primary_display_pixel_width() -> usize {
+    unsafe {
+        let display_id = CGMainDisplayID();
+        let mode = CGDisplayCopyDisplayMode(display_id);
+        if mode.is_null() {
+            return 0;
+        }
+        let w = CGDisplayModeGetPixelWidth(mode);
+        CGDisplayModeRelease(mode);
+        w
+    }
+}
+
+/// Get the native pixel height of the primary display.
+pub fn primary_display_pixel_height() -> usize {
+    unsafe {
+        let display_id = CGMainDisplayID();
+        let mode = CGDisplayCopyDisplayMode(display_id);
+        if mode.is_null() {
+            return 0;
+        }
+        let h = CGDisplayModeGetPixelHeight(mode);
+        CGDisplayModeRelease(mode);
+        h
+    }
+}
+
 /// Get the true backing pixel dimensions for a display (Retina-aware).
 fn display_pixel_size(display_id: u32) -> (usize, usize) {
     unsafe {
@@ -189,12 +217,22 @@ fn capture_with_filter(
 pub struct CaptureContext {
     filter: Retained<SCContentFilter>,
     config: Retained<SCStreamConfiguration>,
+    pub output_width: u32,
+    pub output_height: u32,
+}
+
+/// A raw captured frame in tightly-packed BGRA format (what SCK returns natively).
+pub struct RawFrame {
+    pub bytes: Vec<u8>,
+    pub width: u32,
+    pub height: u32,
 }
 
 impl CaptureContext {
     /// Create a capture context for a given display.
-    /// Must be called from a background thread.
-    pub fn new(display: usize) -> Result<Self, CaptureError> {
+    /// `max_dimension` optionally limits the output size (e.g. 1920 to cap at ~1080p
+    /// while preserving aspect ratio). Pass None for native resolution.
+    pub fn new(display: usize, max_dimension: Option<u32>) -> Result<Self, CaptureError> {
         let displays = get_shareable_displays().ok_or(CaptureError::CaptureFailed)?;
         if display >= displays.len() {
             return Err(CaptureError::NoDisplay(display));
@@ -211,24 +249,125 @@ impl CaptureContext {
             )
         };
 
+        // Compute output dimensions
+        let (native_w, native_h) = display_pixel_size(display_id);
+        let (out_w, out_h) = if let Some(max_dim) = max_dimension {
+            if native_w > 0 && native_h > 0 {
+                let scale = (max_dim as f64 / native_w.max(native_h) as f64).min(1.0);
+                (
+                    ((native_w as f64 * scale) as usize) & !1,
+                    ((native_h as f64 * scale) as usize) & !1,
+                )
+            } else {
+                (0, 0)
+            }
+        } else {
+            (native_w & !1, native_h & !1)
+        };
+
         let config = unsafe {
             let config = SCStreamConfiguration::new();
-            let (w, h) = display_pixel_size(display_id);
-            if w > 0 && h > 0 {
-                config.setWidth(w);
-                config.setHeight(h);
+            if out_w > 0 && out_h > 0 {
+                config.setWidth(out_w);
+                config.setHeight(out_h);
             }
             config.setShowsCursor(false);
             config
         };
 
-        Ok(Self { filter, config })
+        Ok(Self {
+            filter,
+            config,
+            output_width: out_w as u32,
+            output_height: out_h as u32,
+        })
     }
 
-    /// Capture a single frame using the pre-built context. Fast — no SCK setup overhead.
+    /// Capture a single frame as an RGBA image (slower — performs BGRA→RGBA conversion).
     pub fn capture_frame(&self) -> Result<RgbaImage, CaptureError> {
         capture_with_filter(self.filter.as_ref(), self.config.as_ref())
     }
+
+    /// Capture a single frame and return raw BGRA bytes — fast path for recording.
+    /// No per-pixel swap. Output is tightly packed `width * height * 4` bytes.
+    pub fn capture_frame_raw_bgra(&self) -> Result<RawFrame, CaptureError> {
+        capture_bgra_with_filter(self.filter.as_ref(), self.config.as_ref())
+    }
+}
+
+/// Capture a CGImage and return tightly-packed BGRA bytes without channel swap.
+fn capture_bgra_with_filter(
+    filter: &SCContentFilter,
+    config: &SCStreamConfiguration,
+) -> Result<RawFrame, CaptureError> {
+    let (tx, rx) = mpsc::channel::<Option<RawFrame>>();
+    let block = block2::RcBlock::new(
+        move |cg_image: *mut objc2_core_graphics::CGImage,
+              error: *mut objc2_foundation::NSError| {
+            if error.is_null() && !cg_image.is_null() {
+                let img = unsafe { &*cg_image };
+                let _ = tx.send(cg_image_to_bgra(img).ok());
+            } else {
+                let _ = tx.send(None);
+            }
+        },
+    );
+    unsafe {
+        SCScreenshotManager::captureImageWithFilter_configuration_completionHandler(
+            filter,
+            config,
+            Some(&*block),
+        );
+    }
+
+    rx.recv_timeout(std::time::Duration::from_secs(5))
+        .map_err(|_| CaptureError::CaptureFailed)?
+        .ok_or(CaptureError::CaptureFailed)
+}
+
+/// Extract BGRA bytes from a CGImage without channel swapping.
+fn cg_image_to_bgra(cg_image: &objc2_core_graphics::CGImage) -> Result<RawFrame, CaptureError> {
+    use objc2_core_graphics::{CGDataProvider, CGImage};
+
+    let width = CGImage::width(Some(cg_image)) as u32;
+    let height = CGImage::height(Some(cg_image)) as u32;
+
+    if width == 0 || height == 0 {
+        return Err(CaptureError::ImageDataFailed);
+    }
+
+    let bytes_per_row = CGImage::bytes_per_row(Some(cg_image));
+
+    let provider = CGImage::data_provider(Some(cg_image)).ok_or(CaptureError::ImageDataFailed)?;
+    let cf_data = CGDataProvider::data(Some(&provider)).ok_or(CaptureError::ImageDataFailed)?;
+    let raw_bytes: &[u8] = unsafe { cf_data.as_bytes_unchecked() };
+
+    let row_bytes = (width as usize) * 4;
+    let last_row_start = (height as usize - 1) * bytes_per_row;
+    let min_required = last_row_start + row_bytes;
+    if raw_bytes.len() < min_required {
+        return Err(CaptureError::ImageDataFailed);
+    }
+
+    // If the source has no padding, we can copy the whole buffer in one shot.
+    let total_bytes = (width as usize) * (height as usize) * 4;
+    let mut bytes = vec![0u8; total_bytes];
+    if bytes_per_row == row_bytes {
+        bytes.copy_from_slice(&raw_bytes[..total_bytes]);
+    } else {
+        for y in 0..height as usize {
+            let src_off = y * bytes_per_row;
+            let dst_off = y * row_bytes;
+            bytes[dst_off..dst_off + row_bytes]
+                .copy_from_slice(&raw_bytes[src_off..src_off + row_bytes]);
+        }
+    }
+
+    Ok(RawFrame {
+        bytes,
+        width,
+        height,
+    })
 }
 
 pub fn capture_region(display: usize, region: Rect) -> Result<RgbaImage, CaptureError> {

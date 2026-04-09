@@ -67,7 +67,7 @@ pub fn request_permission() -> bool {
 /// A reusable capture context for fast repeated captures (e.g. recording).
 /// Create once on a background thread, call capture_frame() per frame.
 #[cfg(target_os = "macos")]
-pub use macos::CaptureContext;
+pub use macos::{CaptureContext, RawFrame};
 
 /// Get the point-to-pixel scale factor of the primary display.
 pub fn display_scale_factor() -> f64 {
