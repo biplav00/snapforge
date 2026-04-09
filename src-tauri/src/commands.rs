@@ -402,6 +402,8 @@ pub fn get_history() -> Result<String, String> {
         path: String,
         timestamp: String,
         thumbnail_data: String,
+        kind: &'static str,
+        exists: bool,
     }
 
     // Read all thumbnail files in parallel using thread::scope
@@ -418,10 +420,14 @@ pub fn get_history() -> Result<String, String> {
                         .ok()
                         .map(|bytes| format!("data:image/png;base64,{}", STANDARD.encode(&bytes)))
                         .unwrap_or_default();
+                    let kind = snapforge_core::history::media_kind(&path);
+                    let exists = std::path::Path::new(&path).exists();
                     EntryWithData {
                         path,
                         timestamp,
                         thumbnail_data: thumb_data,
+                        kind,
+                        exists,
                     }
                 })
             })
@@ -430,6 +436,14 @@ pub fn get_history() -> Result<String, String> {
     });
 
     serde_json::to_string(&entries).map_err(|e| e.to_string())
+}
+
+/// Remove a single history entry by path.
+#[tauri::command]
+pub fn delete_history_entry(path: String) -> Result<(), String> {
+    let mut history =
+        snapforge_core::history::ScreenshotHistory::load().map_err(|e| e.to_string())?;
+    history.remove_entry(&path).map_err(|e| e.to_string())
 }
 
 /// Add a screenshot to history and generate a thumbnail.

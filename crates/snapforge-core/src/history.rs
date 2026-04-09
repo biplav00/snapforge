@@ -116,4 +116,28 @@ impl ScreenshotHistory {
         self.save()?;
         Ok(())
     }
+
+    /// Remove a single entry (and its thumbnail) by source file path.
+    pub fn remove_entry(&mut self, path: &str) -> Result<(), HistoryError> {
+        if let Some(idx) = self.entries.iter().position(|e| e.path == path) {
+            let removed = self.entries.remove(idx);
+            let _ = std::fs::remove_file(&removed.thumbnail_path);
+            self.save()?;
+        }
+        Ok(())
+    }
+}
+
+/// Detect the media kind of a file from its extension.
+/// Returns "video" for mp4/mov/gif, "image" for everything else.
+pub fn media_kind(path: &str) -> &'static str {
+    let ext = std::path::Path::new(path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(str::to_lowercase)
+        .unwrap_or_default();
+    match ext.as_str() {
+        "mp4" | "mov" | "m4v" | "webm" => "video",
+        _ => "image",
+    }
 }

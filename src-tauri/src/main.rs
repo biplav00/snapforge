@@ -40,6 +40,7 @@ fn main() {
             commands::add_to_history,
             commands::open_file_in_folder,
             commands::clear_history,
+            commands::delete_history_entry,
             commands::check_ffmpeg,
             commands::start_recording,
             commands::start_recording_and_show_indicator,
@@ -346,8 +347,9 @@ pub fn open_history(app: &AppHandle) {
     }
 
     let _ = WebviewWindowBuilder::new(app, "history", WebviewUrl::App("history.html".into()))
-        .title("Screenshot History")
-        .inner_size(700.0, 500.0)
+        .title("Snapforge History")
+        .inner_size(960.0, 640.0)
+        .min_inner_size(600.0, 400.0)
         .resizable(true)
         .build();
 }
