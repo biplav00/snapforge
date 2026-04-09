@@ -53,9 +53,6 @@ fn main() {
             tray::create_tray(app.handle())?;
             hotkeys::register_hotkeys(app.handle())?;
 
-            // Pre-warm webview to cache JS bundle for instant overlay startup
-            prewarm_overlay(app.handle());
-
             Ok(())
         })
         .build(tauri::generate_context!())
@@ -119,30 +116,6 @@ fn open_overlays(app: &AppHandle, base_url: &str) {
             .skip_taskbar(true)
             .resizable(false)
             .build();
-    }
-}
-
-/// Pre-warm the webview by creating and immediately closing a throwaway overlay.
-/// This caches the JS bundle so subsequent overlays open much faster.
-fn prewarm_overlay(app: &AppHandle) {
-    let label = "prewarm";
-    if let Ok(_w) = WebviewWindowBuilder::new(app, label, WebviewUrl::App("index.html".into()))
-        .title("")
-        .inner_size(1.0, 1.0)
-        .position(-9999.0, -9999.0)
-        .transparent(true)
-        .decorations(false)
-        .visible(false)
-        .build()
-    {
-        // Close after webview loads (give it 500ms to cache resources)
-        let app_clone = app.clone();
-        std::thread::spawn(move || {
-            std::thread::sleep(std::time::Duration::from_millis(500));
-            if let Some(w) = app_clone.get_webview_window(label) {
-                let _ = w.close();
-            }
-        });
     }
 }
 
