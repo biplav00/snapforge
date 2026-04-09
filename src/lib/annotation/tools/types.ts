@@ -10,7 +10,6 @@ export type ToolType =
   | "circle"
   | "highlight"
   | "steps"
-  | "callout"
   | "blur"
   | "colorpicker"
   | "measure";
@@ -88,13 +87,6 @@ export interface StepAnnotation extends BaseAnnotation {
   x: number;
   y: number;
   number: number;
-}
-
-export interface CalloutAnnotation extends BaseAnnotation {
-  tool: "callout";
-  x: number;
-  y: number;
-  number: number;
   label: string;
 }
 
@@ -131,7 +123,6 @@ export type Annotation =
   | CircleAnnotation
   | HighlightAnnotation
   | StepAnnotation
-  | CalloutAnnotation
   | BlurAnnotation
   | MeasureAnnotation
   | ColorPickerAnnotation;

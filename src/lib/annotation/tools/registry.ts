@@ -1,6 +1,5 @@
 import { arrowTool } from "./arrow.ts";
 import { blurTool } from "./blur.ts";
-import { calloutTool } from "./callout.ts";
 import { circleTool } from "./circle.ts";
 import { colorPickerTool } from "./colorpicker.ts";
 import { dottedLineTool } from "./dottedline.ts";
@@ -23,7 +22,6 @@ const tools: Record<ToolType, Tool> = {
   circle: circleTool,
   highlight: highlightTool,
   steps: stepsTool,
-  callout: calloutTool,
   blur: blurTool,
   colorpicker: colorPickerTool,
   measure: measureTool,

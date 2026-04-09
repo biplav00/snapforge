@@ -31,8 +31,7 @@ const TOOL_ACTIONS: HotkeyEntry[] = [
   { id: "tool_text", label: "Text" },
   { id: "tool_highlight", label: "Highlight" },
   { id: "tool_blur", label: "Blur" },
-  { id: "tool_steps", label: "Step Numbers" },
-  { id: "tool_callout", label: "Callout" },
+  { id: "tool_steps", label: "Steps" },
   { id: "tool_colorpicker", label: "Color Picker" },
   { id: "tool_measure", label: "Measurement" },
 ];
@@ -123,7 +122,6 @@ function resetDefaults() {
     tool_highlight: "H",
     tool_blur: "B",
     tool_steps: "N",
-    tool_callout: "K",
     tool_colorpicker: "I",
     tool_measure: "M",
     size_small: "1",

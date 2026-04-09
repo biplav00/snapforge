@@ -154,11 +154,11 @@ function handleMouseDown(e: MouseEvent) {
       textInputY = (ann as TextAnnotation).y;
       textInputValue = "";
     }
-  } else if (activeTool.value === "callout") {
-    const tool = getTool("callout");
+  } else if (activeTool.value === "steps") {
+    const tool = getTool("steps");
     tool.onMouseDown(x, y, makeState());
     const ann = activeAnnotation.value;
-    if (ann && ann.tool === "callout") {
+    if (ann && ann.tool === "steps") {
       showTextInput = true;
       textInputX = ann.x + 28; // offset to the right of the numbered circle
       textInputY = ann.y - 12;
@@ -200,12 +200,12 @@ function commitTextInput() {
     } else {
       setActiveAnnotation(null);
     }
-  } else if (ann.tool === "callout") {
-    // Commit callout with label (empty label is fine — just shows numbered circle)
+  } else if (ann.tool === "steps") {
+    // Commit step with optional label
     commitAnnotation({
       ...ann,
       label: textInputValue.trim(),
-    } as import("./tools/types.ts").CalloutAnnotation);
+    } as import("./tools/types.ts").StepAnnotation);
     if (incrementStepNumber) incrementStepNumber();
   } else {
     setActiveAnnotation(null);

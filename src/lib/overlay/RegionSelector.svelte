@@ -112,7 +112,6 @@ const TOOL_SHORTCUTS: Record<string, ToolType> = {
   h: "highlight",
   b: "blur",
   n: "steps",
-  k: "callout",
   i: "colorpicker",
   m: "measure",
 };

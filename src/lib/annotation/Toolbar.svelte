@@ -54,7 +54,6 @@ const TOOLS: { type: ToolType; icon: string; shortcut: string }[] = [
   { type: "highlight", icon: "▬", shortcut: "H" },
   { type: "blur", icon: "▧", shortcut: "B" },
   { type: "steps", icon: "#", shortcut: "N" },
-  { type: "callout", icon: "❶", shortcut: "K" },
   { type: "colorpicker", icon: "⊙", shortcut: "I" },
   { type: "measure", icon: "↔", shortcut: "M" },
 ];

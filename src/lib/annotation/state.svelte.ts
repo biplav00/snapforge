@@ -141,7 +141,6 @@ function offsetAnnotation(a: Annotation, dx: number, dy: number): Annotation {
       return { ...a, points: a.points.map((p) => ({ x: p.x + dx, y: p.y + dy })) };
     case "text":
     case "steps":
-    case "callout":
     case "colorpicker":
       return { ...a, x: a.x + dx, y: a.y + dy };
     default:
