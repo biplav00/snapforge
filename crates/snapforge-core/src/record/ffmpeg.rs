@@ -442,6 +442,8 @@ fn crop_bgra_to_region(
 }
 
 /// Draw click markers onto a BGRA buffer (in-place).
+/// Each click produces a ripple animation: a filled dot at the click point
+/// plus two expanding rings that fade out over the lifetime.
 #[cfg(target_os = "macos")]
 #[allow(
     clippy::too_many_arguments,
@@ -459,9 +461,11 @@ fn draw_clicks_bgra(
     scale_x: f64,
     scale_y: f64,
 ) {
-    const CLICK_LIFETIME_MS: u64 = 800;
-    const BASE_RADIUS: f64 = 24.0;
-    const RING_THICKNESS: f64 = 4.0;
+    const CLICK_LIFETIME_MS: u64 = 1000;
+    const DOT_RADIUS: f64 = 8.0;
+    const RING_START_RADIUS: f64 = 12.0;
+    const RING_END_RADIUS: f64 = 52.0;
+    const RING_THICKNESS: f64 = 3.5;
 
     let clicks = tracker.recent(CLICK_LIFETIME_MS);
     if clicks.is_empty() {
@@ -469,56 +473,170 @@ fn draw_clicks_bgra(
     }
 
     let now = Instant::now();
-    let fw = f64::from(width);
-    let fh = f64::from(height);
-    let stride = (width as usize) * 4;
-
     let (region_x, region_y) = region.map_or((0, 0), |r| (r.x, r.y));
+
+    // BGRA: red = (60, 60, 255), white = (255, 255, 255)
+    let red = (60u8, 60u8, 255u8);
+    let white = (255u8, 255u8, 255u8);
 
     for click in &clicks {
         let age_ms = now.duration_since(click.timestamp).as_millis() as f64;
-        let t = age_ms / CLICK_LIFETIME_MS as f64;
-        let alpha = ((1.0 - t) * 255.0).clamp(0.0, 255.0) as u8;
-        let radius = BASE_RADIUS + t * 16.0;
+        let t = (age_ms / CLICK_LIFETIME_MS as f64).clamp(0.0, 1.0);
 
-        // Click in scaled-frame coordinates, then offset by region
+        // Convert click screen-points to scaled-frame pixels
         let px = click.x * scale_x - f64::from(region_x);
         let py = click.y * scale_y - f64::from(region_y);
 
-        if px < -radius || py < -radius || px > fw + radius || py > fh + radius {
-            continue;
+        // --- Filled center dot: visible for the first half, fades out ---
+        let dot_alpha = ((1.0 - t).powf(0.6) * 230.0) as u8;
+        if dot_alpha > 0 {
+            fill_circle_bgra(buf, width, height, px, py, DOT_RADIUS, red, dot_alpha);
+            // White inner highlight
+            fill_circle_bgra(
+                buf,
+                width,
+                height,
+                px,
+                py,
+                DOT_RADIUS * 0.45,
+                white,
+                dot_alpha,
+            );
         }
 
-        let inner = radius - RING_THICKNESS;
-        let inner_sq = inner * inner;
-        let outer_sq = radius * radius;
-
-        let min_x = (px - radius).floor().max(0.0) as u32;
-        let max_x = ((px + radius).ceil() as u32).min(width.saturating_sub(1));
-        let min_y = (py - radius).floor().max(0.0) as u32;
-        let max_y = ((py + radius).ceil() as u32).min(height.saturating_sub(1));
-
-        let src_a = f32::from(alpha) / 255.0;
-        if src_a <= 0.0 {
-            continue;
+        // --- Primary ring: expands and fades ---
+        let r1 = RING_START_RADIUS + t * (RING_END_RADIUS - RING_START_RADIUS);
+        let a1 = ((1.0 - t) * 220.0) as u8;
+        if a1 > 0 {
+            draw_ring_bgra(buf, width, height, px, py, r1, RING_THICKNESS, red, a1);
         }
-        let inv_a = 1.0 - src_a;
 
-        // Red ring in BGRA: B=60, G=60, R=255
-        let (sb, sg, sr) = (60u8, 60u8, 255u8);
+        // --- Secondary ring: delayed expand for a ripple effect ---
+        let t2 = ((t - 0.2) / 0.8).clamp(0.0, 1.0);
+        if t2 > 0.0 {
+            let r2 = RING_START_RADIUS + t2 * (RING_END_RADIUS - RING_START_RADIUS);
+            let a2 = ((1.0 - t2) * 140.0) as u8;
+            if a2 > 0 {
+                draw_ring_bgra(
+                    buf,
+                    width,
+                    height,
+                    px,
+                    py,
+                    r2,
+                    RING_THICKNESS - 1.0,
+                    red,
+                    a2,
+                );
+            }
+        }
+    }
+}
 
-        for y in min_y..=max_y {
-            for x in min_x..=max_x {
-                let dx = f64::from(x) - px;
-                let dy = f64::from(y) - py;
-                let dist_sq = dx * dx + dy * dy;
-                if dist_sq <= outer_sq && dist_sq >= inner_sq {
-                    let off = (y as usize) * stride + (x as usize) * 4;
-                    buf[off] = (f32::from(sb) * src_a + f32::from(buf[off]) * inv_a) as u8;
-                    buf[off + 1] = (f32::from(sg) * src_a + f32::from(buf[off + 1]) * inv_a) as u8;
-                    buf[off + 2] = (f32::from(sr) * src_a + f32::from(buf[off + 2]) * inv_a) as u8;
-                    buf[off + 3] = 255;
-                }
+/// Fill a solid circle in BGRA with alpha blending.
+#[cfg(target_os = "macos")]
+#[allow(
+    clippy::too_many_arguments,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_precision_loss
+)]
+fn fill_circle_bgra(
+    buf: &mut [u8],
+    width: u32,
+    height: u32,
+    cx: f64,
+    cy: f64,
+    radius: f64,
+    color: (u8, u8, u8),
+    alpha: u8,
+) {
+    if alpha == 0 || radius <= 0.0 {
+        return;
+    }
+    let stride = (width as usize) * 4;
+    let r_sq = radius * radius;
+
+    let min_x = (cx - radius).floor().max(0.0) as u32;
+    let max_x = ((cx + radius).ceil() as u32).min(width.saturating_sub(1));
+    let min_y = (cy - radius).floor().max(0.0) as u32;
+    let max_y = ((cy + radius).ceil() as u32).min(height.saturating_sub(1));
+
+    if min_x > max_x || min_y > max_y {
+        return;
+    }
+
+    let src_a = f32::from(alpha) / 255.0;
+    let inv_a = 1.0 - src_a;
+    let (sb, sg, sr) = color;
+
+    for y in min_y..=max_y {
+        for x in min_x..=max_x {
+            let dx = f64::from(x) - cx;
+            let dy = f64::from(y) - cy;
+            let dist_sq = dx * dx + dy * dy;
+            if dist_sq <= r_sq {
+                let off = (y as usize) * stride + (x as usize) * 4;
+                buf[off] = (f32::from(sb) * src_a + f32::from(buf[off]) * inv_a) as u8;
+                buf[off + 1] = (f32::from(sg) * src_a + f32::from(buf[off + 1]) * inv_a) as u8;
+                buf[off + 2] = (f32::from(sr) * src_a + f32::from(buf[off + 2]) * inv_a) as u8;
+                buf[off + 3] = 255;
+            }
+        }
+    }
+}
+
+/// Draw a hollow ring in BGRA with alpha blending.
+#[cfg(target_os = "macos")]
+#[allow(
+    clippy::too_many_arguments,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_precision_loss
+)]
+fn draw_ring_bgra(
+    buf: &mut [u8],
+    width: u32,
+    height: u32,
+    cx: f64,
+    cy: f64,
+    outer_radius: f64,
+    thickness: f64,
+    color: (u8, u8, u8),
+    alpha: u8,
+) {
+    if alpha == 0 || outer_radius <= 0.0 || thickness <= 0.0 {
+        return;
+    }
+    let stride = (width as usize) * 4;
+    let inner = (outer_radius - thickness).max(0.0);
+    let inner_sq = inner * inner;
+    let outer_sq = outer_radius * outer_radius;
+
+    let min_x = (cx - outer_radius).floor().max(0.0) as u32;
+    let max_x = ((cx + outer_radius).ceil() as u32).min(width.saturating_sub(1));
+    let min_y = (cy - outer_radius).floor().max(0.0) as u32;
+    let max_y = ((cy + outer_radius).ceil() as u32).min(height.saturating_sub(1));
+
+    if min_x > max_x || min_y > max_y {
+        return;
+    }
+
+    let src_a = f32::from(alpha) / 255.0;
+    let inv_a = 1.0 - src_a;
+    let (sb, sg, sr) = color;
+
+    for y in min_y..=max_y {
+        for x in min_x..=max_x {
+            let dx = f64::from(x) - cx;
+            let dy = f64::from(y) - cy;
+            let dist_sq = dx * dx + dy * dy;
+            if dist_sq <= outer_sq && dist_sq >= inner_sq {
+                let off = (y as usize) * stride + (x as usize) * 4;
+                buf[off] = (f32::from(sb) * src_a + f32::from(buf[off]) * inv_a) as u8;
+                buf[off + 1] = (f32::from(sg) * src_a + f32::from(buf[off + 1]) * inv_a) as u8;
+                buf[off + 2] = (f32::from(sr) * src_a + f32::from(buf[off + 2]) * inv_a) as u8;
+                buf[off + 3] = 255;
             }
         }
     }
