@@ -73,6 +73,39 @@ $effect(() => {
 });
 
 let showColorPicker = $state(false);
+let hexInput = $state(strokeColor.value);
+
+// Keep hex input in sync with color changes (e.g. from eyedropper)
+$effect(() => {
+  hexInput = strokeColor.value;
+});
+
+function handleHexInput(e: Event) {
+  const val = (e.target as HTMLInputElement).value;
+  hexInput = val;
+  // Auto-apply if it looks like a valid hex color
+  if (/^#[0-9A-Fa-f]{6}$/.test(val)) {
+    setColor(val.toUpperCase());
+  }
+}
+
+function handleHexKeydown(e: KeyboardEvent) {
+  e.stopPropagation();
+  if (e.key === "Enter") {
+    let val = hexInput.trim();
+    if (!val.startsWith("#")) val = `#${val}`;
+    if (/^#[0-9A-Fa-f]{6}$/.test(val)) {
+      setColor(val.toUpperCase());
+      showColorPicker = false;
+    }
+  }
+}
+
+function handleNativeColorChange(e: Event) {
+  const val = (e.target as HTMLInputElement).value.toUpperCase();
+  setColor(val);
+  hexInput = val;
+}
 
 // Drag state
 let isDragging = $state(false);
@@ -167,15 +200,38 @@ function handleWindowClick() {
     {#if showColorPicker}
       <!-- svelte-ignore a11y_no_static_element_interactions -->
       <div class="color-picker" role="listbox" tabindex="-1" onclick={stopPropagation} onkeydown={() => {}}>
-        {#each COLORS as c}
-          <button
-            class="color-swatch"
-            class:active={strokeColor.value === c}
-            style="background:{c}"
-            title={c}
-            onclick={(e) => handleColorSwatchClick(e, c)}
-          ></button>
-        {/each}
+        <div class="color-swatches">
+          {#each COLORS as c}
+            <button
+              class="color-swatch"
+              class:active={strokeColor.value === c}
+              style="background:{c}"
+              title={c}
+              onclick={(e) => handleColorSwatchClick(e, c)}
+            ></button>
+          {/each}
+        </div>
+        <div class="color-hex-row">
+          <label class="native-color-wrapper" title="Pick any color">
+            <input
+              type="color"
+              value={strokeColor.value}
+              oninput={handleNativeColorChange}
+              class="native-color-input"
+            />
+            <span class="native-color-preview" style="background:{strokeColor.value}"></span>
+          </label>
+          <input
+            type="text"
+            class="hex-input"
+            value={hexInput}
+            oninput={handleHexInput}
+            onkeydown={handleHexKeydown}
+            onclick={stopPropagation}
+            maxlength="7"
+            placeholder="#FF0000"
+          />
+        </div>
       </div>
     {/if}
   </div>
@@ -296,14 +352,20 @@ function handleWindowClick() {
     bottom: 34px;
     left: 50%;
     transform: translateX(-50%);
-    display: grid;
-    grid-template-columns: repeat(4, 1fr);
-    gap: 3px;
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
     background: rgba(24, 24, 24, 0.96);
     border: 1px solid rgba(255, 255, 255, 0.1);
     border-radius: 6px;
     padding: 5px;
     z-index: 25;
+  }
+
+  .color-swatches {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 3px;
   }
 
   .color-swatch {
@@ -320,6 +382,58 @@ function handleWindowClick() {
 
   .color-swatch:hover {
     border-color: rgba(255, 255, 255, 0.5);
+  }
+
+  .color-hex-row {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+  }
+
+  .native-color-wrapper {
+    position: relative;
+    width: 20px;
+    height: 20px;
+    cursor: pointer;
+    flex-shrink: 0;
+  }
+
+  .native-color-input {
+    position: absolute;
+    inset: 0;
+    opacity: 0;
+    width: 100%;
+    height: 100%;
+    cursor: pointer;
+    border: none;
+    padding: 0;
+  }
+
+  .native-color-preview {
+    display: block;
+    width: 20px;
+    height: 20px;
+    border-radius: 3px;
+    border: 2px solid rgba(255, 255, 255, 0.3);
+    pointer-events: none;
+  }
+
+  .hex-input {
+    width: 68px;
+    height: 20px;
+    background: rgba(255, 255, 255, 0.08);
+    border: 1px solid rgba(255, 255, 255, 0.15);
+    border-radius: 3px;
+    color: white;
+    font-size: 11px;
+    font-family: "SF Mono", "Menlo", monospace;
+    padding: 0 4px;
+    text-transform: uppercase;
+  }
+
+  .hex-input:focus {
+    outline: none;
+    border-color: #4a9eff;
   }
 
   .size-btn {
