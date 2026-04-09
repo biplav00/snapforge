@@ -83,8 +83,8 @@ pub fn start_recording(config: RecordConfig) -> Result<RecordingHandle, RecordEr
     let _click_tap_handle = click_tracker.start_macos_tap();
 
     // Scale factor for converting CG event coordinates (points) to frame pixels.
-    // Assume 2.0 for Retina; close enough for the click visualization overlay.
-    let point_to_pixel_scale: f64 = 2.0;
+    // Queried from the primary display's mode (1.0 for non-Retina, 2.0 for Retina).
+    let point_to_pixel_scale = capture::display_scale_factor();
 
     let thread = std::thread::spawn(move || -> Result<(), RecordError> {
         // Create a reusable capture context on this thread — avoids per-frame SCK setup

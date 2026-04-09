@@ -69,6 +69,18 @@ pub fn request_permission() -> bool {
 #[cfg(target_os = "macos")]
 pub use macos::CaptureContext;
 
+/// Get the point-to-pixel scale factor of the primary display.
+pub fn display_scale_factor() -> f64 {
+    #[cfg(target_os = "macos")]
+    {
+        macos::primary_display_scale_factor()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        1.0
+    }
+}
+
 pub fn display_count() -> usize {
     #[cfg(target_os = "macos")]
     {

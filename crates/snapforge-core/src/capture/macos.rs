@@ -20,7 +20,29 @@ extern "C" {
     fn CGDisplayCopyDisplayMode(display: u32) -> *const std::ffi::c_void;
     fn CGDisplayModeGetPixelWidth(mode: *const std::ffi::c_void) -> usize;
     fn CGDisplayModeGetPixelHeight(mode: *const std::ffi::c_void) -> usize;
+    fn CGDisplayModeGetWidth(mode: *const std::ffi::c_void) -> usize;
     fn CGDisplayModeRelease(mode: *const std::ffi::c_void);
+    fn CGMainDisplayID() -> u32;
+}
+
+/// Get the point-to-pixel scale factor of the primary display.
+/// Returns 1.0 on non-Retina, 2.0 on Retina (typically).
+pub fn primary_display_scale_factor() -> f64 {
+    unsafe {
+        let display_id = CGMainDisplayID();
+        let mode = CGDisplayCopyDisplayMode(display_id);
+        if mode.is_null() {
+            return 2.0;
+        }
+        let pixel_w = CGDisplayModeGetPixelWidth(mode);
+        let point_w = CGDisplayModeGetWidth(mode);
+        CGDisplayModeRelease(mode);
+        if point_w == 0 {
+            2.0
+        } else {
+            pixel_w as f64 / point_w as f64
+        }
+    }
 }
 
 /// Get the true backing pixel dimensions for a display (Retina-aware).
