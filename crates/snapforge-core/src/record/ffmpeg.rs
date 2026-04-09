@@ -70,6 +70,11 @@ pub fn start_recording(config: RecordConfig) -> Result<RecordingHandle, RecordEr
     let display = config.display;
 
     let thread = std::thread::spawn(move || -> Result<(), RecordError> {
+        // Create a reusable capture context on this thread — avoids per-frame SCK setup
+        #[cfg(target_os = "macos")]
+        let capture_ctx = capture::CaptureContext::new(display)
+            .map_err(|e| RecordError::CaptureFailed(e.to_string()))?;
+
         // Use 256KB buffer — better for pipe throughput than full-frame buffer
         let mut writer = std::io::BufWriter::with_capacity(256 * 1024, &mut stdin);
 
@@ -97,9 +102,33 @@ pub fn start_recording(config: RecordConfig) -> Result<RecordingHandle, RecordEr
             }
 
             let frame = if let Some(r) = &region {
-                capture::capture_region(display, *r)
+                // Region capture: use context for full frame, then crop
+                #[cfg(target_os = "macos")]
+                {
+                    capture_ctx.capture_frame().and_then(|full| {
+                        let x = r.x.max(0) as u32;
+                        let y = r.y.max(0) as u32;
+                        let w = r.width.min(full.width().saturating_sub(x));
+                        let h = r.height.min(full.height().saturating_sub(y));
+                        if w == 0 || h == 0 {
+                            return Err(capture::CaptureError::CaptureFailed);
+                        }
+                        Ok(image::imageops::crop_imm(&full, x, y, w, h).to_image())
+                    })
+                }
+                #[cfg(not(target_os = "macos"))]
+                {
+                    capture::capture_region(display, *r)
+                }
             } else {
-                capture::capture_fullscreen(display)
+                #[cfg(target_os = "macos")]
+                {
+                    capture_ctx.capture_frame()
+                }
+                #[cfg(not(target_os = "macos"))]
+                {
+                    capture::capture_fullscreen(display)
+                }
             };
 
             if let Ok(img) = frame {

@@ -128,6 +128,14 @@ pub fn capture_fullscreen(display: usize) -> Result<RgbaImage, CaptureError> {
         config
     };
 
+    capture_with_filter(filter.as_ref(), config.as_ref())
+}
+
+/// Capture a single frame using a pre-built filter and config.
+fn capture_with_filter(
+    filter: &SCContentFilter,
+    config: &SCStreamConfiguration,
+) -> Result<RgbaImage, CaptureError> {
     let (tx, rx) = mpsc::channel::<Option<RgbaImage>>();
     let block = block2::RcBlock::new(
         move |cg_image: *mut objc2_core_graphics::CGImage,
@@ -142,8 +150,8 @@ pub fn capture_fullscreen(display: usize) -> Result<RgbaImage, CaptureError> {
     );
     unsafe {
         SCScreenshotManager::captureImageWithFilter_configuration_completionHandler(
-            &filter,
-            &config,
+            filter,
+            config,
             Some(&*block),
         );
     }
@@ -151,6 +159,54 @@ pub fn capture_fullscreen(display: usize) -> Result<RgbaImage, CaptureError> {
     rx.recv_timeout(std::time::Duration::from_secs(5))
         .map_err(|_| CaptureError::CaptureFailed)?
         .ok_or(CaptureError::CaptureFailed)
+}
+
+/// A reusable capture context that holds pre-built SCK filter and config.
+/// Create once, call `capture_frame()` repeatedly for recording.
+/// IMPORTANT: Must be used on the same thread it was created on (ObjC objects are not Send).
+pub struct CaptureContext {
+    filter: Retained<SCContentFilter>,
+    config: Retained<SCStreamConfiguration>,
+}
+
+impl CaptureContext {
+    /// Create a capture context for a given display.
+    /// Must be called from a background thread.
+    pub fn new(display: usize) -> Result<Self, CaptureError> {
+        let displays = get_shareable_displays().ok_or(CaptureError::CaptureFailed)?;
+        if display >= displays.len() {
+            return Err(CaptureError::NoDisplay(display));
+        }
+        let sc_display = displays.objectAtIndex(display);
+        let display_id = unsafe { sc_display.displayID() };
+
+        let filter = unsafe {
+            let excluded: Retained<NSArray<SCWindow>> = NSArray::new();
+            SCContentFilter::initWithDisplay_excludingWindows(
+                SCContentFilter::alloc(),
+                &sc_display,
+                &excluded,
+            )
+        };
+
+        let config = unsafe {
+            let config = SCStreamConfiguration::new();
+            let (w, h) = display_pixel_size(display_id);
+            if w > 0 && h > 0 {
+                config.setWidth(w);
+                config.setHeight(h);
+            }
+            config.setShowsCursor(false);
+            config
+        };
+
+        Ok(Self { filter, config })
+    }
+
+    /// Capture a single frame using the pre-built context. Fast — no SCK setup overhead.
+    pub fn capture_frame(&self) -> Result<RgbaImage, CaptureError> {
+        capture_with_filter(self.filter.as_ref(), self.config.as_ref())
+    }
 }
 
 pub fn capture_region(display: usize, region: Rect) -> Result<RgbaImage, CaptureError> {
