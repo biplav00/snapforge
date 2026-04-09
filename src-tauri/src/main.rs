@@ -157,14 +157,21 @@ fn pre_capture_all_displays(app: &AppHandle) {
 pub fn trigger_screenshot(app: &AppHandle) {
     let app = app.clone();
     std::thread::spawn(move || {
-        // Check screen capture permission before doing anything
-        if !snapforge_core::capture::has_permission()
-            && !snapforge_core::capture::request_permission()
-        {
+        // Try to capture directly — if it works, permission is granted.
+        // Only request permission if capture fails (avoids stale preflight results
+        // and unnecessary permission dialogs after app rebuilds).
+        pre_capture_all_displays(&app);
+
+        // If no screens were captured, permission is likely missing
+        let has_captures = app
+            .state::<PreCapturedScreens>()
+            .0
+            .lock()
+            .is_ok_and(|g| !g.is_empty());
+        if !has_captures {
+            snapforge_core::capture::request_permission();
             return;
         }
-
-        pre_capture_all_displays(&app);
 
         let config = snapforge_core::config::AppConfig::load().unwrap_or_default();
         if config.remember_last_region {
@@ -207,9 +214,9 @@ pub fn trigger_recording(app: &AppHandle) {
             }
             close_recording_indicator(&app);
         } else {
-            if !snapforge_core::capture::has_permission()
-                && !snapforge_core::capture::request_permission()
-            {
+            // Try a quick display count to verify SCK access works
+            if snapforge_core::capture::display_count() == 0 {
+                snapforge_core::capture::request_permission();
                 return;
             }
             open_overlays(&app, "index.html?mode=record");
