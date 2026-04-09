@@ -1,5 +1,6 @@
 use super::{RecordConfig, RecordError};
 use crate::capture;
+use crate::clicks::ClickTracker;
 use crate::config::{RecordingFormat, RecordingQuality};
 use std::io::{Read as _, Write};
 use std::path::Path;
@@ -75,6 +76,16 @@ pub fn start_recording(config: RecordConfig) -> Result<RecordingHandle, RecordEr
     let region = config.region;
     let display = config.display;
 
+    // Start click tracker — captures global clicks for visualization.
+    // Requires Accessibility permission on macOS; silently no-op if denied.
+    let click_tracker = ClickTracker::new();
+    #[cfg(target_os = "macos")]
+    let _click_tap_handle = click_tracker.start_macos_tap();
+
+    // Scale factor for converting CG event coordinates (points) to frame pixels.
+    // Assume 2.0 for Retina; close enough for the click visualization overlay.
+    let point_to_pixel_scale: f64 = 2.0;
+
     let thread = std::thread::spawn(move || -> Result<(), RecordError> {
         // Create a reusable capture context on this thread — avoids per-frame SCK setup
         #[cfg(target_os = "macos")]
@@ -139,11 +150,20 @@ pub fn start_recording(config: RecordConfig) -> Result<RecordingHandle, RecordEr
 
             if let Ok(img) = frame {
                 // Ensure frame matches the announced dimensions (crop to even size if needed)
-                let final_frame = if img.width() != width || img.height() != height {
+                let mut final_frame = if img.width() != width || img.height() != height {
                     image::imageops::crop_imm(&img, 0, 0, width, height).to_image()
                 } else {
                     img
                 };
+
+                // Draw recent click markers onto the frame
+                draw_clicks(
+                    &mut final_frame,
+                    &click_tracker,
+                    region.as_ref(),
+                    point_to_pixel_scale,
+                );
+
                 if writer.write_all(final_frame.as_raw()).is_err() {
                     break;
                 }
@@ -256,6 +276,106 @@ mod tests {
             }
             Err(_) => {
                 // Capture or ffmpeg may fail in CI
+            }
+        }
+    }
+}
+
+/// Draw click indicators on a frame. Recent clicks appear as a fading red ring.
+/// Click coordinates are in screen points and need to be converted to frame pixels.
+#[allow(
+    clippy::cast_possible_wrap,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_precision_loss
+)]
+fn draw_clicks(
+    frame: &mut image::RgbaImage,
+    tracker: &ClickTracker,
+    region: Option<&crate::types::Rect>,
+    point_to_pixel_scale: f64,
+) {
+    const CLICK_LIFETIME_MS: u64 = 800;
+    const BASE_RADIUS: f64 = 24.0;
+    const RING_THICKNESS: f64 = 4.0;
+
+    let clicks = tracker.recent(CLICK_LIFETIME_MS);
+    if clicks.is_empty() {
+        return;
+    }
+
+    let now = Instant::now();
+    let fw = f64::from(frame.width());
+    let fh = f64::from(frame.height());
+
+    // Region offset in pixels (0,0 for fullscreen)
+    let (region_x, region_y) = region.map_or((0, 0), |r| (r.x, r.y));
+
+    for click in &clicks {
+        let age_ms = now.duration_since(click.timestamp).as_millis() as f64;
+        let t = age_ms / CLICK_LIFETIME_MS as f64; // 0.0 → 1.0
+
+        // Fade out alpha and grow radius
+        let alpha = ((1.0 - t) * 255.0).clamp(0.0, 255.0) as u8;
+        let radius = BASE_RADIUS + t * 16.0;
+
+        // Convert click screen-point to frame-pixel coordinates
+        let px = click.x * point_to_pixel_scale - f64::from(region_x);
+        let py = click.y * point_to_pixel_scale - f64::from(region_y);
+
+        // Skip clicks outside the frame
+        if px < -radius || py < -radius || px > fw + radius || py > fh + radius {
+            continue;
+        }
+
+        draw_ring(frame, px, py, radius, RING_THICKNESS, [255, 60, 60, alpha]);
+    }
+}
+
+/// Draw a filled ring (hollow circle) onto an RGBA image with alpha blending.
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_precision_loss
+)]
+fn draw_ring(
+    img: &mut image::RgbaImage,
+    cx: f64,
+    cy: f64,
+    outer_radius: f64,
+    thickness: f64,
+    color: [u8; 4],
+) {
+    let inner = outer_radius - thickness;
+    let inner_sq = inner * inner;
+    let outer_sq = outer_radius * outer_radius;
+    let w = img.width();
+    let h = img.height();
+
+    let min_x = (cx - outer_radius).floor().max(0.0) as u32;
+    let max_x = ((cx + outer_radius).ceil() as u32).min(w.saturating_sub(1));
+    let min_y = (cy - outer_radius).floor().max(0.0) as u32;
+    let max_y = ((cy + outer_radius).ceil() as u32).min(h.saturating_sub(1));
+
+    let src_a = f32::from(color[3]) / 255.0;
+    if src_a <= 0.0 {
+        return;
+    }
+
+    for y in min_y..=max_y {
+        for x in min_x..=max_x {
+            let dx = f64::from(x) - cx;
+            let dy = f64::from(y) - cy;
+            let dist_sq = dx * dx + dy * dy;
+            if dist_sq <= outer_sq && dist_sq >= inner_sq {
+                let pixel = img.get_pixel_mut(x, y);
+                // Alpha blend src over dst
+                let inv_a = 1.0 - src_a;
+                pixel.0[0] = (f32::from(color[0]) * src_a + f32::from(pixel.0[0]) * inv_a) as u8;
+                pixel.0[1] = (f32::from(color[1]) * src_a + f32::from(pixel.0[1]) * inv_a) as u8;
+                pixel.0[2] = (f32::from(color[2]) * src_a + f32::from(pixel.0[2]) * inv_a) as u8;
+                // Keep alpha channel saturated
+                pixel.0[3] = 255;
             }
         }
     }

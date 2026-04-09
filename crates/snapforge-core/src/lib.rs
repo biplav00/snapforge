@@ -1,4 +1,5 @@
 pub mod capture;
+pub mod clicks;
 pub mod clipboard;
 pub mod config;
 pub mod format;
