@@ -185,6 +185,9 @@ function applyResize(handle: string, mx: number, my: number) {
 function handleMouseDown(e: MouseEvent) {
   if (saving) return;
 
+  // Don't interfere with button clicks (e.g. action buttons below the region)
+  if ((e.target as HTMLElement).closest("button")) return;
+
   // In annotate mode: allow resize/drag on edges and handles, re-draw outside region
   if (mode === "annotate") {
     const handle = getHandleAt(e.clientX, e.clientY);

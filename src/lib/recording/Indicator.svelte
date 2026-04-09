@@ -14,6 +14,13 @@ function formatTime(seconds: number): string {
   return `${m.toString().padStart(2, "0")}:${s.toString().padStart(2, "0")}`;
 }
 
+function handleDragStart(e: MouseEvent) {
+  // Don't drag when clicking the stop button
+  if ((e.target as HTMLElement).closest("button")) return;
+  // Use Tauri's native window drag
+  appWindow.startDragging();
+}
+
 async function stopRecording() {
   if (stopping) return;
   stopping = true;
@@ -43,7 +50,8 @@ const interval = setInterval(() => {
 onDestroy(() => clearInterval(interval));
 </script>
 
-<div class="indicator">
+<!-- svelte-ignore a11y_no_static_element_interactions -->
+<div class="indicator" onmousedown={handleDragStart}>
   <div class="dot"></div>
   <span class="time">{formatTime(elapsed)}</span>
   <button class="stop-btn" onclick={stopRecording} disabled={stopping}>
@@ -64,7 +72,10 @@ onDestroy(() => clearInterval(interval));
     font-family: system-ui, sans-serif;
     cursor: grab;
     user-select: none;
-    -webkit-app-region: drag;
+  }
+
+  .indicator:active {
+    cursor: grabbing;
   }
 
   .dot {
@@ -96,7 +107,6 @@ onDestroy(() => clearInterval(interval));
     font-size: 12px;
     cursor: pointer;
     font-family: system-ui, sans-serif;
-    -webkit-app-region: no-drag;
   }
 
   .stop-btn:hover {
