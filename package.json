@@ -21,6 +21,8 @@
     "test:coverage": "vitest run --coverage",
     "test:coverage:rust": "cargo llvm-cov --workspace --lcov --output-path lcov-rust.info",
     "test:all": "vitest run && cargo test",
+    "build:dmg": "npx tauri build --bundles dmg",
+    "build:app": "npx tauri build --bundles app",
     "check": "biome check src/ && tsc --noEmit",
     "prepare": "husky"
   },

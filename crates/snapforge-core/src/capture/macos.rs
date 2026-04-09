@@ -69,7 +69,9 @@ fn get_shareable_displays() -> Option<Retained<NSArray<SCDisplay>>> {
             &block,
         );
     }
-    rx.recv().ok().flatten()
+    rx.recv_timeout(std::time::Duration::from_secs(5))
+        .ok()
+        .flatten()
 }
 
 /// Get the SCDisplay at the given index.
@@ -108,25 +110,26 @@ pub fn capture_fullscreen(display: usize) -> Result<RgbaImage, CaptureError> {
     };
 
     let (tx, rx) = mpsc::channel::<Option<RgbaImage>>();
+    let block = block2::RcBlock::new(
+        move |cg_image: *mut objc2_core_graphics::CGImage,
+              error: *mut objc2_foundation::NSError| {
+            if error.is_null() && !cg_image.is_null() {
+                let img = unsafe { &*cg_image };
+                let _ = tx.send(cg_image_to_rgba(img).ok());
+            } else {
+                let _ = tx.send(None);
+            }
+        },
+    );
     unsafe {
         SCScreenshotManager::captureImageWithFilter_configuration_completionHandler(
             &filter,
             &config,
-            Some(&*block2::RcBlock::new(
-                move |cg_image: *mut objc2_core_graphics::CGImage,
-                      error: *mut objc2_foundation::NSError| {
-                    if error.is_null() && !cg_image.is_null() {
-                        let img = &*cg_image;
-                        let _ = tx.send(cg_image_to_rgba(img).ok());
-                    } else {
-                        let _ = tx.send(None);
-                    }
-                },
-            )),
+            Some(&*block),
         );
     }
 
-    rx.recv()
+    rx.recv_timeout(std::time::Duration::from_secs(5))
         .map_err(|_| CaptureError::CaptureFailed)?
         .ok_or(CaptureError::CaptureFailed)
 }
@@ -152,6 +155,11 @@ fn cg_image_to_rgba(cg_image: &objc2_core_graphics::CGImage) -> Result<RgbaImage
 
     let width = CGImage::width(Some(cg_image)) as u32;
     let height = CGImage::height(Some(cg_image)) as u32;
+
+    if width == 0 || height == 0 {
+        return Err(CaptureError::ImageDataFailed);
+    }
+
     let bytes_per_row = CGImage::bytes_per_row(Some(cg_image));
 
     let provider = CGImage::data_provider(Some(cg_image)).ok_or(CaptureError::ImageDataFailed)?;
@@ -160,10 +168,6 @@ fn cg_image_to_rgba(cg_image: &objc2_core_graphics::CGImage) -> Result<RgbaImage
 
     let expected_pixels = (width * height) as usize;
     let expected_bytes = expected_pixels * 4;
-
-    if height == 0 || width == 0 {
-        return Err(CaptureError::ImageDataFailed);
-    }
 
     let last_row_start = (height as usize - 1) * bytes_per_row;
     let min_required = last_row_start + (width as usize) * 4;
