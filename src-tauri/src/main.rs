@@ -106,7 +106,7 @@ fn open_overlays(app: &AppHandle, base_url: &str) {
         let url = format!("{base_url}{separator}display=0");
         let label = "overlay-0";
 
-        if let Ok(window) = WebviewWindowBuilder::new(app, label, WebviewUrl::App(url.into()))
+        let _ = WebviewWindowBuilder::new(app, label, WebviewUrl::App(url.into()))
             .title("")
             .inner_size(width, height)
             .position(pos.x as f64 / scale, pos.y as f64 / scale)
@@ -116,25 +116,7 @@ fn open_overlays(app: &AppHandle, base_url: &str) {
             .skip_taskbar(true)
             .resizable(false)
             .visible_on_all_workspaces(true)
-            .build()
-        {
-            // Make the overlay follow the user across Spaces on macOS
-            #[cfg(target_os = "macos")]
-            {
-                if let Ok(ns_win) = window.ns_window() {
-                    unsafe {
-                        // NSWindowCollectionBehaviorCanJoinAllSpaces (1<<0)
-                        // | NSWindowCollectionBehaviorFullScreenAuxiliary (1<<8)
-                        let behavior: u64 = (1 << 0) | (1 << 8);
-                        let _: () = objc2::msg_send![
-                            ns_win as *const objc2::runtime::AnyObject,
-                            setCollectionBehavior: behavior
-                        ];
-                    }
-                }
-            }
-            let _ = &window;
-        }
+            .build();
     }
 }
 
@@ -315,12 +297,6 @@ fn open_region_outline_impl(app: &AppHandle, x: f64, y: f64, w: f64, h: f64) {
                         let _: () = objc2::msg_send![
                             ns_win as *const objc2::runtime::AnyObject,
                             setIgnoresMouseEvents: true
-                        ];
-                        // Follow user across Spaces
-                        let behavior: u64 = (1 << 0) | (1 << 8);
-                        let _: () = objc2::msg_send![
-                            ns_win as *const objc2::runtime::AnyObject,
-                            setCollectionBehavior: behavior
                         ];
                     }
                 }
