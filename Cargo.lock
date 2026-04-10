@@ -5076,6 +5076,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "snapforge-ffi"
+version = "0.1.0"
+dependencies = [
+ "image",
+ "snapforge-core",
+]
+
+[[package]]
 name = "socket2"
 version = "0.6.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
