@@ -5,13 +5,17 @@
 //! - Caller-owned buffers are allocated here and freed via snapforge_free_buffer.
 //! - String out-params are allocated here and freed via snapforge_free_string.
 
-use std::ffi::{c_char, c_int, CStr, CString};
-use std::path::Path;
+use std::ffi::{c_char, c_int, c_void, CStr, CString};
+use std::path::{Path, PathBuf};
 use std::ptr;
 
 use snapforge_core::capture;
 use snapforge_core::clipboard;
+use snapforge_core::config::{AppConfig, RecordingFormat, RecordingQuality};
 use snapforge_core::format;
+use snapforge_core::history::ScreenshotHistory;
+use snapforge_core::record::ffmpeg::RecordingHandle;
+use snapforge_core::record::RecordConfig;
 use snapforge_core::types::{CaptureFormat, Rect};
 
 /// Captured image data returned to C callers.
@@ -235,5 +239,276 @@ pub extern "C" fn snapforge_default_save_path() -> *mut c_char {
 pub unsafe extern "C" fn snapforge_free_string(s: *mut c_char) {
     if !s.is_null() {
         let _ = CString::from_raw(s);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Recording FFI
+// ---------------------------------------------------------------------------
+
+/// Wrapper around `RecordingHandle` that allows stop-by-pointer (the inner
+/// handle's `stop` method consumes `self`, so we keep it in an `Option`).
+struct FfiRecordingHandle {
+    inner: Option<RecordingHandle>,
+}
+
+/// Start a screen recording.
+///
+/// `config_json` is a null-terminated UTF-8 JSON string with fields:
+///   display (u32), region (optional {x,y,width,height}), output_path (string),
+///   format ("mp4"/"gif"), fps (u32), quality ("low"/"medium"/"high"),
+///   ffmpeg_path (optional string).
+///
+/// Returns an opaque handle on success, NULL on error.
+/// The caller must eventually call `snapforge_stop_recording` and then
+/// `snapforge_free_recording_handle`.
+///
+/// # Safety
+///
+/// `config_json` must be a valid null-terminated UTF-8 string.
+#[no_mangle]
+pub unsafe extern "C" fn snapforge_start_recording(config_json: *const c_char) -> *mut c_void {
+    if config_json.is_null() {
+        return ptr::null_mut();
+    }
+
+    let c_str = CStr::from_ptr(config_json);
+    let Ok(json_str) = c_str.to_str() else {
+        return ptr::null_mut();
+    };
+
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(json_str) else {
+        return ptr::null_mut();
+    };
+
+    let display = v["display"].as_u64().unwrap_or(0) as usize;
+
+    let region = if v["region"].is_object() {
+        let r = &v["region"];
+        Some(Rect {
+            x: r["x"].as_i64().unwrap_or(0) as i32,
+            y: r["y"].as_i64().unwrap_or(0) as i32,
+            width: r["width"].as_u64().unwrap_or(0) as u32,
+            height: r["height"].as_u64().unwrap_or(0) as u32,
+        })
+    } else {
+        None
+    };
+
+    let output_path = match v["output_path"].as_str() {
+        Some(s) => PathBuf::from(s),
+        None => return ptr::null_mut(),
+    };
+
+    let format = match v["format"].as_str() {
+        Some("gif") => RecordingFormat::Gif,
+        _ => RecordingFormat::Mp4,
+    };
+
+    let fps = v["fps"].as_u64().unwrap_or(30) as u32;
+
+    let quality = match v["quality"].as_str() {
+        Some("low") => RecordingQuality::Low,
+        Some("high") => RecordingQuality::High,
+        _ => RecordingQuality::Medium,
+    };
+
+    let ffmpeg_path = v["ffmpeg_path"].as_str().map(PathBuf::from);
+
+    let config = RecordConfig {
+        display,
+        region,
+        output_path,
+        format,
+        fps,
+        quality,
+        ffmpeg_path,
+    };
+
+    match snapforge_core::record::ffmpeg::start_recording(config) {
+        Ok(handle) => {
+            let wrapper = Box::new(FfiRecordingHandle {
+                inner: Some(handle),
+            });
+            Box::into_raw(wrapper).cast::<c_void>()
+        }
+        Err(_) => ptr::null_mut(),
+    }
+}
+
+/// Stop a recording and wait for it to finish.
+/// Returns 0 on success, -1 on error.
+///
+/// # Safety
+///
+/// `handle` must be a valid pointer returned by `snapforge_start_recording`
+/// and must not have been freed.
+#[no_mangle]
+pub unsafe extern "C" fn snapforge_stop_recording(handle: *mut c_void) -> c_int {
+    if handle.is_null() {
+        return -1;
+    }
+    let wrapper = &mut *handle.cast::<FfiRecordingHandle>();
+    match wrapper.inner.take() {
+        Some(h) => match h.stop() {
+            Ok(()) => 0,
+            Err(_) => -1,
+        },
+        None => -1, // already stopped
+    }
+}
+
+/// Check if a recording is still active.
+/// Returns 1 if recording, 0 if not.
+///
+/// # Safety
+///
+/// `handle` must be a valid pointer returned by `snapforge_start_recording`
+/// and must not have been freed.
+#[no_mangle]
+pub unsafe extern "C" fn snapforge_is_recording(handle: *mut c_void) -> c_int {
+    if handle.is_null() {
+        return 0;
+    }
+    let wrapper = &*handle.cast::<FfiRecordingHandle>();
+    match &wrapper.inner {
+        Some(h) => c_int::from(h.is_running()),
+        None => 0,
+    }
+}
+
+/// Free a recording handle. The recording must have been stopped first
+/// (or will be stopped by the drop implementation).
+///
+/// # Safety
+///
+/// `handle` must be a valid pointer returned by `snapforge_start_recording`
+/// and must not have been freed already.
+#[no_mangle]
+pub unsafe extern "C" fn snapforge_free_recording_handle(handle: *mut c_void) {
+    if !handle.is_null() {
+        let _ = Box::from_raw(handle.cast::<FfiRecordingHandle>());
+    }
+}
+
+// ---------------------------------------------------------------------------
+// History FFI
+// ---------------------------------------------------------------------------
+
+/// List all history entries as a JSON string.
+/// Returns NULL on error. Caller must free via `snapforge_free_string`.
+#[no_mangle]
+pub extern "C" fn snapforge_history_list() -> *mut c_char {
+    let Ok(history) = ScreenshotHistory::load() else {
+        return ptr::null_mut();
+    };
+    let Ok(json) = serde_json::to_string(&history.entries) else {
+        return ptr::null_mut();
+    };
+    match CString::new(json) {
+        Ok(cs) => cs.into_raw(),
+        Err(_) => ptr::null_mut(),
+    }
+}
+
+/// Add a file path to the screenshot history.
+/// Returns 0 on success, -1 on error.
+///
+/// # Safety
+///
+/// `path` must be a valid null-terminated UTF-8 string.
+#[no_mangle]
+pub unsafe extern "C" fn snapforge_history_add(path: *const c_char) -> c_int {
+    if path.is_null() {
+        return -1;
+    }
+    let Ok(path_str) = CStr::from_ptr(path).to_str() else {
+        return -1;
+    };
+    let Ok(mut history) = ScreenshotHistory::load() else {
+        return -1;
+    };
+    match history.add_entry(path_str) {
+        Ok(()) => 0,
+        Err(_) => -1,
+    }
+}
+
+/// Delete a history entry by file path.
+/// Returns 0 on success, -1 on error.
+///
+/// # Safety
+///
+/// `path` must be a valid null-terminated UTF-8 string.
+#[no_mangle]
+pub unsafe extern "C" fn snapforge_history_delete(path: *const c_char) -> c_int {
+    if path.is_null() {
+        return -1;
+    }
+    let Ok(path_str) = CStr::from_ptr(path).to_str() else {
+        return -1;
+    };
+    let Ok(mut history) = ScreenshotHistory::load() else {
+        return -1;
+    };
+    match history.remove_entry(path_str) {
+        Ok(()) => 0,
+        Err(_) => -1,
+    }
+}
+
+/// Clear all history entries.
+/// Returns 0 on success, -1 on error.
+#[no_mangle]
+pub extern "C" fn snapforge_history_clear() -> c_int {
+    let Ok(mut history) = ScreenshotHistory::load() else {
+        return -1;
+    };
+    match history.clear() {
+        Ok(()) => 0,
+        Err(_) => -1,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Config FFI
+// ---------------------------------------------------------------------------
+
+/// Load the application config and return it as a JSON string.
+/// Returns NULL on error. Caller must free via `snapforge_free_string`.
+#[no_mangle]
+pub extern "C" fn snapforge_config_load() -> *mut c_char {
+    let Ok(config) = AppConfig::load() else {
+        return ptr::null_mut();
+    };
+    let Ok(json) = serde_json::to_string(&config) else {
+        return ptr::null_mut();
+    };
+    match CString::new(json) {
+        Ok(cs) => cs.into_raw(),
+        Err(_) => ptr::null_mut(),
+    }
+}
+
+/// Save application config from a JSON string.
+/// Returns 0 on success, -1 on error.
+///
+/// # Safety
+///
+/// `json` must be a valid null-terminated UTF-8 string.
+#[no_mangle]
+pub unsafe extern "C" fn snapforge_config_save(json: *const c_char) -> c_int {
+    if json.is_null() {
+        return -1;
+    }
+    let Ok(json_str) = CStr::from_ptr(json).to_str() else {
+        return -1;
+    };
+    let Ok(config) = serde_json::from_str::<AppConfig>(json_str) else {
+        return -1;
+    };
+    match config.save() {
+        Ok(()) => 0,
+        Err(_) => -1,
     }
 }

@@ -49,6 +49,45 @@ char *snapforge_default_save_path(void);
 /* Free a string returned by snapforge_*. */
 void snapforge_free_string(char *s);
 
+/* --- Recording --- */
+
+/* Start recording. config_json is a JSON string with fields:
+   display, region (optional), output_path, format, fps, quality, ffmpeg_path (optional).
+   Returns opaque handle on success, NULL on error.
+   Caller must call snapforge_stop_recording then snapforge_free_recording_handle. */
+void *snapforge_start_recording(const char *config_json);
+
+/* Stop recording and wait for completion. Returns 0 on success, -1 on error. */
+int snapforge_stop_recording(void *handle);
+
+/* Check if recording is active. Returns 1 if recording, 0 if not. */
+int snapforge_is_recording(void *handle);
+
+/* Free a recording handle. */
+void snapforge_free_recording_handle(void *handle);
+
+/* --- History --- */
+
+/* List history entries as JSON. Caller frees via snapforge_free_string. Returns NULL on error. */
+char *snapforge_history_list(void);
+
+/* Add a file path to history. Returns 0 on success, -1 on error. */
+int snapforge_history_add(const char *path);
+
+/* Delete a history entry by path. Returns 0 on success, -1 on error. */
+int snapforge_history_delete(const char *path);
+
+/* Clear all history. Returns 0 on success, -1 on error. */
+int snapforge_history_clear(void);
+
+/* --- Config --- */
+
+/* Load config as JSON. Caller frees via snapforge_free_string. Returns NULL on error. */
+char *snapforge_config_load(void);
+
+/* Save config from JSON. Returns 0 on success, -1 on error. */
+int snapforge_config_save(const char *json);
+
 #ifdef __cplusplus
 }
 #endif
