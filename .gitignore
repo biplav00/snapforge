@@ -35,6 +35,7 @@ lcov-rust.info
 
 # Build artifacts
 src-tauri/target/**/*.dmg
+qt/build/
 
 # Backups
 src-tauri/icons/icon.ico.bak
