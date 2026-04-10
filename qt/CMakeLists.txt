@@ -18,6 +18,9 @@ add_executable(snapforge-qt
     src/AnnotationRenderer.cpp
     src/AnnotationCanvas.cpp
     src/AnnotationToolbar.cpp
+    src/RecordingManager.cpp
+    src/HistoryWindow.cpp
+    src/PreferencesWindow.cpp
 )
 
 target_include_directories(snapforge-qt PRIVATE
