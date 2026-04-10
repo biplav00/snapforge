@@ -55,9 +55,11 @@ int main(int argc, char *argv[]) {
         snapforge_request_permission();
     }
 
-    // Pre-create overlay (kept hidden — shown on hotkey)
+    // Pre-create overlay and warm up the window server registration
     OverlayWindow overlay;
     g_overlay = &overlay;
+    overlay.showFullScreen();
+    overlay.hide();
 
     // Handle region capture — save to file
     QObject::connect(&overlay, &OverlayWindow::regionCaptured,

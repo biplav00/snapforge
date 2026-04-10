@@ -6,7 +6,23 @@
 #include <QScreen>
 #include <QGuiApplication>
 #include <QElapsedTimer>
+#include <QFontMetrics>
 #include "snapforge_ffi.h"
+
+// --- CaptureWorker: runs SCK capture off the main thread ---
+
+void CaptureWorker::run() {
+    CapturedImage img = snapforge_capture_fullscreen(0);
+    if (img.data && img.width > 0) {
+        QImage qimg(img.data, img.width, img.height, img.width * 4,
+                    QImage::Format_RGBA8888);
+        QImage copy = qimg.copy(); // deep copy before freeing
+        snapforge_free_buffer(img.data, img.len);
+        emit captured(copy);
+    }
+}
+
+// --- OverlayWindow ---
 
 OverlayWindow::OverlayWindow(QWidget *parent)
     : QWidget(parent, Qt::FramelessWindowHint | Qt::WindowStaysOnTopHint | Qt::Tool)
@@ -15,19 +31,22 @@ OverlayWindow::OverlayWindow(QWidget *parent)
     setAttribute(Qt::WA_ShowWithoutActivating, false);
     setCursor(Qt::CrossCursor);
     setMouseTracking(true);
+
+    // Pre-warm font metrics to avoid 125ms alias scan on first paint
+    QFont font("Menlo", 11);
+    QFontMetrics fm(font);
+    fm.boundingRect("0");
+
+    // When capture completes on bg thread, update the screenshot and repaint
+    connect(&m_captureWorker, &CaptureWorker::captured, this, [this](QImage image) {
+        m_screenshot = image;
+        update();
+    });
 }
 
 void OverlayWindow::activate() {
     QElapsedTimer timer;
     timer.start();
-
-    // Pre-capture screen before showing overlay
-    CapturedImage img = snapforge_capture_fullscreen(0);
-    if (img.data && img.width > 0) {
-        m_screenshot = QImage(img.data, img.width, img.height, img.width * 4,
-                              QImage::Format_RGBA8888).copy();
-        snapforge_free_buffer(img.data, img.len);
-    }
 
     // Size to primary screen
     QScreen *screen = QGuiApplication::primaryScreen();
@@ -39,12 +58,19 @@ void OverlayWindow::activate() {
     m_hasRegion = false;
     m_startPos = QPoint();
     m_endPos = QPoint();
+    m_screenshot = QImage(); // clear old screenshot
 
+    // Show overlay IMMEDIATELY — don't wait for capture
     showFullScreen();
     activateWindow();
     raise();
 
-    qDebug("Overlay activated in %lld ms", timer.elapsed());
+    qDebug("Overlay shown in %lld ms", timer.elapsed());
+
+    // Kick off capture in background — screenshot will appear when ready
+    if (!m_captureWorker.isRunning()) {
+        m_captureWorker.start();
+    }
 }
 
 QRect OverlayWindow::selectedRect() const {
@@ -55,7 +81,7 @@ void OverlayWindow::paintEvent(QPaintEvent *) {
     QPainter p(this);
     p.setRenderHint(QPainter::Antialiasing);
 
-    // Draw pre-captured screenshot as background
+    // Draw pre-captured screenshot as background (if available)
     if (!m_screenshot.isNull()) {
         p.drawImage(0, 0, m_screenshot.scaled(size(), Qt::IgnoreAspectRatio, Qt::FastTransformation));
     }
@@ -83,7 +109,7 @@ void OverlayWindow::paintEvent(QPaintEvent *) {
 
         // Dimension label
         QString label = QString("%1 × %2").arg(sel.width()).arg(sel.height());
-        QFont font("monospace", 11);
+        QFont font("Menlo", 11);
         p.setFont(font);
         QFontMetrics fm(font);
         QRect labelRect = fm.boundingRect(label);
