@@ -18,19 +18,6 @@
 #include <objc/message.h>
 #endif
 
-// --- CaptureWorker: runs SCK capture off the main thread ---
-
-void CaptureWorker::run() {
-    CapturedImage img = snapforge_capture_fullscreen(0);
-    if (img.data && img.width > 0) {
-        QImage qimg(img.data, img.width, img.height, img.width * 4,
-                    QImage::Format_RGBA8888);
-        QImage copy = qimg.copy(); // deep copy before freeing
-        snapforge_free_buffer(img.data, img.len);
-        emit captured(copy);
-    }
-}
-
 // --- Tool shortcut map ---
 
 const QMap<int, ToolType> &OverlayWindow::toolShortcuts() {

@@ -2,21 +2,12 @@
 #define OVERLAYWINDOW_H
 
 #include <QWidget>
-#include <QThread>
 #include <QMap>
 #include "AnnotationState.h"
 
 class AnnotationCanvas;
 class AnnotationToolbar;
 class QPushButton;
-
-class CaptureWorker : public QThread {
-    Q_OBJECT
-public:
-    void run() override;
-signals:
-    void captured(QImage image);
-};
 
 class OverlayWindow : public QWidget {
     Q_OBJECT
@@ -62,7 +53,6 @@ private:
     bool m_drawing = false;
     bool m_hasRegion = false;
     QImage m_screenshot;
-    CaptureWorker m_captureWorker;
     Mode m_mode = Select;
     Purpose m_purpose = Screenshot;
 
