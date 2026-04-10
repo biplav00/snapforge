@@ -11,7 +11,14 @@ find_package(Qt6 REQUIRED COMPONENTS Widgets Gui)
 set(RUST_TARGET_DIR "${CMAKE_SOURCE_DIR}/../target/release")
 set(FFI_HEADER_DIR "${CMAKE_SOURCE_DIR}/../crates/snapforge-ffi")
 
-add_executable(snapforge-qt
+set(MACOSX_BUNDLE_BUNDLE_NAME "Snapforge")
+set(MACOSX_BUNDLE_GUI_IDENTIFIER "com.snapforge.app")
+set(MACOSX_BUNDLE_BUNDLE_VERSION "1.0.0")
+set(MACOSX_BUNDLE_SHORT_VERSION_STRING "1.0.0")
+set(MACOSX_BUNDLE_INFO_STRING "Snapforge Screenshot Tool")
+set(MACOSX_BUNDLE_ICON_FILE "AppIcon")
+
+add_executable(snapforge-qt MACOSX_BUNDLE
     src/main.cpp
     src/OverlayWindow.cpp
     src/AnnotationState.cpp
@@ -47,4 +54,18 @@ if(APPLE)
         "-framework Security"
         "-framework Carbon"
     )
+
+    # Custom Info.plist properties for accessory app (no dock icon)
+    set_target_properties(snapforge-qt PROPERTIES
+        MACOSX_BUNDLE_INFO_PLIST "${CMAKE_SOURCE_DIR}/Info.plist.in"
+    )
 endif()
+
+# macdeployqt bundles Qt frameworks into the .app
+find_program(MACDEPLOYQT macdeployqt HINTS "${Qt6_DIR}/../../../bin")
+
+add_custom_target(dmg
+    DEPENDS snapforge-qt
+    COMMAND ${MACDEPLOYQT} "$<TARGET_BUNDLE_DIR:snapforge-qt>" -dmg
+    COMMENT "Creating DMG..."
+)
