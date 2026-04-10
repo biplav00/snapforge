@@ -14,6 +14,8 @@ set(FFI_HEADER_DIR "${CMAKE_SOURCE_DIR}/../crates/snapforge-ffi")
 add_executable(snapforge-qt
     src/main.cpp
     src/OverlayWindow.cpp
+    src/AnnotationState.cpp
+    src/AnnotationRenderer.cpp
 )
 
 target_include_directories(snapforge-qt PRIVATE
