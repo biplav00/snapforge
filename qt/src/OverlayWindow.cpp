@@ -8,8 +8,14 @@
 #include <QScreen>
 #include <QGuiApplication>
 #include <QElapsedTimer>
+#include <QTimer>
 #include <QFontMetrics>
 #include "snapforge_ffi.h"
+
+#ifdef Q_OS_MAC
+#include <objc/runtime.h>
+#include <objc/message.h>
+#endif
 
 // --- CaptureWorker: runs SCK capture off the main thread ---
 
@@ -49,8 +55,6 @@ const QMap<int, ToolType> &OverlayWindow::toolShortcuts() {
 OverlayWindow::OverlayWindow(QWidget *parent)
     : QWidget(parent, Qt::FramelessWindowHint | Qt::WindowStaysOnTopHint | Qt::Tool)
 {
-    setAttribute(Qt::WA_TranslucentBackground);
-    setAttribute(Qt::WA_ShowWithoutActivating, false);
     setCursor(Qt::CrossCursor);
     setMouseTracking(true);
 
@@ -58,17 +62,30 @@ OverlayWindow::OverlayWindow(QWidget *parent)
     QFont font("Menlo", 11);
     QFontMetrics fm(font);
     fm.boundingRect("0");
-
-    // When capture completes on bg thread, update the screenshot and repaint
-    connect(&m_captureWorker, &CaptureWorker::captured, this, [this](QImage image) {
-        m_screenshot = image;
-        update();
-    });
 }
 
 void OverlayWindow::activate() {
     QElapsedTimer timer;
     timer.start();
+
+    m_drawing = false;
+    m_hasRegion = false;
+    m_startPos = QPoint();
+    m_endPos = QPoint();
+    m_annotationState.clearAnnotations();
+    exitAnnotateMode();
+
+    // Capture screen FIRST (like Flameshot) — then show overlay with
+    // the screenshot as an opaque background. The user sees their desktop
+    // "freeze" because the overlay looks identical to it.
+    // Run capture on bg thread but wait for result before showing.
+    CapturedImage img = snapforge_capture_fullscreen(0);
+    if (img.data && img.width > 0) {
+        QImage qimg(img.data, img.width, img.height, img.width * 4,
+                    QImage::Format_RGBA8888);
+        m_screenshot = qimg.copy();
+        snapforge_free_buffer(img.data, img.len);
+    }
 
     // Size to primary screen
     QScreen *screen = QGuiApplication::primaryScreen();
@@ -76,27 +93,70 @@ void OverlayWindow::activate() {
         setGeometry(screen->geometry());
     }
 
-    m_drawing = false;
-    m_hasRegion = false;
-    m_startPos = QPoint();
-    m_endPos = QPoint();
-    m_screenshot = QImage(); // clear old screenshot
+    // Configure NSWindow BEFORE show() — set level and collection behavior
+    // so that when show() makes the window visible, it's already configured
+    // to appear on the correct Space without switching away from fullscreen apps.
+    //
+    // The approach that works (confirmed by Electron#10078 and AppKit overlays):
+    // 1. App must be Accessory activation policy (set in main.cpp)
+    // 2. Window level: NSScreenSaverWindowLevel (1000) or NSStatusWindowLevel (25)
+    // 3. Collection behavior: CanJoinAllSpaces | FullScreenAuxiliary | Stationary | IgnoresCycle
+    //    - Stationary prevents macOS from pulling the window to a different Space
+    //    - IgnoresCycle keeps it out of Cmd+Tab
+    // 4. Do NOT call activateWindow()/raise() — they trigger activateIgnoringOtherApps
+    //    which causes the Space switch. Instead use orderFrontRegardless + makeKeyWindow.
+#ifdef Q_OS_MAC
+    {
+        auto *nsView = reinterpret_cast<id>(winId());
+        id nsWindow = ((id (*)(id, SEL))objc_msgSend)(nsView, sel_registerName("window"));
+        if (nsWindow) {
+            // NSStatusWindowLevel (25) — high enough for overlay,
+            // low enough that macOS still allows mouse interaction.
+            // If this doesn't work over fullscreen, try 1000 (NSScreenSaverWindowLevel).
+            ((void (*)(id, SEL, long))objc_msgSend)(nsWindow, sel_registerName("setLevel:"), 1000);
 
-    // Clear annotations and exit annotate mode
-    m_annotationState.clearAnnotations();
-    exitAnnotateMode();
+            // CanJoinAllSpaces (1<<0) | FullScreenAuxiliary (1<<8) |
+            // Stationary (1<<4) | IgnoresCycle (1<<6)
+            // Stationary is the KEY missing flag — it prevents macOS from
+            // dragging the window to another Space during activation.
+            unsigned long behavior = (1 << 0) | (1 << 8) | (1 << 4) | (1 << 6);
+            ((void (*)(id, SEL, unsigned long))objc_msgSend)(
+                nsWindow, sel_registerName("setCollectionBehavior:"), behavior);
+        }
+    }
+#endif
 
-    // Show overlay IMMEDIATELY -- don't wait for capture
-    showFullScreen();
-    activateWindow();
-    raise();
+    // Use show() to let Qt set up internal state, but do NOT call
+    // activateWindow() or raise() — those trigger [NSApp activateIgnoringOtherApps:YES]
+    // which causes macOS to switch Spaces.
+    show();
+
+#ifdef Q_OS_MAC
+    {
+        // Re-apply after show() in case Qt overwrote them during window creation
+        auto *nsView = reinterpret_cast<id>(winId());
+        id nsWindow = ((id (*)(id, SEL))objc_msgSend)(nsView, sel_registerName("window"));
+        if (nsWindow) {
+            ((void (*)(id, SEL, long))objc_msgSend)(nsWindow, sel_registerName("setLevel:"), 1000);
+
+            unsigned long behavior = (1 << 0) | (1 << 8) | (1 << 4) | (1 << 6);
+            ((void (*)(id, SEL, unsigned long))objc_msgSend)(
+                nsWindow, sel_registerName("setCollectionBehavior:"), behavior);
+
+            // orderFrontRegardless — brings window to front without activating the app.
+            // This is critical: it shows the window in the CURRENT Space (the fullscreen
+            // app's Space) instead of switching to our app's Space.
+            ((void (*)(id, SEL))objc_msgSend)(nsWindow, sel_registerName("orderFrontRegardless"));
+
+            // makeKeyWindow — gives us keyboard and mouse input WITHOUT activating
+            // the app (no Space switch). This is different from makeKeyAndOrderFront
+            // which WOULD activate the app.
+            ((void (*)(id, SEL))objc_msgSend)(nsWindow, sel_registerName("makeKeyWindow"));
+        }
+    }
+#endif
 
     qDebug("Overlay shown in %lld ms", timer.elapsed());
-
-    // Kick off capture in background -- screenshot will appear when ready
-    if (!m_captureWorker.isRunning()) {
-        m_captureWorker.start();
-    }
 }
 
 QRect OverlayWindow::selectedRect() const {

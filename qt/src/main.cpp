@@ -10,6 +10,8 @@
 
 #ifdef Q_OS_MAC
 #include <Carbon/Carbon.h>
+#include <objc/runtime.h>
+#include <objc/message.h>
 
 // macOS global hotkey callback
 static OverlayWindow *g_overlay = nullptr;
@@ -67,13 +69,26 @@ static void copyImage(const QImage &img) {
 }
 
 int main(int argc, char *argv[]) {
+    // CRITICAL: Suppress Qt's internal [NSApp activateIgnoringOtherApps:YES]
+    // in QCocoaWindow::raise(). Without this, raise() triggers a Space switch.
+    qputenv("QT_MAC_SET_RAISE_PROCESS", "0");
+
     QApplication app(argc, argv);
     app.setApplicationName("Snapforge");
     app.setQuitOnLastWindowClosed(false);
 
 #ifdef Q_OS_MAC
-    // Hide from dock (accessory app)
-    app.setAttribute(Qt::AA_DontShowIconsInMenus);
+    // Set activation policy to Accessory — this is the KEY to preventing
+    // Space switches. An accessory app can show windows over fullscreen
+    // apps without macOS pulling the user to another Space.
+    // This is equivalent to Electron's app.dock.hide() which is how
+    // CleanShot X, Shottr, and similar tools work.
+    {
+        id nsApp = (id)objc_getClass("NSApplication");
+        id sharedApp = ((id (*)(id, SEL))objc_msgSend)(nsApp, sel_registerName("sharedApplication"));
+        // NSApplicationActivationPolicyAccessory = 1
+        ((void (*)(id, SEL, long))objc_msgSend)(sharedApp, sel_registerName("setActivationPolicy:"), 1);
+    }
 #endif
 
     // Request permission if needed
@@ -82,10 +97,11 @@ int main(int argc, char *argv[]) {
     }
 
     // Pre-create overlay and warm up the window server registration
+    // Use zero-opacity show to avoid visible flash
     OverlayWindow overlay;
     g_overlay = &overlay;
-    overlay.showFullScreen();
-    overlay.hide();
+    // No pre-warm needed — opaque overlay with screenshot background
+    // eliminates visible window transition
 
     // Handle screenshot save
     QObject::connect(&overlay, &OverlayWindow::screenshotReady,
