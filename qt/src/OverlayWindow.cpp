@@ -1,4 +1,6 @@
 #include "OverlayWindow.h"
+#include "AnnotationCanvas.h"
+#include "AnnotationToolbar.h"
 #include <QPainter>
 #include <QPainterPath>
 #include <QMouseEvent>
@@ -20,6 +22,26 @@ void CaptureWorker::run() {
         snapforge_free_buffer(img.data, img.len);
         emit captured(copy);
     }
+}
+
+// --- Tool shortcut map ---
+
+const QMap<int, ToolType> &OverlayWindow::toolShortcuts() {
+    static const QMap<int, ToolType> map = {
+        { Qt::Key_A, ToolType::Arrow },
+        { Qt::Key_R, ToolType::Rect },
+        { Qt::Key_C, ToolType::Circle },
+        { Qt::Key_L, ToolType::Line },
+        { Qt::Key_D, ToolType::DottedLine },
+        { Qt::Key_F, ToolType::Freehand },
+        { Qt::Key_T, ToolType::Text },
+        { Qt::Key_H, ToolType::Highlight },
+        { Qt::Key_B, ToolType::Blur },
+        { Qt::Key_N, ToolType::Steps },
+        { Qt::Key_I, ToolType::ColorPicker },
+        { Qt::Key_M, ToolType::Measure },
+    };
+    return map;
 }
 
 // --- OverlayWindow ---
@@ -60,14 +82,18 @@ void OverlayWindow::activate() {
     m_endPos = QPoint();
     m_screenshot = QImage(); // clear old screenshot
 
-    // Show overlay IMMEDIATELY — don't wait for capture
+    // Clear annotations and exit annotate mode
+    m_annotationState.clearAnnotations();
+    exitAnnotateMode();
+
+    // Show overlay IMMEDIATELY -- don't wait for capture
     showFullScreen();
     activateWindow();
     raise();
 
     qDebug("Overlay shown in %lld ms", timer.elapsed());
 
-    // Kick off capture in background — screenshot will appear when ready
+    // Kick off capture in background -- screenshot will appear when ready
     if (!m_captureWorker.isRunning()) {
         m_captureWorker.start();
     }
@@ -75,6 +101,86 @@ void OverlayWindow::activate() {
 
 QRect OverlayWindow::selectedRect() const {
     return QRect(m_startPos, m_endPos).normalized();
+}
+
+bool OverlayWindow::isOnRegionEdge(QPoint pos) const {
+    if (!m_hasRegion) return false;
+    QRect sel = selectedRect();
+    const int margin = 6;
+    QRect outer = sel.adjusted(-margin, -margin, margin, margin);
+    QRect inner = sel.adjusted(margin, margin, -margin, -margin);
+    return outer.contains(pos) && !inner.contains(pos);
+}
+
+void OverlayWindow::enterAnnotateMode() {
+    m_mode = Annotate;
+    m_hasRegion = true;
+
+    QRect sel = selectedRect();
+
+    // Create canvas over the selected region
+    if (!m_canvas) {
+        m_canvas = new AnnotationCanvas(&m_annotationState, m_screenshot, this);
+    }
+    m_canvas->setRegion(sel.x(), sel.y(), sel.width(), sel.height());
+    m_canvas->setGeometry(sel);
+    m_canvas->show();
+    m_canvas->raise();
+
+    // Create toolbar below the region
+    if (!m_toolbar) {
+        m_toolbar = new AnnotationToolbar(&m_annotationState, this);
+        connect(m_toolbar, &AnnotationToolbar::saveRequested, this, &OverlayWindow::handleSave);
+        connect(m_toolbar, &AnnotationToolbar::copyRequested, this, &OverlayWindow::handleCopy);
+        connect(m_toolbar, &AnnotationToolbar::cancelRequested, this, [this]() {
+            exitAnnotateMode();
+            m_hasRegion = false;
+            m_drawing = false;
+            hide();
+            emit cancelled();
+        });
+    }
+    m_toolbar->positionRelativeTo(sel.x(), sel.y(), sel.width(), sel.height());
+    m_toolbar->show();
+    m_toolbar->raise();
+
+    update();
+}
+
+void OverlayWindow::exitAnnotateMode() {
+    m_mode = Select;
+    if (m_canvas) {
+        m_canvas->hide();
+    }
+    if (m_toolbar) {
+        m_toolbar->hide();
+    }
+}
+
+void OverlayWindow::handleSave() {
+    if (!m_canvas) return;
+    QImage composited = m_canvas->compositeImage();
+    if (composited.isNull()) return;
+
+    m_hasRegion = false;
+    m_drawing = false;
+    exitAnnotateMode();
+    hide();
+
+    emit screenshotReady(composited, composited.width(), composited.height());
+}
+
+void OverlayWindow::handleCopy() {
+    if (!m_canvas) return;
+    QImage composited = m_canvas->compositeImage();
+    if (composited.isNull()) return;
+
+    m_hasRegion = false;
+    m_drawing = false;
+    exitAnnotateMode();
+    hide();
+
+    emit clipboardReady(composited, composited.width(), composited.height());
 }
 
 void OverlayWindow::paintEvent(QPaintEvent *) {
@@ -97,7 +203,7 @@ void OverlayWindow::paintEvent(QPaintEvent *) {
         QPainterPath dimPath = fullPath.subtracted(selPath);
         p.fillPath(dimPath, QColor(0, 0, 0, 100));
 
-        // Selection border — marching ants effect
+        // Selection border -- marching ants effect
         QPen whitePen(Qt::white, 1, Qt::DashLine);
         p.setPen(whitePen);
         p.drawRect(sel);
@@ -108,7 +214,7 @@ void OverlayWindow::paintEvent(QPaintEvent *) {
         p.drawRect(sel);
 
         // Dimension label
-        QString label = QString("%1 × %2").arg(sel.width()).arg(sel.height());
+        QString label = QString("%1 \u00d7 %2").arg(sel.width()).arg(sel.height());
         QFont font("Menlo", 11);
         p.setFont(font);
         QFontMetrics fm(font);
@@ -120,8 +226,8 @@ void OverlayWindow::paintEvent(QPaintEvent *) {
         p.setPen(Qt::white);
         p.drawText(lx + 2, ly + labelRect.height() - 2, label);
 
-        // Resize handles (8 points)
-        if (m_hasRegion && !m_drawing) {
+        // Resize handles (8 points) -- only in Select mode
+        if (m_hasRegion && !m_drawing && m_mode == Select) {
             p.setPen(QColor(0, 0, 0, 128));
             p.setBrush(Qt::white);
             int hs = 4; // half-size
@@ -137,13 +243,29 @@ void OverlayWindow::paintEvent(QPaintEvent *) {
             }
         }
     } else {
-        // No selection yet — light dim over everything
+        // No selection yet -- light dim over everything
         p.fillRect(rect(), QColor(0, 0, 0, 40));
     }
 }
 
 void OverlayWindow::mousePressEvent(QMouseEvent *event) {
     if (event->button() == Qt::LeftButton) {
+        if (m_mode == Annotate) {
+            // Clicking outside the region starts a new selection
+            QRect sel = selectedRect();
+            if (!sel.contains(event->pos())) {
+                m_annotationState.clearAnnotations();
+                exitAnnotateMode();
+                m_startPos = event->pos();
+                m_endPos = event->pos();
+                m_drawing = true;
+                m_hasRegion = false;
+                update();
+            }
+            // Clicks inside the region are handled by AnnotationCanvas
+            return;
+        }
+
         m_startPos = event->pos();
         m_endPos = event->pos();
         m_drawing = true;
@@ -164,32 +286,83 @@ void OverlayWindow::mouseReleaseEvent(QMouseEvent *event) {
         m_drawing = false;
         QRect sel = selectedRect();
         if (sel.width() > 5 && sel.height() > 5) {
-            m_hasRegion = true;
-            update();
+            enterAnnotateMode();
         }
     }
 }
 
 void OverlayWindow::keyPressEvent(QKeyEvent *event) {
+    if (m_mode == Annotate) {
+        // If text input is active in the canvas, let it handle keys
+        if (m_canvas && m_canvas->isTextInputActive()) {
+            return;
+        }
+
+        const auto modifiers = event->modifiers();
+        const bool cmd = modifiers & Qt::ControlModifier;
+        const bool shift = modifiers & Qt::ShiftModifier;
+
+        // Cmd+Z / Cmd+Shift+Z: undo/redo
+        if (cmd && event->key() == Qt::Key_Z) {
+            if (shift) {
+                m_annotationState.redo();
+            } else {
+                m_annotationState.undo();
+            }
+            return;
+        }
+
+        // Cmd+S or Enter: save
+        if ((cmd && event->key() == Qt::Key_S) || event->key() == Qt::Key_Return) {
+            handleSave();
+            return;
+        }
+
+        // Cmd+C: copy
+        if (cmd && event->key() == Qt::Key_C) {
+            handleCopy();
+            return;
+        }
+
+        // Escape: exit annotate mode and hide
+        if (event->key() == Qt::Key_Escape) {
+            m_annotationState.clearAnnotations();
+            exitAnnotateMode();
+            m_hasRegion = false;
+            m_drawing = false;
+            hide();
+            emit cancelled();
+            return;
+        }
+
+        // Stroke width shortcuts: 1/2/3
+        if (event->key() == Qt::Key_1) { m_annotationState.setStrokeWidth(1); return; }
+        if (event->key() == Qt::Key_2) { m_annotationState.setStrokeWidth(2); return; }
+        if (event->key() == Qt::Key_3) { m_annotationState.setStrokeWidth(4); return; }
+
+        // Tool shortcuts (only when no modifier)
+        if (!cmd && !shift) {
+            const auto &shortcuts = toolShortcuts();
+            auto it = shortcuts.find(event->key());
+            if (it != shortcuts.end()) {
+                m_annotationState.setActiveTool(it.value());
+                return;
+            }
+        }
+
+        return;
+    }
+
+    // Select mode
     if (event->key() == Qt::Key_Escape) {
         m_hasRegion = false;
         m_drawing = false;
         hide();
         emit cancelled();
     } else if (event->key() == Qt::Key_Return && m_hasRegion) {
-        QRect sel = selectedRect();
-        hide();
-
-        // Get DPI scale factor for pixel-accurate capture
-        double dpr = snapforge_display_scale_factor();
-        int px = static_cast<int>(sel.x() * dpr);
-        int py = static_cast<int>(sel.y() * dpr);
-        int pw = static_cast<int>(sel.width() * dpr);
-        int ph = static_cast<int>(sel.height() * dpr);
-
-        emit regionCaptured(px, py, pw, ph);
+        handleSave();
     } else if ((event->modifiers() & Qt::ControlModifier) && event->key() == Qt::Key_C && m_hasRegion) {
-        // Cmd+C / Ctrl+C — copy to clipboard
+        // Cmd+C / Ctrl+C -- copy to clipboard
         QRect sel = selectedRect();
         double dpr = snapforge_display_scale_factor();
         int px = static_cast<int>(sel.x() * dpr);

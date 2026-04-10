@@ -40,6 +40,32 @@ void registerGlobalHotkey() {
 }
 #endif
 
+static void saveImage(const QImage &img) {
+    if (img.isNull()) return;
+    QImage rgba = img.convertToFormat(QImage::Format_RGBA8888);
+
+    char *saveDir = snapforge_default_save_path();
+    QString dir = saveDir ? QString::fromUtf8(saveDir) : QDir::homePath() + "/Pictures/Snapforge";
+    if (saveDir) snapforge_free_string(saveDir);
+
+    QDir().mkpath(dir);
+    QString timestamp = QDateTime::currentDateTime().toString("yyyy-MM-dd_HH-mm-ss");
+    QString path = dir + "/screenshot_" + timestamp + ".png";
+
+    int result = snapforge_save_image(rgba.constBits(), rgba.width(), rgba.height(),
+                                      path.toUtf8().constData(), 0, 90);
+    if (result == 0) {
+        qDebug("Saved: %s", qPrintable(path));
+    }
+}
+
+static void copyImage(const QImage &img) {
+    if (img.isNull()) return;
+    QImage rgba = img.convertToFormat(QImage::Format_RGBA8888);
+    snapforge_copy_to_clipboard(rgba.constBits(), rgba.width(), rgba.height());
+    qDebug("Copied to clipboard");
+}
+
 int main(int argc, char *argv[]) {
     QApplication app(argc, argv);
     app.setApplicationName("Snapforge");
@@ -61,28 +87,16 @@ int main(int argc, char *argv[]) {
     overlay.showFullScreen();
     overlay.hide();
 
-    // Handle region capture — save to file
-    QObject::connect(&overlay, &OverlayWindow::regionCaptured,
-                     [](int x, int y, int w, int h) {
-        CapturedImage img = snapforge_capture_region(0, x, y, w, h);
-        if (!img.data || img.width == 0) return;
+    // Handle screenshot save
+    QObject::connect(&overlay, &OverlayWindow::screenshotReady,
+                     [](QImage composited, int /*w*/, int /*h*/) {
+        saveImage(composited);
+    });
 
-        // Generate save path
-        char *saveDir = snapforge_default_save_path();
-        QString dir = saveDir ? QString::fromUtf8(saveDir) : QDir::homePath() + "/Pictures/Snapforge";
-        if (saveDir) snapforge_free_string(saveDir);
-
-        QDir().mkpath(dir);
-        QString timestamp = QDateTime::currentDateTime().toString("yyyy-MM-dd_HH-mm-ss");
-        QString path = dir + "/screenshot_" + timestamp + ".png";
-
-        int result = snapforge_save_image(img.data, img.width, img.height,
-                                          path.toUtf8().constData(), 0, 90);
-        snapforge_free_buffer(img.data, img.len);
-
-        if (result == 0) {
-            qDebug("Saved: %s", qPrintable(path));
-        }
+    // Handle clipboard copy
+    QObject::connect(&overlay, &OverlayWindow::clipboardReady,
+                     [](QImage composited, int /*w*/, int /*h*/) {
+        copyImage(composited);
     });
 
     // System tray
