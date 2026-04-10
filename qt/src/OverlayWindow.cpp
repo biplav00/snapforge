@@ -10,6 +10,7 @@
 #include <QElapsedTimer>
 #include <QTimer>
 #include <QFontMetrics>
+#include <QPushButton>
 #include "snapforge_ffi.h"
 
 #ifdef Q_OS_MAC
@@ -64,7 +65,8 @@ OverlayWindow::OverlayWindow(QWidget *parent)
     fm.boundingRect("0");
 }
 
-void OverlayWindow::activate() {
+// Shared internal activation logic
+void OverlayWindow::activateInternal() {
     QElapsedTimer timer;
     timer.start();
 
@@ -74,11 +76,11 @@ void OverlayWindow::activate() {
     m_endPos = QPoint();
     m_annotationState.clearAnnotations();
     exitAnnotateMode();
+    exitRecordSelectMode();
 
     // Capture screen FIRST (like Flameshot) — then show overlay with
     // the screenshot as an opaque background. The user sees their desktop
     // "freeze" because the overlay looks identical to it.
-    // Run capture on bg thread but wait for result before showing.
     CapturedImage img = snapforge_capture_fullscreen(0);
     if (img.data && img.width > 0) {
         QImage qimg(img.data, img.width, img.height, img.width * 4,
@@ -124,6 +126,16 @@ void OverlayWindow::activate() {
 #endif
 
     qDebug("Overlay shown in %lld ms", timer.elapsed());
+}
+
+void OverlayWindow::activate() {
+    m_purpose = Screenshot;
+    activateInternal();
+}
+
+void OverlayWindow::activateForRecording() {
+    m_purpose = Record;
+    activateInternal();
 }
 
 QRect OverlayWindow::selectedRect() const {
@@ -183,6 +195,156 @@ void OverlayWindow::exitAnnotateMode() {
         m_toolbar->hide();
     }
 }
+
+// ---- Record-select mode ----
+
+void OverlayWindow::enterRecordSelectMode() {
+    m_mode = RecordSelect;
+    m_hasRegion = true;
+
+    QRect sel = selectedRect();
+
+    // Create buttons lazily
+    if (!m_btnRecordRegion) {
+        m_btnRecordRegion = new QPushButton("Record Region (Enter)", this);
+        m_btnRecordRegion->setStyleSheet(
+            "QPushButton {"
+            "  background-color: #ff4444;"
+            "  color: white;"
+            "  border: none;"
+            "  border-radius: 6px;"
+            "  padding: 6px 14px;"
+            "  font-size: 13px;"
+            "  font-weight: 600;"
+            "}"
+            "QPushButton:hover {"
+            "  background-color: #ff2222;"
+            "}"
+        );
+        connect(m_btnRecordRegion, &QPushButton::clicked, this, &OverlayWindow::emitRecordRegion);
+    }
+
+    if (!m_btnRecordFullscreen) {
+        m_btnRecordFullscreen = new QPushButton("Record Fullscreen", this);
+        m_btnRecordFullscreen->setStyleSheet(
+            "QPushButton {"
+            "  background-color: rgba(255, 68, 68, 50);"
+            "  color: #ff6666;"
+            "  border: 1px solid rgba(255, 68, 68, 76);"
+            "  border-radius: 6px;"
+            "  padding: 6px 14px;"
+            "  font-size: 13px;"
+            "  font-weight: 600;"
+            "}"
+            "QPushButton:hover {"
+            "  background-color: rgba(255, 68, 68, 80);"
+            "}"
+        );
+        connect(m_btnRecordFullscreen, &QPushButton::clicked, this, &OverlayWindow::emitRecordFullscreen);
+    }
+
+    if (!m_btnRecordCancel) {
+        m_btnRecordCancel = new QPushButton("Cancel (Esc)", this);
+        m_btnRecordCancel->setStyleSheet(
+            "QPushButton {"
+            "  background-color: transparent;"
+            "  color: rgba(255, 255, 255, 160);"
+            "  border: none;"
+            "  padding: 6px 10px;"
+            "  font-size: 12px;"
+            "}"
+            "QPushButton:hover {"
+            "  color: rgba(255, 255, 255, 220);"
+            "}"
+        );
+        connect(m_btnRecordCancel, &QPushButton::clicked, this, [this]() {
+            exitRecordSelectMode();
+            m_hasRegion = false;
+            m_drawing = false;
+            hideOverlay();
+            emit cancelled();
+        });
+    }
+
+    // Adjust button sizes so we can position them
+    m_btnRecordRegion->adjustSize();
+    m_btnRecordFullscreen->adjustSize();
+    m_btnRecordCancel->adjustSize();
+
+    const int gap       = 8;
+    const int btnHeight = 32;
+    const int yOffset   = 10; // gap below region
+
+    int totalWidth = m_btnRecordRegion->sizeHint().width()
+                   + gap
+                   + m_btnRecordFullscreen->sizeHint().width()
+                   + gap
+                   + m_btnRecordCancel->sizeHint().width();
+
+    int startX = sel.x() + sel.width() / 2 - totalWidth / 2;
+    int startY = sel.bottom() + yOffset;
+
+    // Clamp so buttons stay on screen
+    QScreen *screen = QGuiApplication::primaryScreen();
+    if (screen) {
+        int screenW = screen->geometry().width();
+        int screenH = screen->geometry().height();
+        if (startX < 4) startX = 4;
+        if (startX + totalWidth > screenW - 4) startX = screenW - 4 - totalWidth;
+        if (startY + btnHeight > screenH - 4) startY = sel.top() - btnHeight - yOffset;
+    }
+
+    int x = startX;
+    m_btnRecordRegion->setGeometry(x, startY, m_btnRecordRegion->sizeHint().width(), btnHeight);
+    x += m_btnRecordRegion->sizeHint().width() + gap;
+    m_btnRecordFullscreen->setGeometry(x, startY, m_btnRecordFullscreen->sizeHint().width(), btnHeight);
+    x += m_btnRecordFullscreen->sizeHint().width() + gap;
+    m_btnRecordCancel->setGeometry(x, startY, m_btnRecordCancel->sizeHint().width(), btnHeight);
+
+    m_btnRecordRegion->show();
+    m_btnRecordRegion->raise();
+    m_btnRecordFullscreen->show();
+    m_btnRecordFullscreen->raise();
+    m_btnRecordCancel->show();
+    m_btnRecordCancel->raise();
+
+    update();
+}
+
+void OverlayWindow::exitRecordSelectMode() {
+    if (m_mode == RecordSelect) {
+        m_mode = Select;
+    }
+    if (m_btnRecordRegion)    m_btnRecordRegion->hide();
+    if (m_btnRecordFullscreen) m_btnRecordFullscreen->hide();
+    if (m_btnRecordCancel)    m_btnRecordCancel->hide();
+}
+
+void OverlayWindow::emitRecordRegion() {
+    QRect sel = selectedRect();
+    double dpr = snapforge_display_scale_factor();
+    QRect pixelRegion(
+        static_cast<int>(sel.x()      * dpr),
+        static_cast<int>(sel.y()      * dpr),
+        static_cast<int>(sel.width()  * dpr),
+        static_cast<int>(sel.height() * dpr)
+    );
+    exitRecordSelectMode();
+    m_hasRegion = false;
+    m_drawing   = false;
+    hideOverlay();
+    emit recordingRequested(0, pixelRegion);
+}
+
+void OverlayWindow::emitRecordFullscreen() {
+    exitRecordSelectMode();
+    m_hasRegion = false;
+    m_drawing   = false;
+    hideOverlay();
+    emit recordingRequested(0, QRect());
+}
+
+// ---- end record-select ----
 
 void OverlayWindow::hideOverlay() {
     hide();
@@ -257,7 +419,7 @@ void OverlayWindow::paintEvent(QPaintEvent *) {
         p.setPen(Qt::white);
         p.drawText(lx + 2, ly + labelRect.height() - 2, label);
 
-        // Resize handles (8 points) -- only in Select mode
+        // Resize handles (8 points) -- only in Select mode (not RecordSelect)
         if (m_hasRegion && !m_drawing && m_mode == Select) {
             p.setPen(QColor(0, 0, 0, 128));
             p.setBrush(Qt::white);
@@ -297,6 +459,20 @@ void OverlayWindow::mousePressEvent(QMouseEvent *event) {
             return;
         }
 
+        if (m_mode == RecordSelect) {
+            // Clicking outside the region lets user re-draw
+            QRect sel = selectedRect();
+            if (!sel.contains(event->pos())) {
+                exitRecordSelectMode();
+                m_startPos = event->pos();
+                m_endPos = event->pos();
+                m_drawing = true;
+                m_hasRegion = false;
+                update();
+            }
+            return;
+        }
+
         m_startPos = event->pos();
         m_endPos = event->pos();
         m_drawing = true;
@@ -317,7 +493,11 @@ void OverlayWindow::mouseReleaseEvent(QMouseEvent *event) {
         m_drawing = false;
         QRect sel = selectedRect();
         if (sel.width() > 5 && sel.height() > 5) {
-            enterAnnotateMode();
+            if (m_purpose == Record) {
+                enterRecordSelectMode();
+            } else {
+                enterAnnotateMode();
+            }
         }
     }
 }
@@ -381,6 +561,22 @@ void OverlayWindow::keyPressEvent(QKeyEvent *event) {
             }
         }
 
+        return;
+    }
+
+    if (m_mode == RecordSelect) {
+        if (event->key() == Qt::Key_Return || event->key() == Qt::Key_Enter) {
+            emitRecordRegion();
+            return;
+        }
+        if (event->key() == Qt::Key_Escape) {
+            exitRecordSelectMode();
+            m_hasRegion = false;
+            m_drawing = false;
+            hideOverlay();
+            emit cancelled();
+            return;
+        }
         return;
     }
 

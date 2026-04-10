@@ -96,11 +96,10 @@ static const QString k_baseButtonStyle = QStringLiteral(
 // ---------------------------------------------------------------------------
 
 AnnotationToolbar::AnnotationToolbar(AnnotationState *state, QWidget *parent)
-    : QWidget(parent, Qt::FramelessWindowHint | Qt::WindowStaysOnTopHint | Qt::Tool)
+    : QWidget(parent)
     , m_state(state)
 {
     setAttribute(Qt::WA_TranslucentBackground);
-    setAttribute(Qt::WA_DeleteOnClose, false);
 
     buildUi();
 

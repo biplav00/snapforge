@@ -8,6 +8,7 @@
 
 class AnnotationCanvas;
 class AnnotationToolbar;
+class QPushButton;
 
 class CaptureWorker : public QThread {
     Q_OBJECT
@@ -23,11 +24,13 @@ class OverlayWindow : public QWidget {
 public:
     explicit OverlayWindow(QWidget *parent = nullptr);
     void activate();
+    void activateForRecording();
 
 signals:
     void screenshotReady(QImage composited, int w, int h);
     void clipboardReady(QImage composited, int w, int h);
     void cancelled();
+    void recordingRequested(int display, QRect region);
 
 protected:
     void paintEvent(QPaintEvent *event) override;
@@ -37,14 +40,20 @@ protected:
     void keyPressEvent(QKeyEvent *event) override;
 
 private:
-    enum Mode { Select, Annotate };
+    enum Mode { Select, Annotate, RecordSelect };
+    enum Purpose { Screenshot, Record };
 
+    void activateInternal();
     void enterAnnotateMode();
     void exitAnnotateMode();
+    void enterRecordSelectMode();
+    void exitRecordSelectMode();
     void handleSave();
     void handleCopy();
     void hideOverlay();
     bool isOnRegionEdge(QPoint pos) const;
+    void emitRecordRegion();
+    void emitRecordFullscreen();
 
     static const QMap<int, ToolType> &toolShortcuts();
 
@@ -55,10 +64,16 @@ private:
     QImage m_screenshot;
     CaptureWorker m_captureWorker;
     Mode m_mode = Select;
+    Purpose m_purpose = Screenshot;
 
     AnnotationState m_annotationState;
     AnnotationCanvas *m_canvas = nullptr;
     AnnotationToolbar *m_toolbar = nullptr;
+
+    // Record-select mode buttons
+    QPushButton *m_btnRecordRegion   = nullptr;
+    QPushButton *m_btnRecordFullscreen = nullptr;
+    QPushButton *m_btnRecordCancel   = nullptr;
 
     QRect selectedRect() const;
 };

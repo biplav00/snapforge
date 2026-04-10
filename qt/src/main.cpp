@@ -44,9 +44,7 @@ OSStatus hotkeyHandler(EventHandlerCallRef, EventRef event, void *) {
             if (g_recording->isRecording()) {
                 QTimer::singleShot(0, g_recording, &RecordingManager::stopRecording);
             } else {
-                // Record mode overlay integration is a separate task;
-                // for now activate the overlay the same as screenshot.
-                QTimer::singleShot(0, g_overlay, &OverlayWindow::activate);
+                QTimer::singleShot(0, g_overlay, &OverlayWindow::activateForRecording);
             }
         }
         break;
@@ -172,6 +170,15 @@ int main(int argc, char *argv[]) {
 
     // Create manager/window instances
     RecordingManager recording;
+
+    // Connect recording requested from overlay
+    QObject::connect(&overlay, &OverlayWindow::recordingRequested,
+                     [&](int display, QRect region) {
+        char *saveDir = snapforge_default_save_path();
+        QString dir = saveDir ? QString::fromUtf8(saveDir) : QDir::homePath() + "/Movies/Snapforge";
+        if (saveDir) snapforge_free_string(saveDir);
+        recording.startRecording(display, region, dir);
+    });
     g_recording = &recording;
 
     HistoryWindow history;
@@ -196,9 +203,7 @@ int main(int argc, char *argv[]) {
             if (recording.isRecording()) {
                 recording.stopRecording();
             } else {
-                // Record mode overlay integration is a separate task;
-                // activate the overlay for now.
-                overlay.activate();
+                overlay.activateForRecording();
             }
         });
 
