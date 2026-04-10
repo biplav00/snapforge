@@ -93,64 +93,31 @@ void OverlayWindow::activate() {
         setGeometry(screen->geometry());
     }
 
-    // Configure NSWindow BEFORE show() — set level and collection behavior
-    // so that when show() makes the window visible, it's already configured
-    // to appear on the correct Space without switching away from fullscreen apps.
-    //
-    // The approach that works (confirmed by Electron#10078 and AppKit overlays):
-    // 1. App must be Accessory activation policy (set in main.cpp)
-    // 2. Window level: NSScreenSaverWindowLevel (1000) or NSStatusWindowLevel (25)
-    // 3. Collection behavior: CanJoinAllSpaces | FullScreenAuxiliary | Stationary | IgnoresCycle
-    //    - Stationary prevents macOS from pulling the window to a different Space
-    //    - IgnoresCycle keeps it out of Cmd+Tab
-    // 4. Do NOT call activateWindow()/raise() — they trigger activateIgnoringOtherApps
-    //    which causes the Space switch. Instead use orderFrontRegardless + makeKeyWindow.
-#ifdef Q_OS_MAC
-    {
-        auto *nsView = reinterpret_cast<id>(winId());
-        id nsWindow = ((id (*)(id, SEL))objc_msgSend)(nsView, sel_registerName("window"));
-        if (nsWindow) {
-            // NSStatusWindowLevel (25) — high enough for overlay,
-            // low enough that macOS still allows mouse interaction.
-            // If this doesn't work over fullscreen, try 1000 (NSScreenSaverWindowLevel).
-            ((void (*)(id, SEL, long))objc_msgSend)(nsWindow, sel_registerName("setLevel:"), 1000);
-
-            // CanJoinAllSpaces (1<<0) | FullScreenAuxiliary (1<<8) |
-            // Stationary (1<<4) | IgnoresCycle (1<<6)
-            // Stationary is the KEY missing flag — it prevents macOS from
-            // dragging the window to another Space during activation.
-            unsigned long behavior = (1 << 0) | (1 << 8) | (1 << 4) | (1 << 6);
-            ((void (*)(id, SEL, unsigned long))objc_msgSend)(
-                nsWindow, sel_registerName("setCollectionBehavior:"), behavior);
-        }
-    }
-#endif
-
-    // Use show() to let Qt set up internal state, but do NOT call
-    // activateWindow() or raise() — those trigger [NSApp activateIgnoringOtherApps:YES]
-    // which causes macOS to switch Spaces.
     show();
+    activateWindow();
+    raise();
 
 #ifdef Q_OS_MAC
     {
-        // Re-apply after show() in case Qt overwrote them during window creation
         auto *nsView = reinterpret_cast<id>(winId());
         id nsWindow = ((id (*)(id, SEL))objc_msgSend)(nsView, sel_registerName("window"));
         if (nsWindow) {
             ((void (*)(id, SEL, long))objc_msgSend)(nsWindow, sel_registerName("setLevel:"), 1000);
-
-            unsigned long behavior = (1 << 0) | (1 << 8) | (1 << 4) | (1 << 6);
+            unsigned long behavior = (1 << 0) | (1 << 4) | (1 << 6) | (1 << 8);
             ((void (*)(id, SEL, unsigned long))objc_msgSend)(
                 nsWindow, sel_registerName("setCollectionBehavior:"), behavior);
 
-            // orderFrontRegardless — brings window to front without activating the app.
-            // This is critical: it shows the window in the CURRENT Space (the fullscreen
-            // app's Space) instead of switching to our app's Space.
-            ((void (*)(id, SEL))objc_msgSend)(nsWindow, sel_registerName("orderFrontRegardless"));
-
-            // makeKeyWindow — gives us keyboard and mouse input WITHOUT activating
-            // the app (no Space switch). This is different from makeKeyAndOrderFront
-            // which WOULD activate the app.
+            // Activate app + make key window (required for accessory apps after hide)
+            id nsApp = ((id (*)(id, SEL))objc_msgSend)(
+                (id)objc_getClass("NSApplication"), sel_registerName("sharedApplication"));
+            if (nsApp) {
+                if (((BOOL (*)(id, SEL, SEL))objc_msgSend)(nsApp, sel_registerName("respondsToSelector:"),
+                        sel_registerName("activate"))) {
+                    ((void (*)(id, SEL))objc_msgSend)(nsApp, sel_registerName("activate"));
+                } else {
+                    ((void (*)(id, SEL, BOOL))objc_msgSend)(nsApp, sel_registerName("activateIgnoringOtherApps:"), YES);
+                }
+            }
             ((void (*)(id, SEL))objc_msgSend)(nsWindow, sel_registerName("makeKeyWindow"));
         }
     }
@@ -196,7 +163,7 @@ void OverlayWindow::enterAnnotateMode() {
             exitAnnotateMode();
             m_hasRegion = false;
             m_drawing = false;
-            hide();
+            hideOverlay();
             emit cancelled();
         });
     }
@@ -217,6 +184,10 @@ void OverlayWindow::exitAnnotateMode() {
     }
 }
 
+void OverlayWindow::hideOverlay() {
+    hide();
+}
+
 void OverlayWindow::handleSave() {
     if (!m_canvas) return;
     QImage composited = m_canvas->compositeImage();
@@ -225,7 +196,7 @@ void OverlayWindow::handleSave() {
     m_hasRegion = false;
     m_drawing = false;
     exitAnnotateMode();
-    hide();
+    hideOverlay();
 
     emit screenshotReady(composited, composited.width(), composited.height());
 }
@@ -238,7 +209,7 @@ void OverlayWindow::handleCopy() {
     m_hasRegion = false;
     m_drawing = false;
     exitAnnotateMode();
-    hide();
+    hideOverlay();
 
     emit clipboardReady(composited, composited.width(), composited.height());
 }
@@ -390,7 +361,7 @@ void OverlayWindow::keyPressEvent(QKeyEvent *event) {
             exitAnnotateMode();
             m_hasRegion = false;
             m_drawing = false;
-            hide();
+            hideOverlay();
             emit cancelled();
             return;
         }
@@ -417,7 +388,7 @@ void OverlayWindow::keyPressEvent(QKeyEvent *event) {
     if (event->key() == Qt::Key_Escape) {
         m_hasRegion = false;
         m_drawing = false;
-        hide();
+        hideOverlay();
         emit cancelled();
     } else if (event->key() == Qt::Key_Return && m_hasRegion) {
         handleSave();
@@ -438,7 +409,7 @@ void OverlayWindow::keyPressEvent(QKeyEvent *event) {
 
         m_hasRegion = false;
         m_drawing = false;
-        hide();
+        hideOverlay();
         emit cancelled();
     }
 }

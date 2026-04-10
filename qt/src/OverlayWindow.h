@@ -43,6 +43,7 @@ private:
     void exitAnnotateMode();
     void handleSave();
     void handleCopy();
+    void hideOverlay();
     bool isOnRegionEdge(QPoint pos) const;
 
     static const QMap<int, ToolType> &toolShortcuts();
