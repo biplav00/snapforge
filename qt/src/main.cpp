@@ -6,6 +6,9 @@
 #include <QShortcut>
 #include <QTimer>
 #include "OverlayWindow.h"
+#include "RecordingManager.h"
+#include "HistoryWindow.h"
+#include "PreferencesWindow.h"
 #include "snapforge_ffi.h"
 
 #ifdef Q_OS_MAC
@@ -14,30 +17,82 @@
 #include <objc/message.h>
 
 // macOS global hotkey callback
-static OverlayWindow *g_overlay = nullptr;
+static OverlayWindow     *g_overlay   = nullptr;
+static RecordingManager  *g_recording = nullptr;
+static HistoryWindow     *g_history   = nullptr;
+static PreferencesWindow *g_prefs     = nullptr;
 
-OSStatus hotkeyHandler(EventHandlerCallRef, EventRef, void *) {
-    if (g_overlay) {
-        // Use QTimer to ensure we're on the Qt event loop
-        QTimer::singleShot(0, g_overlay, &OverlayWindow::activate);
+// Hotkey IDs
+static const UInt32 kHotkeyIDScreenshot = 1;
+static const UInt32 kHotkeyIDRecord     = 2;
+static const UInt32 kHotkeyIDHistory    = 3;
+
+OSStatus hotkeyHandler(EventHandlerCallRef, EventRef event, void *) {
+    EventHotKeyID firedID;
+    GetEventParameter(event, kEventParamDirectObject,
+                      typeEventHotKeyID, nullptr,
+                      sizeof(firedID), nullptr, &firedID);
+
+    switch (firedID.id) {
+    case kHotkeyIDScreenshot:
+        if (g_overlay)
+            QTimer::singleShot(0, g_overlay, &OverlayWindow::activate);
+        break;
+
+    case kHotkeyIDRecord:
+        if (g_recording && g_overlay) {
+            if (g_recording->isRecording()) {
+                QTimer::singleShot(0, g_recording, &RecordingManager::stopRecording);
+            } else {
+                // Record mode overlay integration is a separate task;
+                // for now activate the overlay the same as screenshot.
+                QTimer::singleShot(0, g_overlay, &OverlayWindow::activate);
+            }
+        }
+        break;
+
+    case kHotkeyIDHistory:
+        if (g_history) {
+            QTimer::singleShot(0, []() {
+                g_history->refreshHistory();
+                g_history->show();
+                g_history->raise();
+                g_history->activateWindow();
+            });
+        }
+        break;
+
+    default:
+        break;
     }
+
     return noErr;
 }
 
 void registerGlobalHotkey() {
-    EventHotKeyRef hotKeyRef;
-    EventHotKeyID hotKeyID;
-    hotKeyID.signature = 'SNPF';
-    hotKeyID.id = 1;
-
     EventTypeSpec eventType;
     eventType.eventClass = kEventClassKeyboard;
-    eventType.eventKind = kEventHotKeyPressed;
+    eventType.eventKind  = kEventHotKeyPressed;
 
     InstallApplicationEventHandler(&hotkeyHandler, 1, &eventType, nullptr, nullptr);
 
-    // Cmd+Shift+S = kVK_ANSI_S (0x01), modifiers: cmdKey | shiftKey
+    EventHotKeyRef hotKeyRef;
+    EventHotKeyID  hotKeyID;
+    hotKeyID.signature = 'SNPF';
+
+    // Cmd+Shift+S — Screenshot (kVK_ANSI_S = 0x01)
+    hotKeyID.id = kHotkeyIDScreenshot;
     RegisterEventHotKey(0x01, cmdKey | shiftKey, hotKeyID,
+                        GetApplicationEventTarget(), 0, &hotKeyRef);
+
+    // Cmd+Shift+R — Record (kVK_ANSI_R = 0x0F)
+    hotKeyID.id = kHotkeyIDRecord;
+    RegisterEventHotKey(0x0F, cmdKey | shiftKey, hotKeyID,
+                        GetApplicationEventTarget(), 0, &hotKeyRef);
+
+    // Cmd+Shift+H — History (kVK_ANSI_H = 0x04)
+    hotKeyID.id = kHotkeyIDHistory;
+    RegisterEventHotKey(0x04, cmdKey | shiftKey, hotKeyID,
                         GetApplicationEventTarget(), 0, &hotKeyRef);
 }
 #endif
@@ -115,17 +170,102 @@ int main(int argc, char *argv[]) {
         copyImage(composited);
     });
 
+    // Create manager/window instances
+    RecordingManager recording;
+    g_recording = &recording;
+
+    HistoryWindow history;
+    g_history = &history;
+
+    PreferencesWindow prefs;
+    g_prefs = &prefs;
+
     // System tray
     QSystemTrayIcon tray;
     tray.setIcon(QIcon::fromTheme("camera-photo"));
     tray.setToolTip("Snapforge");
 
-    QMenu menu;
-    menu.addAction("Screenshot (Cmd+Shift+S)", &overlay, &OverlayWindow::activate);
-    menu.addSeparator();
-    menu.addAction("Quit", &app, &QApplication::quit);
-    tray.setContextMenu(&menu);
+    QMenu *menu = new QMenu();
+
+    auto buildNormalMenu = [&]() {
+        menu->clear();
+
+        menu->addAction("Screenshot (Cmd+Shift+S)", &overlay, &OverlayWindow::activate);
+
+        menu->addAction("Record (Cmd+Shift+R)", [&]() {
+            if (recording.isRecording()) {
+                recording.stopRecording();
+            } else {
+                // Record mode overlay integration is a separate task;
+                // activate the overlay for now.
+                overlay.activate();
+            }
+        });
+
+        menu->addSeparator();
+
+        menu->addAction("History (Cmd+Shift+H)", [&]() {
+            history.refreshHistory();
+            history.show();
+            history.raise();
+            history.activateWindow();
+        });
+
+        menu->addAction("Preferences", [&]() {
+            prefs.show();
+            prefs.raise();
+            prefs.activateWindow();
+        });
+
+        menu->addSeparator();
+
+        menu->addAction("Quit", &app, &QApplication::quit);
+    };
+
+    auto buildRecordingMenu = [&]() {
+        menu->clear();
+
+        QAction *recordingLabel = menu->addAction("● Recording...");
+        recordingLabel->setEnabled(false);
+
+        menu->addAction("■ Stop Recording", [&]() {
+            recording.stopRecording();
+        });
+
+        menu->addSeparator();
+
+        menu->addAction("History (Cmd+Shift+H)", [&]() {
+            history.refreshHistory();
+            history.show();
+            history.raise();
+            history.activateWindow();
+        });
+
+        menu->addAction("Preferences", [&]() {
+            prefs.show();
+            prefs.raise();
+            prefs.activateWindow();
+        });
+
+        menu->addSeparator();
+
+        menu->addAction("Quit", &app, &QApplication::quit);
+    };
+
+    buildNormalMenu();
+    tray.setContextMenu(menu);
     tray.show();
+
+    // Update tray menu when recording starts/stops
+    QObject::connect(&recording, &RecordingManager::recordingStarted,
+                     [&](const QString &/*path*/) {
+        buildRecordingMenu();
+    });
+
+    QObject::connect(&recording, &RecordingManager::recordingStopped,
+                     [&](const QString &/*path*/) {
+        buildNormalMenu();
+    });
 
 #ifdef Q_OS_MAC
     registerGlobalHotkey();
