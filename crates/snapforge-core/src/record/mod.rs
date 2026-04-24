@@ -77,16 +77,6 @@ pub fn find_ffmpeg(provided_path: Option<&PathBuf>) -> Result<PathBuf, RecordErr
                 return Ok(beside_exe);
             }
 
-            // Walk up to find the workspace binaries/ folder in dev builds
-            for ancestor in exe_dir.ancestors().take(5) {
-                let dev_path = ancestor
-                    .join("src-tauri")
-                    .join("binaries")
-                    .join(platform_name);
-                if dev_path.exists() {
-                    return Ok(dev_path);
-                }
-            }
         }
     }
 

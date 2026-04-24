@@ -17,11 +17,11 @@
 
 const QList<QColor> AnnotationToolbar::k_presetColors = {
     QColor("#FF0000"),
-    QColor("#00FF00"),
-    QColor("#0000FF"),
-    QColor("#FFFF00"),
-    QColor("#FF00FF"),
-    QColor("#00FFFF"),
+    QColor("#4A9EFF"),
+    QColor("#00CC00"),
+    QColor("#FFCC00"),
+    QColor("#FF6600"),
+    QColor("#9933FF"),
     QColor("#FFFFFF"),
     QColor("#000000"),
 };
@@ -60,7 +60,7 @@ QFrame *makeSeparator(QWidget *parent = nullptr) {
     sep->setFrameShape(QFrame::VLine);
     sep->setFrameShadow(QFrame::Sunken);
     sep->setFixedWidth(1);
-    sep->setStyleSheet(QStringLiteral("background: rgba(255,255,255,0.15);"));
+    sep->setStyleSheet(QStringLiteral("background: #262d3d;"));
     return sep;
 }
 
@@ -68,24 +68,25 @@ QFrame *makeSeparator(QWidget *parent = nullptr) {
 static const QString k_baseButtonStyle = QStringLiteral(
     "QPushButton {"
     "  background: transparent;"
-    "  color: rgba(255,255,255,0.85);"
+    "  color: #8b95ab;"
     "  border: none;"
     "  border-radius: 4px;"
     "  font-size: 14px;"
     "  padding: 0px;"
     "}"
     "QPushButton:hover {"
-    "  background: rgba(255,255,255,0.12);"
+    "  background: #1c2130;"
+    "  color: #e8ecf4;"
     "}"
     "QPushButton:pressed {"
-    "  background: rgba(255,255,255,0.20);"
+    "  background: #1a2540;"
     "}"
     "QPushButton:checked {"
-    "  background: rgba(255,255,255,0.22);"
-    "  border: 1px solid rgba(255,255,255,0.45);"
+    "  background: rgba(59, 130, 246, 0.15);"
+    "  color: #60a5fa;"
     "}"
     "QPushButton:disabled {"
-    "  color: rgba(255,255,255,0.25);"
+    "  color: #3d4660;"
     "}"
 );
 
@@ -147,17 +148,18 @@ void AnnotationToolbar::buildUi()
     // ---- Color swatches ----
     for (const QColor &color : k_presetColors) {
         auto *btn = new QPushButton(this);
+        btn->setCheckable(true);
         btn->setFixedSize(18, 18);
         btn->setToolTip(color.name());
 
         const QString css = QStringLiteral(
             "QPushButton {"
             "  background: %1;"
-            "  border: 2px solid rgba(255,255,255,0.25);"
+            "  border: 2px solid #3a4460;"
             "  border-radius: 3px;"
             "}"
             "QPushButton:hover {"
-            "  border: 2px solid rgba(255,255,255,0.75);"
+            "  border: 2px solid rgba(255,255,255,0.5);"
             "}"
             "QPushButton:checked {"
             "  border: 2px solid white;"
@@ -174,25 +176,32 @@ void AnnotationToolbar::buildUi()
     }
 
     // Custom color button
-    auto *customColorBtn = new QPushButton(QStringLiteral("+"), this);
-    customColorBtn->setFixedSize(18, 18);
-    customColorBtn->setToolTip(QStringLiteral("Custom color"));
-    customColorBtn->setStyleSheet(
+    m_customColorBtn = new QPushButton(QStringLiteral("+"), this);
+    m_customColorBtn->setCheckable(true);
+    m_customColorBtn->setFixedSize(18, 18);
+    m_customColorBtn->setToolTip(QStringLiteral("Custom color"));
+    m_customColorBtn->setStyleSheet(
         QStringLiteral(
             "QPushButton {"
             "  background: qlineargradient(x1:0,y1:0,x2:1,y2:1,"
             "    stop:0 #ff0000, stop:0.17 #ff8800, stop:0.33 #ffff00,"
             "    stop:0.5 #00ff00, stop:0.67 #0088ff, stop:0.83 #8800ff, stop:1 #ff0088);"
-            "  border: 2px solid rgba(255,255,255,0.25);"
+            "  border: 2px solid #3a4460;"
             "  border-radius: 3px;"
             "  font-size: 11px;"
             "  color: white;"
             "}"
-            "QPushButton:hover { border: 2px solid rgba(255,255,255,0.75); }"
+            "QPushButton:hover { border: 2px solid rgba(255,255,255,0.5); }"
+            "QPushButton:checked { border: 2px solid white; }"
         )
     );
-    connect(customColorBtn, &QPushButton::clicked, this, &AnnotationToolbar::onCustomColorClicked);
-    layout->addWidget(customColorBtn);
+    connect(m_customColorBtn, &QPushButton::clicked, this, &AnnotationToolbar::onCustomColorClicked);
+    layout->addWidget(m_customColorBtn);
+
+    // Keep swatch selection in sync when color changes externally (e.g. color picker tool)
+    connect(m_state, &AnnotationState::colorChanged, this, [this](QColor) {
+        updateColorSwatches();
+    });
 
     layout->addSpacing(2);
     layout->addWidget(makeSeparator(this));
@@ -219,15 +228,15 @@ void AnnotationToolbar::buildUi()
         const QString css = QStringLiteral(
             "QPushButton {"
             "  background: transparent;"
-            "  color: rgba(255,255,255,0.85);"
+            "  color: #8b95ab;"
             "  border: none;"
             "  border-radius: 4px;"
             "  font-size: %1px;"
             "  padding: 0px;"
             "}"
-            "QPushButton:hover { background: rgba(255,255,255,0.12); }"
-            "QPushButton:pressed { background: rgba(255,255,255,0.20); }"
-            "QPushButton:checked { background: rgba(255,255,255,0.22); border: 1px solid rgba(255,255,255,0.45); }"
+            "QPushButton:hover { background: #1c2130; color: #e8ecf4; }"
+            "QPushButton:pressed { background: #1a2540; }"
+            "QPushButton:checked { background: rgba(59, 130, 246, 0.15); color: #60a5fa; }"
         ).arg(k_strokeFontSizes[i]);
         btn->setStyleSheet(css);
 
@@ -278,10 +287,11 @@ void AnnotationToolbar::buildUi()
     saveBtn->setFixedHeight(28);
     saveBtn->setStyleSheet(
         QStringLiteral(
-            "QPushButton { background: transparent; color: #4CAF50; border: none;"
-            " border-radius: 4px; font-size: 13px; font-weight: 600; padding: 0 6px; }"
-            "QPushButton:hover { background: rgba(76,175,80,0.18); }"
-            "QPushButton:pressed { background: rgba(76,175,80,0.30); }"
+            "QPushButton { background: #3b82f6; color: white; border: none;"
+            " border-radius: 4px; font-size: 11px; font-weight: 600; padding: 0 10px;"
+            " font-family: 'JetBrains Mono', monospace; }"
+            "QPushButton:hover { background: #60a5fa; }"
+            "QPushButton:pressed { background: #2563eb; }"
         )
     );
     connect(saveBtn, &QPushButton::clicked, this, &AnnotationToolbar::saveRequested);
@@ -291,10 +301,11 @@ void AnnotationToolbar::buildUi()
     copyBtn->setFixedHeight(28);
     copyBtn->setStyleSheet(
         QStringLiteral(
-            "QPushButton { background: transparent; color: #42A5F5; border: none;"
-            " border-radius: 4px; font-size: 13px; font-weight: 600; padding: 0 6px; }"
-            "QPushButton:hover { background: rgba(66,165,245,0.18); }"
-            "QPushButton:pressed { background: rgba(66,165,245,0.30); }"
+            "QPushButton { background: #1e2330; color: #8b95ab; border: 1px solid #262d3d;"
+            " border-radius: 4px; font-size: 11px; font-weight: 600; padding: 0 10px;"
+            " font-family: 'JetBrains Mono', monospace; }"
+            "QPushButton:hover { background: #1c2130; color: #e8ecf4; border-color: #3a4460; }"
+            "QPushButton:pressed { background: #1a2540; }"
         )
     );
     connect(copyBtn, &QPushButton::clicked, this, &AnnotationToolbar::copyRequested);
@@ -304,10 +315,10 @@ void AnnotationToolbar::buildUi()
     cancelBtn->setFixedHeight(28);
     cancelBtn->setStyleSheet(
         QStringLiteral(
-            "QPushButton { background: transparent; color: rgba(255,255,255,0.45); border: none;"
+            "QPushButton { background: transparent; color: #3d4660; border: none;"
             " border-radius: 4px; font-size: 13px; padding: 0 6px; }"
-            "QPushButton:hover { background: rgba(255,255,255,0.08); color: rgba(255,255,255,0.70); }"
-            "QPushButton:pressed { background: rgba(255,255,255,0.15); }"
+            "QPushButton:hover { color: #8b95ab; }"
+            "QPushButton:pressed { color: #e8ecf4; }"
         )
     );
     connect(cancelBtn, &QPushButton::clicked, this, &AnnotationToolbar::cancelRequested);
@@ -338,8 +349,15 @@ void AnnotationToolbar::updateUndoRedo()
 void AnnotationToolbar::updateColorSwatches()
 {
     const QColor current = m_state->strokeColor();
+    bool matchesPreset = false;
     for (int i = 0; i < m_colorSwatches.size(); ++i) {
-        m_colorSwatches[i]->setChecked(k_presetColors[i] == current);
+        bool match = (k_presetColors[i] == current);
+        m_colorSwatches[i]->setChecked(match);
+        if (match) matchesPreset = true;
+    }
+    // Highlight custom color button when using a non-preset color
+    if (m_customColorBtn) {
+        m_customColorBtn->setChecked(!matchesPreset);
     }
 }
 
@@ -454,5 +472,11 @@ void AnnotationToolbar::paintEvent(QPaintEvent * /*event*/)
     QPainterPath path;
     path.addRoundedRect(rect(), 10, 10);
 
-    p.fillPath(path, QColor(30, 30, 30, static_cast<int>(0.92 * 255)));
+    p.fillPath(path, QColor(12, 14, 18, 242));
+
+    // Subtle border
+    QPen borderPen(QColor(38, 45, 61, 180));
+    borderPen.setWidth(1);
+    p.setPen(borderPen);
+    p.drawPath(path);
 }

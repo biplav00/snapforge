@@ -16,6 +16,7 @@ public:
     explicit OverlayWindow(QWidget *parent = nullptr);
     void activate();
     void activateForRecording();
+    void setRememberRegion(bool enabled) { m_rememberRegion = enabled; }
 
 signals:
     void screenshotReady(QImage composited, int w, int h);
@@ -41,6 +42,7 @@ private:
     void exitRecordSelectMode();
     void handleSave();
     void handleCopy();
+    void handleSaveAndCopy();
     void hideOverlay();
     bool isOnRegionEdge(QPoint pos) const;
     void emitRecordRegion();
@@ -52,9 +54,14 @@ private:
     QPoint m_endPos;
     bool m_drawing = false;
     bool m_hasRegion = false;
+    bool m_rememberRegion = false;
+    QPoint m_lastStartPos;
+    QPoint m_lastEndPos;
     QImage m_screenshot;
+    QImage m_scaledScreenshot; // cached widget-size copy for paintEvent
     Mode m_mode = Select;
     Purpose m_purpose = Screenshot;
+    int m_displayIndex = 0; // which display this overlay captures from
 
     AnnotationState m_annotationState;
     AnnotationCanvas *m_canvas = nullptr;

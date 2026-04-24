@@ -8,6 +8,13 @@ use crate::types::Rect;
 use image::RgbaImage;
 use thiserror::Error;
 
+#[derive(Debug, Clone)]
+pub struct DisplayInfo {
+    pub width: u32,
+    pub height: u32,
+    pub scale_factor: f64,
+}
+
 #[derive(Debug, Error)]
 pub enum CaptureError {
     #[error("no display found at index {0}")]
@@ -89,6 +96,28 @@ pub fn display_count() -> usize {
     #[cfg(not(target_os = "macos"))]
     {
         xcap_impl::display_count()
+    }
+}
+
+pub fn get_display_info(display: usize) -> Option<DisplayInfo> {
+    #[cfg(target_os = "macos")]
+    {
+        macos::get_display_info(display)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        xcap_impl::get_display_info(display)
+    }
+}
+
+pub fn display_at_point(x: i32, y: i32) -> Option<usize> {
+    #[cfg(target_os = "macos")]
+    {
+        macos::display_at_point(x, y)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        xcap_impl::display_at_point(x, y)
     }
 }
 

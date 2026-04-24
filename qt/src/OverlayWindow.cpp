@@ -59,16 +59,42 @@ void OverlayWindow::activateInternal() {
 
     m_drawing = false;
     m_hasRegion = false;
-    m_startPos = QPoint();
-    m_endPos = QPoint();
     m_annotationState.clearAnnotations();
     exitAnnotateMode();
     exitRecordSelectMode();
 
+    // Restore last region if "remember region" is enabled
+    if (m_rememberRegion && !m_lastStartPos.isNull() && !m_lastEndPos.isNull()) {
+        m_startPos = m_lastStartPos;
+        m_endPos = m_lastEndPos;
+    } else {
+        m_startPos = QPoint();
+        m_endPos = QPoint();
+    }
+
+    // Detect which display we're on and capture that display
+    QScreen *screen = QGuiApplication::primaryScreen();
+    if (!screen) {
+        m_displayIndex = 0;
+    } else {
+        // Find display index for this screen's top-left. CGGetDisplaysWithPoint
+        // (used on the Rust side) takes *point* coordinates (the global
+        // desktop coord space), which matches what Qt returns from
+        // QScreen::geometry() on macOS — no DPR scaling needed here.
+        QRect screenGeom = screen->geometry();
+        int display = snapforge_display_at_point(screenGeom.x(), screenGeom.y());
+        m_displayIndex = (display >= 0) ? display : 0;
+    }
+
     // Capture screen FIRST (like Flameshot) — then show overlay with
     // the screenshot as an opaque background. The user sees their desktop
     // "freeze" because the overlay looks identical to it.
-    CapturedImage img = snapforge_capture_fullscreen(0);
+    //
+    // NOTE: snapforge_capture_fullscreen is called synchronously here, but the
+    // Rust side detects main-thread invocation and hops to a worker thread
+    // (SCK's completion handler needs the main RunLoop free). So this does
+    // not starve the UI thread — the thread spawn+join is fast.
+    CapturedImage img = snapforge_capture_fullscreen(m_displayIndex);
     if (img.data && img.width > 0) {
         QImage qimg(img.data, img.width, img.height, img.width * 4,
                     QImage::Format_RGBA8888);
@@ -77,9 +103,17 @@ void OverlayWindow::activateInternal() {
     }
 
     // Size to primary screen
-    QScreen *screen = QGuiApplication::primaryScreen();
     if (screen) {
         setGeometry(screen->geometry());
+    }
+
+    // Cache the scaled screenshot at widget resolution so paintEvent
+    // doesn't re-scale a multi-MB image on every mouse move.
+    if (!m_screenshot.isNull()) {
+        m_scaledScreenshot = m_screenshot.scaled(size(), Qt::IgnoreAspectRatio,
+                                                 Qt::FastTransformation);
+    } else {
+        m_scaledScreenshot = QImage();
     }
 
     show();
@@ -118,6 +152,13 @@ void OverlayWindow::activateInternal() {
 void OverlayWindow::activate() {
     m_purpose = Screenshot;
     activateInternal();
+    // If we restored a remembered region, go straight to annotate mode
+    if (m_rememberRegion && !m_startPos.isNull() && !m_endPos.isNull()) {
+        QRect sel = selectedRect();
+        if (sel.width() > 5 && sel.height() > 5) {
+            enterAnnotateMode();
+        }
+    }
 }
 
 void OverlayWindow::activateForRecording() {
@@ -156,7 +197,7 @@ void OverlayWindow::enterAnnotateMode() {
     // Create toolbar below the region
     if (!m_toolbar) {
         m_toolbar = new AnnotationToolbar(&m_annotationState, this);
-        connect(m_toolbar, &AnnotationToolbar::saveRequested, this, &OverlayWindow::handleSave);
+        connect(m_toolbar, &AnnotationToolbar::saveRequested, this, &OverlayWindow::handleSaveAndCopy);
         connect(m_toolbar, &AnnotationToolbar::copyRequested, this, &OverlayWindow::handleCopy);
         connect(m_toolbar, &AnnotationToolbar::cancelRequested, this, [this]() {
             exitAnnotateMode();
@@ -320,7 +361,7 @@ void OverlayWindow::emitRecordRegion() {
     m_hasRegion = false;
     m_drawing   = false;
     hideOverlay();
-    emit recordingRequested(0, pixelRegion);
+    emit recordingRequested(m_displayIndex, pixelRegion);
 }
 
 void OverlayWindow::emitRecordFullscreen() {
@@ -328,7 +369,7 @@ void OverlayWindow::emitRecordFullscreen() {
     m_hasRegion = false;
     m_drawing   = false;
     hideOverlay();
-    emit recordingRequested(0, QRect());
+    emit recordingRequested(m_displayIndex, QRect());
 }
 
 // ---- end record-select ----
@@ -342,6 +383,7 @@ void OverlayWindow::handleSave() {
     QImage composited = m_canvas->compositeImage();
     if (composited.isNull()) return;
 
+    if (m_rememberRegion) { m_lastStartPos = m_startPos; m_lastEndPos = m_endPos; }
     m_hasRegion = false;
     m_drawing = false;
     exitAnnotateMode();
@@ -355,6 +397,7 @@ void OverlayWindow::handleCopy() {
     QImage composited = m_canvas->compositeImage();
     if (composited.isNull()) return;
 
+    if (m_rememberRegion) { m_lastStartPos = m_startPos; m_lastEndPos = m_endPos; }
     m_hasRegion = false;
     m_drawing = false;
     exitAnnotateMode();
@@ -363,12 +406,29 @@ void OverlayWindow::handleCopy() {
     emit clipboardReady(composited, composited.width(), composited.height());
 }
 
+void OverlayWindow::handleSaveAndCopy() {
+    if (!m_canvas) return;
+    QImage composited = m_canvas->compositeImage();
+    if (composited.isNull()) return;
+
+    if (m_rememberRegion) { m_lastStartPos = m_startPos; m_lastEndPos = m_endPos; }
+    m_hasRegion = false;
+    m_drawing = false;
+    exitAnnotateMode();
+    hideOverlay();
+
+    emit screenshotReady(composited, composited.width(), composited.height());
+    emit clipboardReady(composited, composited.width(), composited.height());
+}
+
 void OverlayWindow::paintEvent(QPaintEvent *) {
     QPainter p(this);
     p.setRenderHint(QPainter::Antialiasing);
 
-    // Draw pre-captured screenshot as background (if available)
-    if (!m_screenshot.isNull()) {
+    // Draw pre-captured screenshot as background (pre-scaled in activateInternal).
+    if (!m_scaledScreenshot.isNull()) {
+        p.drawImage(0, 0, m_scaledScreenshot);
+    } else if (!m_screenshot.isNull()) {
         p.drawImage(0, 0, m_screenshot.scaled(size(), Qt::IgnoreAspectRatio, Qt::FastTransformation));
     }
 
@@ -493,6 +553,7 @@ void OverlayWindow::keyPressEvent(QKeyEvent *event) {
     if (m_mode == Annotate) {
         // If text input is active in the canvas, let it handle keys
         if (m_canvas && m_canvas->isTextInputActive()) {
+            QWidget::keyPressEvent(event);
             return;
         }
 
@@ -510,13 +571,13 @@ void OverlayWindow::keyPressEvent(QKeyEvent *event) {
             return;
         }
 
-        // Cmd+S or Enter: save
-        if ((cmd && event->key() == Qt::Key_S) || event->key() == Qt::Key_Return) {
-            handleSave();
+        // Cmd+S: save and copy
+        if (cmd && event->key() == Qt::Key_S) {
+            handleSaveAndCopy();
             return;
         }
 
-        // Cmd+C: copy
+        // Cmd+C: copy only
         if (cmd && event->key() == Qt::Key_C) {
             handleCopy();
             return;
@@ -574,7 +635,7 @@ void OverlayWindow::keyPressEvent(QKeyEvent *event) {
         hideOverlay();
         emit cancelled();
     } else if (event->key() == Qt::Key_Return && m_hasRegion) {
-        handleSave();
+        enterAnnotateMode();
     } else if ((event->modifiers() & Qt::ControlModifier) && event->key() == Qt::Key_C && m_hasRegion) {
         // Cmd+C / Ctrl+C -- copy to clipboard
         QRect sel = selectedRect();
@@ -584,7 +645,7 @@ void OverlayWindow::keyPressEvent(QKeyEvent *event) {
         int pw = static_cast<int>(sel.width() * dpr);
         int ph = static_cast<int>(sel.height() * dpr);
 
-        CapturedImage img = snapforge_capture_region(0, px, py, pw, ph);
+        CapturedImage img = snapforge_capture_region(m_displayIndex, px, py, pw, ph);
         if (img.data && img.width > 0) {
             snapforge_copy_to_clipboard(img.data, img.width, img.height);
             snapforge_free_buffer(img.data, img.len);

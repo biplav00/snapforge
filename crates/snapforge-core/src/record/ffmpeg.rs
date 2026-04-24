@@ -5,9 +5,13 @@ use crate::config::{RecordingFormat, RecordingQuality};
 use std::io::{Read as _, Write};
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+
+const STATE_RUNNING: u8 = 0;
+const STATE_PAUSED: u8 = 1;
+const STATE_STOPPED: u8 = 2;
 
 #[derive(Copy, Clone)]
 enum PixelFormat {
@@ -30,12 +34,14 @@ impl PixelFormat {
 
 pub struct RecordingHandle {
     stop_flag: Arc<AtomicBool>,
+    state: Arc<AtomicU8>,
     thread: Option<std::thread::JoinHandle<Result<(), RecordError>>>,
 }
 
 impl RecordingHandle {
     pub fn stop(mut self) -> Result<(), RecordError> {
         self.stop_flag.store(true, Ordering::SeqCst);
+        self.state.store(STATE_STOPPED, Ordering::SeqCst);
         if let Some(thread) = self.thread.take() {
             thread
                 .join()
@@ -46,7 +52,19 @@ impl RecordingHandle {
     }
 
     pub fn is_running(&self) -> bool {
-        !self.stop_flag.load(Ordering::SeqCst)
+        self.state.load(Ordering::SeqCst) == STATE_RUNNING
+    }
+
+    pub fn pause(&self) {
+        self.state.store(STATE_PAUSED, Ordering::SeqCst);
+    }
+
+    pub fn resume(&self) {
+        self.state.store(STATE_RUNNING, Ordering::SeqCst);
+    }
+
+    pub fn is_paused(&self) -> bool {
+        self.state.load(Ordering::SeqCst) == STATE_PAUSED
     }
 }
 
@@ -64,6 +82,9 @@ pub fn start_recording(config: RecordConfig) -> Result<RecordingHandle, RecordEr
     // Find FFmpeg binary (bundled or system)
     let ffmpeg_path = super::find_ffmpeg(config.ffmpeg_path.as_ref())?;
 
+    // Validate it actually runs and reports itself as ffmpeg.
+    validate_ffmpeg(&ffmpeg_path)?;
+
     // For macOS, use the fast BGRA path and downscale large captures for performance.
     #[cfg(target_os = "macos")]
     {
@@ -75,6 +96,37 @@ pub fn start_recording(config: RecordConfig) -> Result<RecordingHandle, RecordEr
     {
         start_recording_rgba(config, ffmpeg_path)
     }
+}
+
+/// Run `<ffmpeg_path> -version` and confirm the output identifies as ffmpeg.
+fn validate_ffmpeg(ffmpeg_path: &Path) -> Result<(), RecordError> {
+    let output = Command::new(ffmpeg_path)
+        .arg("-version")
+        .output()
+        .map_err(|e| {
+            RecordError::FfmpegSpawnFailed(format!(
+                "ffmpeg at {} could not be executed: {}",
+                ffmpeg_path.display(),
+                e
+            ))
+        })?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if stdout.contains("ffmpeg version") || stderr.contains("ffmpeg version") {
+        Ok(())
+    } else {
+        Err(RecordError::FfmpegSpawnFailed(format!(
+            "binary at {} does not look like ffmpeg (no 'ffmpeg version' in output)",
+            ffmpeg_path.display()
+        )))
+    }
+}
+
+/// Ensure a spawned ffmpeg child is terminated and reaped before we return
+/// an error from the caller — otherwise we leave a zombie + open pipes.
+fn kill_and_reap(mut child: Child) {
+    let _ = child.kill();
+    let _ = child.wait();
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -101,14 +153,19 @@ fn start_recording_rgba(
     };
 
     let mut child = spawn_ffmpeg(&ffmpeg_path, &config, width, height, PixelFormat::Rgba)?;
-    let mut stdin = child
-        .stdin
-        .take()
-        .ok_or_else(|| RecordError::FfmpegSpawnFailed("no stdin".into()))?;
+    let mut stdin = match child.stdin.take() {
+        Some(s) => s,
+        None => {
+            kill_and_reap(child);
+            return Err(RecordError::FfmpegSpawnFailed("no stdin".into()));
+        }
+    };
     let stderr = child.stderr.take();
 
     let stop_flag = Arc::new(AtomicBool::new(false));
     let stop_clone = stop_flag.clone();
+    let state = Arc::new(AtomicU8::new(STATE_RUNNING));
+    let state_clone = state.clone();
     let frame_interval = Duration::from_secs_f64(1.0 / config.fps as f64);
     let region = config.region;
     let display = config.display;
@@ -120,16 +177,38 @@ fn start_recording_rgba(
         // Cache the last successfully captured frame so we can duplicate it
         let mut last_frame: image::RgbaImage = test_frame;
 
-        writer
-            .write_all(last_frame.as_raw())
-            .map_err(|e| RecordError::WriteFailed(e.to_string()))?;
+        if let Err(e) = writer.write_all(last_frame.as_raw()) {
+            if e.kind() == std::io::ErrorKind::BrokenPipe {
+                return Err(RecordError::WriteFailed("ffmpeg stdin closed (broken pipe)".into()));
+            }
+            return Err(RecordError::WriteFailed(e.to_string()));
+        }
 
         let start = Instant::now();
         let mut frame_count: u64 = 1;
+        // Accumulated time spent in the paused state — subtracted from real elapsed
+        // so the output stream stays constant-frame-rate across pause/resume.
+        let mut paused_accum = Duration::ZERO;
+        let mut paused_since: Option<Instant> = None;
 
-        while !stop_clone.load(Ordering::SeqCst) {
+        loop {
+            if stop_clone.load(Ordering::SeqCst) {
+                break;
+            }
+
+            // Pause: freeze the frame clock, skip capture & write entirely.
+            if state_clone.load(Ordering::SeqCst) == STATE_PAUSED {
+                if paused_since.is_none() {
+                    paused_since = Some(Instant::now());
+                }
+                std::thread::sleep(Duration::from_millis(20));
+                continue;
+            } else if let Some(p0) = paused_since.take() {
+                paused_accum += p0.elapsed();
+            }
+
             frame_count += 1;
-            let target_time = start + frame_interval * frame_count as u32;
+            let target_time = start + paused_accum + frame_interval * frame_count as u32;
             let now = Instant::now();
 
             if now < target_time {
@@ -142,8 +221,10 @@ fn start_recording_rgba(
                 capture::capture_fullscreen(display)
             };
 
+            let effective_elapsed =
+                start.elapsed().checked_sub(paused_accum).unwrap_or_default();
             let elapsed_frames =
-                (start.elapsed().as_secs_f64() / frame_interval.as_secs_f64()) as u64;
+                (effective_elapsed.as_secs_f64() / frame_interval.as_secs_f64()) as u64;
             let frames_to_write = elapsed_frames.saturating_sub(frame_count - 1).max(1);
 
             if let Ok(img) = frame_result {
@@ -155,10 +236,19 @@ fn start_recording_rgba(
                 last_frame = cropped;
             }
 
+            let mut pipe_broken = false;
             for _ in 0..frames_to_write {
-                if writer.write_all(last_frame.as_raw()).is_err() {
+                if let Err(e) = writer.write_all(last_frame.as_raw()) {
+                    if e.kind() == std::io::ErrorKind::BrokenPipe {
+                        pipe_broken = true;
+                    }
                     break;
                 }
+            }
+            if pipe_broken {
+                return Err(RecordError::WriteFailed(
+                    "ffmpeg stdin closed mid-recording (broken pipe)".into(),
+                ));
             }
 
             frame_count = frame_count + frames_to_write - 1;
@@ -202,6 +292,7 @@ fn start_recording_rgba(
 
     Ok(RecordingHandle {
         stop_flag,
+        state,
         thread: Some(thread),
     })
 }
@@ -217,14 +308,13 @@ fn start_recording_macos_bgra(
     // For screenshots we always use native resolution; this cap is recording-only.
     let max_dimension = Some(1920u32);
 
-    // Build the capture context upfront to determine the output dimensions.
-    // We create it once here and then recreate it on the recording thread
-    // (ObjC objects are not Send).
-    let ctx_probe = capture::CaptureContext::new(config.display, max_dimension)
-        .map_err(|e| RecordError::CaptureFailed(e.to_string()))?;
-    let full_width = ctx_probe.output_width;
-    let full_height = ctx_probe.output_height;
-    drop(ctx_probe);
+    // Compute output dimensions up front WITHOUT touching SCK on the main
+    // thread — CaptureContext::new would create SCContentFilter /
+    // SCStreamConfiguration, which is exactly what we want to keep off main.
+    // Reading the display's pixel size via CGDisplayCopyDisplayMode is safe.
+    let (full_width, full_height) =
+        capture::macos::compute_recording_output_size(config.display, max_dimension)
+            .map_err(|e| RecordError::CaptureFailed(e.to_string()))?;
 
     // Scale factor from native pixel coords → downscaled output coords.
     // The region from the frontend is in native pixels; we need to scale it.
@@ -266,14 +356,19 @@ fn start_recording_macos_bgra(
     }
 
     let mut child = spawn_ffmpeg(&ffmpeg_path, &config, width, height, PixelFormat::Bgra)?;
-    let mut stdin = child
-        .stdin
-        .take()
-        .ok_or_else(|| RecordError::FfmpegSpawnFailed("no stdin".into()))?;
+    let mut stdin = match child.stdin.take() {
+        Some(s) => s,
+        None => {
+            kill_and_reap(child);
+            return Err(RecordError::FfmpegSpawnFailed("no stdin".into()));
+        }
+    };
     let stderr = child.stderr.take();
 
     let stop_flag = Arc::new(AtomicBool::new(false));
     let stop_clone = stop_flag.clone();
+    let state = Arc::new(AtomicU8::new(STATE_RUNNING));
+    let state_clone = state.clone();
     let frame_interval = Duration::from_secs_f64(1.0 / config.fps as f64);
     let display = config.display;
 
@@ -305,16 +400,38 @@ fn start_recording_macos_bgra(
             Err(_) => vec![0u8; (width as usize) * (height as usize) * 4],
         };
 
-        writer
-            .write_all(&last_frame_bytes)
-            .map_err(|e| RecordError::WriteFailed(e.to_string()))?;
+        if let Err(e) = writer.write_all(&last_frame_bytes) {
+            if e.kind() == std::io::ErrorKind::BrokenPipe {
+                return Err(RecordError::WriteFailed(
+                    "ffmpeg stdin closed (broken pipe)".into(),
+                ));
+            }
+            return Err(RecordError::WriteFailed(e.to_string()));
+        }
 
         let start = Instant::now();
         let mut frame_count: u64 = 1;
+        let mut paused_accum = Duration::ZERO;
+        let mut paused_since: Option<Instant> = None;
 
-        while !stop_clone.load(Ordering::SeqCst) {
+        loop {
+            if stop_clone.load(Ordering::SeqCst) {
+                break;
+            }
+
+            // Pause: freeze the frame clock, skip capture & write entirely.
+            if state_clone.load(Ordering::SeqCst) == STATE_PAUSED {
+                if paused_since.is_none() {
+                    paused_since = Some(Instant::now());
+                }
+                std::thread::sleep(Duration::from_millis(20));
+                continue;
+            } else if let Some(p0) = paused_since.take() {
+                paused_accum += p0.elapsed();
+            }
+
             frame_count += 1;
-            let target_time = start + frame_interval * frame_count as u32;
+            let target_time = start + paused_accum + frame_interval * frame_count as u32;
             let now = Instant::now();
 
             if now < target_time {
@@ -332,11 +449,14 @@ fn start_recording_macos_bgra(
                 );
             }
 
+            let effective_elapsed =
+                start.elapsed().checked_sub(paused_accum).unwrap_or_default();
             let elapsed_frames =
-                (start.elapsed().as_secs_f64() / frame_interval.as_secs_f64()) as u64;
+                (effective_elapsed.as_secs_f64() / frame_interval.as_secs_f64()) as u64;
             let frames_to_write = elapsed_frames.saturating_sub(frame_count - 1).max(1);
 
             // For each frame we need to write, draw clicks onto a copy and send it
+            let mut pipe_broken = false;
             for _ in 0..frames_to_write {
                 let mut composed = last_frame_bytes.clone();
                 draw_clicks_bgra(
@@ -348,9 +468,17 @@ fn start_recording_macos_bgra(
                     point_to_scaled_pixel_x,
                     point_to_scaled_pixel_y,
                 );
-                if writer.write_all(&composed).is_err() {
+                if let Err(e) = writer.write_all(&composed) {
+                    if e.kind() == std::io::ErrorKind::BrokenPipe {
+                        pipe_broken = true;
+                    }
                     break;
                 }
+            }
+            if pipe_broken {
+                return Err(RecordError::WriteFailed(
+                    "ffmpeg stdin closed mid-recording (broken pipe)".into(),
+                ));
             }
 
             frame_count = frame_count + frames_to_write - 1;
@@ -392,6 +520,7 @@ fn start_recording_macos_bgra(
 
     Ok(RecordingHandle {
         stop_flag,
+        state,
         thread: Some(thread),
     })
 }

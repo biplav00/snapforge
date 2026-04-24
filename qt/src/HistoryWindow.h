@@ -49,6 +49,7 @@ public slots:
 
 protected:
     void showEvent(QShowEvent *event) override;
+    void resizeEvent(QResizeEvent *event) override;
 
 private slots:
     void onSearchChanged(const QString &text);

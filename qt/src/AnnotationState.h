@@ -14,11 +14,13 @@ public:
 
     const QVector<Annotation> &annotations() const { return m_annotations; }
     void commitAnnotation(const Annotation &a);
+    void updateAnnotation(const QString &id, const Annotation &a);
     void clearAnnotations();
     void offsetAnnotations(double dx, double dy);
 
     const std::optional<Annotation> &activeAnnotation() const { return m_active; }
     void setActiveAnnotation(const Annotation &a);
+    void setActiveAnnotationQuiet(const Annotation &a);  // Update without emitting changed()
     void clearActiveAnnotation();
 
     bool canUndo() const { return !m_undoStack.isEmpty(); }
@@ -53,6 +55,8 @@ private:
     QColor m_strokeColor = QColor("#FF0000");
     int m_strokeWidth = 2;
     int m_nextStep = 1;
+
+    void recalcNextStep();
 
     QVector<QVector<Annotation>> m_undoStack;
     QVector<QVector<Annotation>> m_redoStack;

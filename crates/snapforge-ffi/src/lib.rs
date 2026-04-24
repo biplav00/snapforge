@@ -8,6 +8,17 @@
 use std::ffi::{c_char, c_int, c_void, CStr, CString};
 use std::path::{Path, PathBuf};
 use std::ptr;
+use std::sync::Mutex;
+
+/// Last recording-related error, set whenever a recording FFI call fails.
+/// Read via `snapforge_last_recording_error`.
+static LAST_RECORDING_ERROR: Mutex<Option<String>> = Mutex::new(None);
+
+fn set_recording_error(msg: impl Into<String>) {
+    if let Ok(mut guard) = LAST_RECORDING_ERROR.lock() {
+        *guard = Some(msg.into());
+    }
+}
 
 use snapforge_core::capture;
 use snapforge_core::clipboard;
@@ -20,6 +31,10 @@ use snapforge_core::types::{CaptureFormat, Rect};
 
 /// Captured image data returned to C callers.
 /// The caller must free `data` via `snapforge_free_buffer`.
+///
+/// Error contract: on failure, every field is zeroed — `data == NULL`,
+/// `len == 0`, `width == 0`, `height == 0`. Callers should check
+/// `data != NULL && width > 0 && height > 0` before using the buffer.
 #[repr(C)]
 pub struct CapturedImage {
     pub data: *mut u8,
@@ -31,7 +46,9 @@ pub struct CapturedImage {
 /// Capture the full screen for a given display index.
 /// Returns a CapturedImage with RGBA pixel data.
 /// The caller must free `result.data` via `snapforge_free_buffer(result.data, result.len)`.
-/// Returns: width > 0 on success, width == 0 on error.
+///
+/// Error contract: on failure the returned struct is fully zeroed
+/// (`data == NULL`, `len == 0`, `width == 0`, `height == 0`).
 #[no_mangle]
 pub extern "C" fn snapforge_capture_fullscreen(display: u32) -> CapturedImage {
     let result = capture::capture_fullscreen(display as usize);
@@ -39,10 +56,9 @@ pub extern "C" fn snapforge_capture_fullscreen(display: u32) -> CapturedImage {
         Ok(image) => {
             let width = image.width();
             let height = image.height();
-            let mut raw = image.into_raw();
-            let data = raw.as_mut_ptr();
-            let len = raw.len();
-            std::mem::forget(raw);
+            let boxed: Box<[u8]> = image.into_raw().into_boxed_slice();
+            let len = boxed.len();
+            let data = Box::into_raw(boxed) as *mut u8;
             CapturedImage {
                 data,
                 len,
@@ -62,6 +78,9 @@ pub extern "C" fn snapforge_capture_fullscreen(display: u32) -> CapturedImage {
 /// Capture a region of the screen.
 /// Returns a CapturedImage with RGBA pixel data.
 /// The caller must free `result.data` via `snapforge_free_buffer(result.data, result.len)`.
+///
+/// Error contract: on failure the returned struct is fully zeroed
+/// (`data == NULL`, `len == 0`, `width == 0`, `height == 0`).
 #[no_mangle]
 pub extern "C" fn snapforge_capture_region(
     display: u32,
@@ -81,10 +100,9 @@ pub extern "C" fn snapforge_capture_region(
         Ok(image) => {
             let width = image.width();
             let height = image.height();
-            let mut raw = image.into_raw();
-            let data = raw.as_mut_ptr();
-            let len = raw.len();
-            std::mem::forget(raw);
+            let boxed: Box<[u8]> = image.into_raw().into_boxed_slice();
+            let len = boxed.len();
+            let data = Box::into_raw(boxed) as *mut u8;
             CapturedImage {
                 data,
                 len,
@@ -109,7 +127,11 @@ pub extern "C" fn snapforge_capture_region(
 /// and must not have been freed already.
 #[no_mangle]
 pub unsafe extern "C" fn snapforge_free_buffer(data: *mut u8, len: usize) {
-    if !data.is_null() && len > 0 {
+    // Only null-check — a zero-length allocation is still a live Box we own.
+    // (In practice our captures never return len == 0 with a non-null data,
+    // but the previous short-circuit on len == 0 would leak if that ever
+    // happened. Trust the null check.)
+    if !data.is_null() {
         let _ = Box::from_raw(std::ptr::slice_from_raw_parts_mut(data, len));
     }
 }
@@ -149,7 +171,12 @@ pub unsafe extern "C" fn snapforge_save_image(
         _ => return -1,
     };
 
-    let len = (width as usize) * (height as usize) * 4;
+    let Some(len) = (width as usize)
+        .checked_mul(height as usize)
+        .and_then(|n| n.checked_mul(4))
+    else {
+        return -1;
+    };
     let slice = std::slice::from_raw_parts(data, len);
 
     let Some(image) = image::RgbaImage::from_raw(width, height, slice.to_vec()) else {
@@ -178,7 +205,12 @@ pub unsafe extern "C" fn snapforge_copy_to_clipboard(
         return -1;
     }
 
-    let len = (width as usize) * (height as usize) * 4;
+    let Some(len) = (width as usize)
+        .checked_mul(height as usize)
+        .and_then(|n| n.checked_mul(4))
+    else {
+        return -1;
+    };
     let slice = std::slice::from_raw_parts(data, len);
 
     let Some(image) = image::RgbaImage::from_raw(width, height, slice.to_vec()) else {
@@ -211,6 +243,38 @@ pub extern "C" fn snapforge_display_count() -> u32 {
     capture::display_count() as u32
 }
 
+/// Get display info (width, height, scale_factor) for a given display index.
+/// Returns 0 on success, -1 if display index out of bounds.
+#[no_mangle]
+pub extern "C" fn snapforge_get_display_info(
+    display: u32,
+    width: *mut u32,
+    height: *mut u32,
+    scale_factor: *mut f64,
+) -> c_int {
+    let info = match capture::get_display_info(display as usize) {
+        Some(i) => i,
+        None => return -1,
+    };
+    if !width.is_null() {
+        unsafe { *width = info.width }
+    }
+    if !height.is_null() {
+        unsafe { *height = info.height }
+    }
+    if !scale_factor.is_null() {
+        unsafe { *scale_factor = info.scale_factor }
+    }
+    0
+}
+
+/// Find the display index for a given point (in screen coordinates).
+/// Returns the display index, or -1 if no display contains that point.
+#[no_mangle]
+pub extern "C" fn snapforge_display_at_point(x: i32, y: i32) -> c_int {
+    capture::display_at_point(x, y).map(|d| d as c_int).unwrap_or(-1)
+}
+
 /// Get the DPI scale factor of the primary display.
 #[no_mangle]
 pub extern "C" fn snapforge_display_scale_factor() -> f64 {
@@ -222,7 +286,13 @@ pub extern "C" fn snapforge_display_scale_factor() -> f64 {
 /// Returns NULL on error.
 #[no_mangle]
 pub extern "C" fn snapforge_default_save_path() -> *mut c_char {
-    let config = snapforge_core::config::AppConfig::load().unwrap_or_default();
+    let config = match snapforge_core::config::AppConfig::load() {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("[snapforge] default_save_path: config load failed: {}", e);
+            snapforge_core::config::AppConfig::default()
+        }
+    };
     let dir = &config.save_directory;
     match CString::new(dir.to_string_lossy().as_ref()) {
         Ok(cs) => cs.into_raw(),
@@ -248,8 +318,12 @@ pub unsafe extern "C" fn snapforge_free_string(s: *mut c_char) {
 
 /// Wrapper around `RecordingHandle` that allows stop-by-pointer (the inner
 /// handle's `stop` method consumes `self`, so we keep it in an `Option`).
+///
+/// Wrapped in a `Mutex` so concurrent FFI calls (intended usage is
+/// single-threaded, but callers can't prove it) don't invoke UB via
+/// aliased `&mut` / `&` references on the same pointer.
 struct FfiRecordingHandle {
-    inner: Option<RecordingHandle>,
+    inner: Mutex<Option<RecordingHandle>>,
 }
 
 /// Start a screen recording.
@@ -269,35 +343,58 @@ struct FfiRecordingHandle {
 #[no_mangle]
 pub unsafe extern "C" fn snapforge_start_recording(config_json: *const c_char) -> *mut c_void {
     if config_json.is_null() {
+        set_recording_error("internal: null config_json");
         return ptr::null_mut();
     }
 
     let c_str = CStr::from_ptr(config_json);
     let Ok(json_str) = c_str.to_str() else {
+        set_recording_error("internal: config_json is not valid UTF-8");
         return ptr::null_mut();
     };
 
-    let Ok(v) = serde_json::from_str::<serde_json::Value>(json_str) else {
-        return ptr::null_mut();
+    let v = match serde_json::from_str::<serde_json::Value>(json_str) {
+        Ok(v) => v,
+        Err(e) => {
+            set_recording_error(format!("invalid config JSON: {}", e));
+            return ptr::null_mut();
+        }
     };
 
     let display = v["display"].as_u64().unwrap_or(0) as usize;
+    let ndisplays = capture::display_count();
+    if display >= ndisplays {
+        set_recording_error(format!(
+            "display index {} out of range (have {})",
+            display, ndisplays
+        ));
+        return ptr::null_mut();
+    }
 
     let region = if v["region"].is_object() {
         let r = &v["region"];
+        let width = r["width"].as_u64().unwrap_or(0) as u32;
+        let height = r["height"].as_u64().unwrap_or(0) as u32;
+        if width == 0 || height == 0 {
+            set_recording_error("region has zero width or height");
+            return ptr::null_mut();
+        }
         Some(Rect {
             x: r["x"].as_i64().unwrap_or(0) as i32,
             y: r["y"].as_i64().unwrap_or(0) as i32,
-            width: r["width"].as_u64().unwrap_or(0) as u32,
-            height: r["height"].as_u64().unwrap_or(0) as u32,
+            width,
+            height,
         })
     } else {
         None
     };
 
     let output_path = match v["output_path"].as_str() {
-        Some(s) => PathBuf::from(s),
-        None => return ptr::null_mut(),
+        Some(s) if !s.is_empty() => PathBuf::from(s),
+        _ => {
+            set_recording_error("output_path is missing or empty");
+            return ptr::null_mut();
+        }
     };
 
     let format = match v["format"].as_str() {
@@ -305,7 +402,7 @@ pub unsafe extern "C" fn snapforge_start_recording(config_json: *const c_char) -
         _ => RecordingFormat::Mp4,
     };
 
-    let fps = v["fps"].as_u64().unwrap_or(30) as u32;
+    let fps = v["fps"].as_u64().unwrap_or(30).clamp(1, 240) as u32;
 
     let quality = match v["quality"].as_str() {
         Some("low") => RecordingQuality::Low,
@@ -327,12 +424,19 @@ pub unsafe extern "C" fn snapforge_start_recording(config_json: *const c_char) -
 
     match snapforge_core::record::ffmpeg::start_recording(config) {
         Ok(handle) => {
+            // Clear any previous error so stale messages don't linger.
+            if let Ok(mut guard) = LAST_RECORDING_ERROR.lock() {
+                *guard = None;
+            }
             let wrapper = Box::new(FfiRecordingHandle {
-                inner: Some(handle),
+                inner: Mutex::new(Some(handle)),
             });
             Box::into_raw(wrapper).cast::<c_void>()
         }
-        Err(_) => ptr::null_mut(),
+        Err(e) => {
+            set_recording_error(e.to_string());
+            ptr::null_mut()
+        }
     }
 }
 
@@ -348,13 +452,107 @@ pub unsafe extern "C" fn snapforge_stop_recording(handle: *mut c_void) -> c_int 
     if handle.is_null() {
         return -1;
     }
-    let wrapper = &mut *handle.cast::<FfiRecordingHandle>();
-    match wrapper.inner.take() {
+    let wrapper = &*handle.cast::<FfiRecordingHandle>();
+    let taken = match wrapper.inner.lock() {
+        Ok(mut guard) => guard.take(),
+        Err(_) => {
+            set_recording_error("recording handle mutex poisoned");
+            return -1;
+        }
+    };
+    match taken {
         Some(h) => match h.stop() {
             Ok(()) => 0,
-            Err(_) => -1,
+            Err(e) => {
+                set_recording_error(e.to_string());
+                -1
+            }
         },
         None => -1, // already stopped
+    }
+}
+
+/// Pause an active recording. The output file keeps running at constant fps
+/// with a frozen frame until resumed. Returns 0 on success, -1 on error.
+///
+/// # Safety
+///
+/// `handle` must be a valid pointer returned by `snapforge_start_recording`.
+#[no_mangle]
+pub unsafe extern "C" fn snapforge_pause_recording(handle: *mut c_void) -> c_int {
+    if handle.is_null() {
+        return -1;
+    }
+    let wrapper = &*handle.cast::<FfiRecordingHandle>();
+    let Ok(guard) = wrapper.inner.lock() else {
+        return -1;
+    };
+    match guard.as_ref() {
+        Some(h) => {
+            h.pause();
+            0
+        }
+        None => -1,
+    }
+}
+
+/// Resume a paused recording. Returns 0 on success, -1 on error.
+///
+/// # Safety
+///
+/// `handle` must be a valid pointer returned by `snapforge_start_recording`.
+#[no_mangle]
+pub unsafe extern "C" fn snapforge_resume_recording(handle: *mut c_void) -> c_int {
+    if handle.is_null() {
+        return -1;
+    }
+    let wrapper = &*handle.cast::<FfiRecordingHandle>();
+    let Ok(guard) = wrapper.inner.lock() else {
+        return -1;
+    };
+    match guard.as_ref() {
+        Some(h) => {
+            h.resume();
+            0
+        }
+        None => -1,
+    }
+}
+
+/// Returns 1 if the recording is currently paused, 0 otherwise.
+///
+/// # Safety
+///
+/// `handle` must be a valid pointer returned by `snapforge_start_recording`.
+#[no_mangle]
+pub unsafe extern "C" fn snapforge_is_paused(handle: *mut c_void) -> c_int {
+    if handle.is_null() {
+        return 0;
+    }
+    let wrapper = &*handle.cast::<FfiRecordingHandle>();
+    let Ok(guard) = wrapper.inner.lock() else {
+        return 0;
+    };
+    match guard.as_ref() {
+        Some(h) => c_int::from(h.is_paused()),
+        None => 0,
+    }
+}
+
+/// Retrieve the last recording-related error message, or NULL if none.
+/// Caller must free via `snapforge_free_string`.
+#[no_mangle]
+pub extern "C" fn snapforge_last_recording_error() -> *mut c_char {
+    let guard = match LAST_RECORDING_ERROR.lock() {
+        Ok(g) => g,
+        Err(_) => return ptr::null_mut(),
+    };
+    match guard.as_deref() {
+        Some(msg) => match CString::new(msg) {
+            Ok(cs) => cs.into_raw(),
+            Err(_) => ptr::null_mut(),
+        },
+        None => ptr::null_mut(),
     }
 }
 
@@ -371,7 +569,10 @@ pub unsafe extern "C" fn snapforge_is_recording(handle: *mut c_void) -> c_int {
         return 0;
     }
     let wrapper = &*handle.cast::<FfiRecordingHandle>();
-    match &wrapper.inner {
+    let Ok(guard) = wrapper.inner.lock() else {
+        return 0;
+    };
+    match guard.as_ref() {
         Some(h) => c_int::from(h.is_running()),
         None => 0,
     }

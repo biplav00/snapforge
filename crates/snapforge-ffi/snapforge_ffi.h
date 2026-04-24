@@ -8,6 +8,12 @@
 extern "C" {
 #endif
 
+/*
+ * CapturedImage error contract:
+ *   On success: data != NULL, len > 0, width > 0, height > 0.
+ *   On failure: data == NULL, len == 0, width == 0, height == 0.
+ * Callers must check (data != NULL && width > 0 && height > 0) before use.
+ */
 typedef struct {
     uint8_t *data;
     size_t len;
@@ -15,10 +21,12 @@ typedef struct {
     uint32_t height;
 } CapturedImage;
 
-/* Capture fullscreen. Caller must free result.data via snapforge_free_buffer. */
+/* Capture fullscreen. Caller must free result.data via snapforge_free_buffer.
+ * On failure all fields of the returned struct are zero (see CapturedImage). */
 CapturedImage snapforge_capture_fullscreen(uint32_t display);
 
-/* Capture a region. Caller must free result.data via snapforge_free_buffer. */
+/* Capture a region. Caller must free result.data via snapforge_free_buffer.
+ * On failure all fields of the returned struct are zero (see CapturedImage). */
 CapturedImage snapforge_capture_region(uint32_t display, int32_t x, int32_t y, uint32_t w, uint32_t h);
 
 /* Free a pixel buffer returned by snapforge_capture_*. */
@@ -39,6 +47,12 @@ int snapforge_request_permission(void);
 
 /* Get number of displays. */
 uint32_t snapforge_display_count(void);
+
+/* Get display info. width/height/scale_factor can be NULL. Returns 0 on success, -1 on error. */
+int snapforge_get_display_info(uint32_t display, uint32_t *width, uint32_t *height, double *scale_factor);
+
+/* Find display index for a point (in screen coordinates). Returns display index or -1. */
+int snapforge_display_at_point(int32_t x, int32_t y);
 
 /* Get primary display DPI scale factor. */
 double snapforge_display_scale_factor(void);
@@ -65,6 +79,18 @@ int snapforge_is_recording(void *handle);
 
 /* Free a recording handle. */
 void snapforge_free_recording_handle(void *handle);
+
+/* Pause an active recording (output freezes on last frame). Returns 0 on success. */
+int snapforge_pause_recording(void *handle);
+
+/* Resume a paused recording. Returns 0 on success. */
+int snapforge_resume_recording(void *handle);
+
+/* Check whether a recording is paused. Returns 1 if paused, 0 otherwise. */
+int snapforge_is_paused(void *handle);
+
+/* Last recording error message, or NULL. Caller frees via snapforge_free_string. */
+char *snapforge_last_recording_error(void);
 
 /* --- History --- */
 

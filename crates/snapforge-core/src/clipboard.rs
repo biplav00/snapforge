@@ -15,34 +15,37 @@ pub enum ClipboardError {
 /// On Windows, writes a DIB bitmap via Win32 clipboard API.
 /// On Linux, pipes PNG data to wl-copy or xclip.
 pub fn copy_image_to_clipboard(image: &RgbaImage) -> Result<(), ClipboardError> {
-    // Encode as PNG first
-    let mut png_bytes: Vec<u8> = Vec::new();
-    let encoder = image::codecs::png::PngEncoder::new(&mut png_bytes);
-    image::ImageEncoder::write_image(
-        encoder,
-        image.as_raw(),
-        image.width(),
-        image.height(),
-        image::ExtendedColorType::Rgba8,
-    )
-    .map_err(|e| ClipboardError::SetFailed(format!("PNG encode failed: {}", e)))?;
-
-    #[cfg(target_os = "macos")]
-    {
-        copy_png_to_pasteboard(&png_bytes)?;
-    }
-
     #[cfg(target_os = "windows")]
     {
-        copy_png_to_clipboard_win(image)?;
+        // Windows path takes the raw RGBA buffer directly — skip PNG encoding.
+        return copy_png_to_clipboard_win(image);
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(not(target_os = "windows"))]
     {
-        copy_png_via_tool(&png_bytes)?;
-    }
+        let mut png_bytes: Vec<u8> = Vec::new();
+        let encoder = image::codecs::png::PngEncoder::new(&mut png_bytes);
+        image::ImageEncoder::write_image(
+            encoder,
+            image.as_raw(),
+            image.width(),
+            image.height(),
+            image::ExtendedColorType::Rgba8,
+        )
+        .map_err(|e| ClipboardError::SetFailed(format!("PNG encode failed: {}", e)))?;
 
-    Ok(())
+        #[cfg(target_os = "macos")]
+        {
+            copy_png_to_pasteboard(&png_bytes)?;
+        }
+
+        #[cfg(target_os = "linux")]
+        {
+            copy_png_via_tool(&png_bytes)?;
+        }
+
+        Ok(())
+    }
 }
 
 /// Write PNG bytes directly to macOS NSPasteboard using objc2.
@@ -61,7 +64,7 @@ fn copy_png_to_pasteboard(png_bytes: &[u8]) -> Result<(), ClipboardError> {
         })?;
 
         let pasteboard: Retained<AnyObject> = msg_send![cls, generalPasteboard];
-        let _: () = msg_send![&pasteboard, clearContents];
+        let _: i64 = msg_send![&pasteboard, clearContents];
 
         let data = NSData::with_bytes(png_bytes);
         let png_type = objc2_foundation::NSString::from_str("public.png");
@@ -120,10 +123,12 @@ fn copy_png_via_tool(png_bytes: &[u8]) -> Result<(), ClipboardError> {
         }
     };
 
-    if let Some(ref mut stdin) = child.stdin {
+    if let Some(mut stdin) = child.stdin.take() {
         stdin.write_all(png_bytes).map_err(|e| {
             ClipboardError::SetFailed(format!("write to clipboard tool failed: {}", e))
         })?;
+        // Drop stdin to close the pipe; wl-copy/xclip waits for EOF before exiting.
+        drop(stdin);
     }
 
     let status = child

@@ -1,8 +1,45 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
+use std::sync::{mpsc, Mutex, OnceLock};
+use std::thread;
 use thiserror::Error;
 
 const MAX_ENTRIES: usize = 100;
+
+/// A job queued onto the single thumbnail worker thread.
+struct ThumbJob {
+    image_path: String,
+    thumb_path: PathBuf,
+}
+
+/// Single shared worker thread for thumbnail generation. Replaces the
+/// "spawn one thread per screenshot" pattern which was unbounded.
+fn thumbnail_tx() -> &'static Mutex<Option<mpsc::Sender<ThumbJob>>> {
+    static TX: OnceLock<Mutex<Option<mpsc::Sender<ThumbJob>>>> = OnceLock::new();
+    TX.get_or_init(|| {
+        let (tx, rx) = mpsc::channel::<ThumbJob>();
+        thread::Builder::new()
+            .name("snapforge-thumbnails".into())
+            .spawn(move || {
+                while let Ok(job) = rx.recv() {
+                    if let Ok(img) = image::open(&job.image_path) {
+                        let thumb = img.thumbnail(200, 200);
+                        let _ = thumb.save(&job.thumb_path);
+                    }
+                }
+            })
+            .ok();
+        Mutex::new(Some(tx))
+    })
+}
+
+fn enqueue_thumbnail(job: ThumbJob) {
+    if let Ok(guard) = thumbnail_tx().lock() {
+        if let Some(tx) = guard.as_ref() {
+            let _ = tx.send(job);
+        }
+    }
+}
 
 #[derive(Debug, Error)]
 pub enum HistoryError {
@@ -95,13 +132,10 @@ impl ScreenshotHistory {
 
         self.save()?;
 
-        // Generate thumbnail in background — don't block the caller
-        let img_path = image_path.to_string();
-        std::thread::spawn(move || {
-            if let Ok(img) = image::open(&img_path) {
-                let thumb = img.thumbnail(200, 200);
-                let _ = thumb.save(&thumb_path);
-            }
+        // Generate thumbnail on the single shared worker thread — bounded.
+        enqueue_thumbnail(ThumbJob {
+            image_path: image_path.to_string(),
+            thumb_path,
         });
 
         Ok(())

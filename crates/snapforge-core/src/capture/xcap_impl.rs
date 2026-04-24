@@ -1,12 +1,42 @@
 use crate::types::Rect;
 use image::RgbaImage;
 
-use super::CaptureError;
+use super::{CaptureError, DisplayInfo};
 
 pub fn display_count() -> usize {
     xcap::Monitor::all()
         .map(|monitors| monitors.len())
         .unwrap_or(0)
+}
+
+pub fn get_display_info(display: usize) -> Option<DisplayInfo> {
+    let monitors = xcap::Monitor::all().ok()?;
+    let monitor = monitors.get(display)?;
+    // Best-effort HiDPI: xcap's Monitor exposes scale_factor. Older versions
+    // return f32 directly; if this fails to compile, the target is Linux-only
+    // and a follow-up PR can adjust.
+    let scale_factor = f64::from(monitor.scale_factor());
+    Some(DisplayInfo {
+        width: monitor.width() as u32,
+        height: monitor.height() as u32,
+        scale_factor,
+    })
+}
+
+/// Map a point to a monitor index using each monitor's bounding rect.
+/// Falls back to 0 if no monitor contains the point.
+pub fn display_at_point(x: i32, y: i32) -> Option<usize> {
+    let monitors = xcap::Monitor::all().ok()?;
+    for (i, m) in monitors.iter().enumerate() {
+        let mx = m.x() as i32;
+        let my = m.y() as i32;
+        let mw = m.width() as i32;
+        let mh = m.height() as i32;
+        if x >= mx && x < mx + mw && y >= my && y < my + mh {
+            return Some(i);
+        }
+    }
+    Some(0)
 }
 
 pub fn capture_fullscreen(display: usize) -> Result<RgbaImage, CaptureError> {

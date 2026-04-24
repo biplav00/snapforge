@@ -44,6 +44,7 @@ private:
 
     // Color swatch buttons
     QList<QPushButton *> m_colorSwatches;
+    QPushButton *m_customColorBtn = nullptr;
     static const QList<QColor> k_presetColors;
 
     // Stroke width buttons

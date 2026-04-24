@@ -1,5 +1,6 @@
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc;
+use std::sync::{mpsc, Mutex};
+use std::time::{Duration, Instant};
 
 use image::RgbaImage;
 use objc2::rc::Retained;
@@ -12,7 +13,14 @@ use objc2_screen_capture_kit::{
 
 use crate::types::Rect;
 
-use super::CaptureError;
+use super::{CaptureError, DisplayInfo};
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct CGPointRaw {
+    x: f64,
+    y: f64,
+}
 
 extern "C" {
     fn CGPreflightScreenCaptureAccess() -> bool;
@@ -23,6 +31,13 @@ extern "C" {
     fn CGDisplayModeGetWidth(mode: *const std::ffi::c_void) -> usize;
     fn CGDisplayModeRelease(mode: *const std::ffi::c_void);
     fn CGMainDisplayID() -> u32;
+    /// Returns the number of displays that contain `point` and fills `displays` with their IDs.
+    fn CGGetDisplaysWithPoint(
+        point: CGPointRaw,
+        max_displays: u32,
+        displays: *mut u32,
+        matching_count: *mut u32,
+    ) -> i32;
 }
 
 /// Get the point-to-pixel scale factor of the primary display.
@@ -74,18 +89,23 @@ pub fn primary_display_pixel_height() -> usize {
 }
 
 /// Get the true backing pixel dimensions for a display (Retina-aware).
-fn display_pixel_size(display_id: u32) -> (usize, usize) {
+/// Returns Err if CGDisplayCopyDisplayMode fails.
+fn display_pixel_size(display_id: u32) -> Result<(usize, usize), CaptureError> {
     unsafe {
         let mode = CGDisplayCopyDisplayMode(display_id);
         if mode.is_null() {
-            // Fallback: use SCDisplay point dimensions * 2
-            return (0, 0);
+            return Err(CaptureError::CaptureFailed);
         }
         let w = CGDisplayModeGetPixelWidth(mode);
         let h = CGDisplayModeGetPixelHeight(mode);
         CGDisplayModeRelease(mode);
-        (w, h)
+        Ok((w, h))
     }
+}
+
+/// Backwards-compatible wrapper for paths that prefer (0,0) on failure.
+fn display_pixel_size_or_zero(display_id: u32) -> (usize, usize) {
+    display_pixel_size(display_id).unwrap_or((0, 0))
 }
 
 /// Cached permission state — once granted, skip re-checking.
@@ -118,6 +138,12 @@ pub fn request_screen_capture_permission() -> bool {
     result
 }
 
+/// 2-second TTL cache for the display ID list. The SCK `Retained<NSArray<...>>`
+/// isn't `Send`, so we cache only what's safely shareable: the CGDirectDisplayIDs
+/// in their SCK ordering. Callers that need the NSArray itself still re-query.
+static DISPLAY_IDS_CACHE: Mutex<Option<(Instant, Vec<u32>)>> = Mutex::new(None);
+const DISPLAYS_CACHE_TTL: Duration = Duration::from_secs(2);
+
 /// Fetch available displays via SCShareableContent (async → sync bridge).
 fn get_shareable_displays() -> Option<Retained<NSArray<SCDisplay>>> {
     let (tx, rx) = mpsc::channel();
@@ -138,19 +164,140 @@ fn get_shareable_displays() -> Option<Retained<NSArray<SCDisplay>>> {
             &block,
         );
     }
-    rx.recv_timeout(std::time::Duration::from_secs(5))
+    let result = rx
+        .recv_timeout(std::time::Duration::from_secs(5))
         .ok()
-        .flatten()
+        .flatten();
+
+    // Refresh the ID cache whenever we do a live query.
+    if let Some(ref displays) = result {
+        let mut ids = Vec::with_capacity(displays.len());
+        for i in 0..displays.len() {
+            let sc = displays.objectAtIndex(i);
+            ids.push(unsafe { sc.displayID() });
+        }
+        if let Ok(mut guard) = DISPLAY_IDS_CACHE.lock() {
+            *guard = Some((Instant::now(), ids));
+        }
+    }
+
+    result
+}
+
+/// Fast display ID list — uses cached IDs if fresh, else a live SCK query.
+/// Safe across threads (unlike `Retained<NSArray<...>>`).
+fn get_display_ids_cached() -> Vec<u32> {
+    if let Ok(guard) = DISPLAY_IDS_CACHE.lock() {
+        if let Some((ts, ids)) = guard.as_ref() {
+            if ts.elapsed() < DISPLAYS_CACHE_TTL {
+                return ids.clone();
+            }
+        }
+    }
+    // Miss → trigger a live query which refreshes the cache as a side-effect.
+    match get_shareable_displays() {
+        Some(arr) => {
+            let mut ids = Vec::with_capacity(arr.len());
+            for i in 0..arr.len() {
+                let sc = arr.objectAtIndex(i);
+                ids.push(unsafe { sc.displayID() });
+            }
+            ids
+        }
+        None => Vec::new(),
+    }
 }
 
 pub fn display_count() -> usize {
-    get_shareable_displays().map_or(0, |d| d.len())
+    let ids = get_display_ids_cached();
+    if ids.is_empty() {
+        eprintln!("[capture] display_count: no displays found (SCK query failed?)");
+    }
+    ids.len()
+}
+
+pub fn get_display_info(display: usize) -> Option<DisplayInfo> {
+    use crate::capture::DisplayInfo;
+    let displays = get_shareable_displays()?;
+    if display >= displays.len() {
+        return None;
+    }
+    let sc_display = displays.objectAtIndex(display);
+    let display_id = unsafe { sc_display.displayID() };
+    let (w, h) = display_pixel_size_or_zero(display_id);
+    let scale = primary_display_scale_factor_for(display_id);
+    Some(DisplayInfo {
+        width: w as u32,
+        height: h as u32,
+        scale_factor: scale,
+    })
+}
+
+/// Map a screen point (in global point coordinates) to the display index
+/// in our `get_shareable_displays()` ordering. Returns None if no display
+/// contains the point or the mapping fails.
+pub fn display_at_point(x: i32, y: i32) -> Option<usize> {
+    unsafe {
+        let mut matches: [u32; 8] = [0; 8];
+        let mut count: u32 = 0;
+        let status = CGGetDisplaysWithPoint(
+            CGPointRaw {
+                x: f64::from(x),
+                y: f64::from(y),
+            },
+            matches.len() as u32,
+            matches.as_mut_ptr(),
+            &mut count,
+        );
+        if status != 0 || count == 0 {
+            return Some(0);
+        }
+        let target_id = matches[0];
+        let ids = get_display_ids_cached();
+        for (i, id) in ids.iter().enumerate() {
+            if *id == target_id {
+                return Some(i);
+            }
+        }
+        Some(0)
+    }
+}
+
+fn primary_display_scale_factor_for(display_id: u32) -> f64 {
+    unsafe {
+        let mode = CGDisplayCopyDisplayMode(display_id);
+        if mode.is_null() {
+            return 2.0;
+        }
+        let pixel_w = CGDisplayModeGetPixelWidth(mode);
+        let point_w = CGDisplayModeGetWidth(mode);
+        CGDisplayModeRelease(mode);
+        if point_w == 0 {
+            2.0
+        } else {
+            pixel_w as f64 / point_w as f64
+        }
+    }
 }
 
 /// Capture the full screen for a given display index.
-/// IMPORTANT: Must be called from a background thread, not the main thread.
-/// SCK completion handlers need the main RunLoop to be free.
+///
+/// SCK completion handlers need the main RunLoop to be free, so when called
+/// from the main thread we off-load the capture to a short-lived worker
+/// thread and join it.
 pub fn capture_fullscreen(display: usize) -> Result<RgbaImage, CaptureError> {
+    if is_main_thread() {
+        // Spawn+join: SCK ObjC objects are not Send, so we build them on the
+        // worker thread. Only the resulting RgbaImage (Send) crosses back.
+        std::thread::spawn(move || capture_fullscreen_inner(display))
+            .join()
+            .map_err(|_| CaptureError::CaptureFailed)?
+    } else {
+        capture_fullscreen_inner(display)
+    }
+}
+
+fn capture_fullscreen_inner(display: usize) -> Result<RgbaImage, CaptureError> {
     let displays = get_shareable_displays().ok_or(CaptureError::CaptureFailed)?;
     if display >= displays.len() {
         return Err(CaptureError::NoDisplay(display));
@@ -167,9 +314,9 @@ pub fn capture_fullscreen(display: usize) -> Result<RgbaImage, CaptureError> {
         )
     };
 
+    let (w, h) = display_pixel_size(display_id)?;
     let config = unsafe {
         let config = SCStreamConfiguration::new();
-        let (w, h) = display_pixel_size(display_id);
         if w > 0 && h > 0 {
             config.setWidth(w);
             config.setHeight(h);
@@ -179,6 +326,47 @@ pub fn capture_fullscreen(display: usize) -> Result<RgbaImage, CaptureError> {
     };
 
     capture_with_filter(filter.as_ref(), config.as_ref())
+}
+
+/// Check if we're on the main thread. Uses pthread — Apple guarantees the
+/// process's first thread is the main/UI thread, which matches what Cocoa
+/// considers "main".
+fn is_main_thread() -> bool {
+    extern "C" {
+        fn pthread_main_np() -> i32;
+    }
+    unsafe { pthread_main_np() != 0 }
+}
+
+/// Compute the downscaled recording output size WITHOUT building SCK objects.
+/// Safe to call on the main thread. Returns the even-aligned (width, height).
+pub fn compute_recording_output_size(
+    display: usize,
+    max_dimension: Option<u32>,
+) -> Result<(u32, u32), CaptureError> {
+    // Resolve display index → CGDirectDisplayID via cached SCK query.
+    let displays = get_shareable_displays().ok_or(CaptureError::CaptureFailed)?;
+    if display >= displays.len() {
+        return Err(CaptureError::NoDisplay(display));
+    }
+    let sc_display = displays.objectAtIndex(display);
+    let display_id = unsafe { sc_display.displayID() };
+
+    let (native_w, native_h) = display_pixel_size(display_id)?;
+    let (out_w, out_h) = if let Some(max_dim) = max_dimension {
+        if native_w > 0 && native_h > 0 {
+            let scale = (max_dim as f64 / native_w.max(native_h) as f64).min(1.0);
+            (
+                ((native_w as f64 * scale) as usize) & !1,
+                ((native_h as f64 * scale) as usize) & !1,
+            )
+        } else {
+            (0, 0)
+        }
+    } else {
+        (native_w & !1, native_h & !1)
+    };
+    Ok((out_w as u32, out_h as u32))
 }
 
 /// Capture a single frame using a pre-built filter and config.
@@ -250,7 +438,7 @@ impl CaptureContext {
         };
 
         // Compute output dimensions
-        let (native_w, native_h) = display_pixel_size(display_id);
+        let (native_w, native_h) = display_pixel_size(display_id)?;
         let (out_w, out_h) = if let Some(max_dim) = max_dimension {
             if native_w > 0 && native_h > 0 {
                 let scale = (max_dim as f64 / native_w.max(native_h) as f64).min(1.0);

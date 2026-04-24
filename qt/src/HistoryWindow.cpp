@@ -5,6 +5,7 @@
 #include <QClipboard>
 #include <QDesktopServices>
 #include <QFileInfo>
+#include <QFutureWatcher>
 #include <QHBoxLayout>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -13,10 +14,12 @@
 #include <QMessageBox>
 #include <QPixmap>
 #include <QPushButton>
+#include <QResizeEvent>
 #include <QScrollArea>
 #include <QShowEvent>
 #include <QUrl>
 #include <QVBoxLayout>
+#include <QtConcurrent/QtConcurrent>
 #include <algorithm>
 
 // ---------------------------------------------------------------------------
@@ -42,8 +45,11 @@ HistoryCard::HistoryCard(const HistoryEntry &entry, QWidget *parent)
     , m_path(entry.path)
     , m_timestamp(entry.timestamp)
 {
-    setFrameShape(QFrame::StyledPanel);
-    setFixedWidth(200);
+    setFrameShape(QFrame::NoFrame);
+    setFixedWidth(220);
+    setStyleSheet(
+        "HistoryCard { background: #191d26; border: 1px solid #262d3d; border-radius: 12px; }"
+    );
 
     auto *root = new QVBoxLayout(this);
     root->setContentsMargins(8, 8, 8, 8);
@@ -51,9 +57,10 @@ HistoryCard::HistoryCard(const HistoryEntry &entry, QWidget *parent)
 
     // --- Thumbnail ---
     auto *thumbLabel = new QLabel(this);
-    thumbLabel->setFixedHeight(120);
+    thumbLabel->setFixedHeight(130);
     thumbLabel->setAlignment(Qt::AlignCenter);
     thumbLabel->setScaledContents(false);
+    thumbLabel->setStyleSheet("QLabel { background: #1e2330; border-radius: 8px; }");
 
     if (!entry.thumbnailPath.isEmpty()) {
         QPixmap px(entry.thumbnailPath);
@@ -72,13 +79,13 @@ HistoryCard::HistoryCard(const HistoryEntry &entry, QWidget *parent)
     auto *nameLabel = new QLabel(name, this);
     nameLabel->setWordWrap(false);
     nameLabel->setToolTip(m_path);
+    nameLabel->setStyleSheet("QLabel { color: #e8ecf4; font-family: 'JetBrains Mono', monospace; font-size: 11px; background: transparent; }");
     {
         QFont f = nameLabel->font();
         f.setPointSize(10);
         nameLabel->setFont(f);
     }
-    // Elide long names visually via fixed width
-    nameLabel->setMaximumWidth(184);
+    nameLabel->setMaximumWidth(204);
     root->addWidget(nameLabel);
 
     // --- Timestamp ---
@@ -89,7 +96,7 @@ HistoryCard::HistoryCard(const HistoryEntry &entry, QWidget *parent)
             f.setPointSize(9);
             tsLabel->setFont(f);
         }
-        tsLabel->setStyleSheet("color: gray;");
+        tsLabel->setStyleSheet("QLabel { color: #3d4660; font-family: 'JetBrains Mono', monospace; background: transparent; }");
         root->addWidget(tsLabel);
     }
 
@@ -97,9 +104,16 @@ HistoryCard::HistoryCard(const HistoryEntry &entry, QWidget *parent)
     auto *btnRow = new QHBoxLayout();
     btnRow->setSpacing(4);
 
+    QString actionBtnStyle =
+        "QPushButton { background: #1e2330; color: #8b95ab; border: 1px solid #262d3d;"
+        "  border-radius: 4px; padding: 4px 10px; font-size: 11px;"
+        "  font-family: 'JetBrains Mono', monospace; }"
+        "QPushButton:hover { background: #1c2130; color: #e8ecf4; border-color: #3a4460; }";
+
     auto *showBtn = new QPushButton("Show", this);
     showBtn->setToolTip("Show in Folder");
     showBtn->setFixedHeight(24);
+    showBtn->setStyleSheet(actionBtnStyle);
     connect(showBtn, &QPushButton::clicked, this, [this]() {
         emit showInFolderRequested(m_path);
     });
@@ -108,6 +122,7 @@ HistoryCard::HistoryCard(const HistoryEntry &entry, QWidget *parent)
     if (isImage()) {
         auto *copyBtn = new QPushButton("Copy", this);
         copyBtn->setFixedHeight(24);
+        copyBtn->setStyleSheet(actionBtnStyle);
         connect(copyBtn, &QPushButton::clicked, this, [this]() {
             emit copyRequested(m_path);
         });
@@ -117,7 +132,12 @@ HistoryCard::HistoryCard(const HistoryEntry &entry, QWidget *parent)
     auto *delBtn = new QPushButton("Del", this);
     delBtn->setToolTip("Delete");
     delBtn->setFixedHeight(24);
-    delBtn->setStyleSheet("color: #c0392b;");
+    delBtn->setStyleSheet(
+        "QPushButton { background: #1e2330; color: #ef4444; border: 1px solid rgba(239,68,68,0.2);"
+        "  border-radius: 4px; padding: 4px 10px; font-size: 11px;"
+        "  font-family: 'JetBrains Mono', monospace; }"
+        "QPushButton:hover { background: rgba(239,68,68,0.15); color: white; border-color: rgba(239,68,68,0.4); }"
+    );
     connect(delBtn, &QPushButton::clicked, this, [this]() {
         emit deleteRequested(m_path);
     });
@@ -149,6 +169,11 @@ HistoryWindow::HistoryWindow(QWidget *parent)
     resize(960, 640);
     setMinimumSize(600, 400);
 
+    setStyleSheet(
+        "HistoryWindow { background: #0c0e12; color: #e8ecf4; }"
+        "QWidget { background: #0c0e12; color: #e8ecf4; font-family: 'DM Sans', -apple-system, sans-serif; font-size: 13px; }"
+    );
+
     setupUi();
 }
 
@@ -164,17 +189,33 @@ void HistoryWindow::setupUi() {
     m_searchEdit = new QLineEdit(this);
     m_searchEdit->setPlaceholderText("Search...");
     m_searchEdit->setMinimumWidth(180);
+    m_searchEdit->setStyleSheet(
+        "QLineEdit { background: #151920; border: 1px solid #262d3d; border-radius: 8px;"
+        "  padding: 8px 12px; color: #e8ecf4; font-family: 'JetBrains Mono', monospace; font-size: 12px; }"
+        "QLineEdit:focus { border-color: #3b82f6; }"
+        "QLineEdit::placeholder { color: #3d4660; }"
+    );
     connect(m_searchEdit, &QLineEdit::textChanged, this, &HistoryWindow::onSearchChanged);
     toolbar->addWidget(m_searchEdit);
 
+    QString comboStyle =
+        "QComboBox { background: #151920; border: 1px solid #262d3d; border-radius: 20px;"
+        "  padding: 6px 14px; color: #8b95ab; font-family: 'JetBrains Mono', monospace; font-size: 11px; }"
+        "QComboBox:hover { border-color: #3a4460; color: #e8ecf4; }"
+        "QComboBox::drop-down { border: none; }"
+        "QComboBox QAbstractItemView { background: #191d26; border: 1px solid #262d3d;"
+        "  color: #e8ecf4; selection-background-color: #1a2540; }";
+
     m_filterCombo = new QComboBox(this);
     m_filterCombo->addItems({"All", "Images", "Videos"});
+    m_filterCombo->setStyleSheet(comboStyle);
     connect(m_filterCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, &HistoryWindow::onFilterChanged);
     toolbar->addWidget(m_filterCombo);
 
     m_sortCombo = new QComboBox(this);
     m_sortCombo->addItems({"Newest", "Oldest", "Name"});
+    m_sortCombo->setStyleSheet(comboStyle);
     connect(m_sortCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, &HistoryWindow::onSortChanged);
     toolbar->addWidget(m_sortCombo);
@@ -186,6 +227,7 @@ void HistoryWindow::setupUi() {
     auto *sep = new QFrame(this);
     sep->setFrameShape(QFrame::HLine);
     sep->setFrameShadow(QFrame::Sunken);
+    sep->setStyleSheet("QFrame { background: #1e2330; border: none; max-height: 1px; }");
     root->addWidget(sep);
 
     // --- Scroll area with grid ---
@@ -193,8 +235,15 @@ void HistoryWindow::setupUi() {
     m_scrollArea->setWidgetResizable(true);
     m_scrollArea->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
     m_scrollArea->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    m_scrollArea->setStyleSheet(
+        "QScrollArea { background: #0c0e12; border: none; }"
+        "QScrollBar:vertical { background: #13161c; width: 8px; }"
+        "QScrollBar::handle:vertical { background: #3a4460; border-radius: 4px; min-height: 20px; }"
+        "QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }"
+    );
 
     m_gridWidget = new QWidget();
+    m_gridWidget->setStyleSheet("QWidget { background: #0c0e12; }");
     m_gridLayout = new QGridLayout(m_gridWidget);
     m_gridLayout->setSpacing(12);
     m_gridLayout->setContentsMargins(8, 8, 8, 8);
@@ -208,10 +257,16 @@ void HistoryWindow::setupUi() {
     footer->setSpacing(8);
 
     m_countLabel = new QLabel("0 items", this);
+    m_countLabel->setStyleSheet("QLabel { color: #3d4660; font-family: 'JetBrains Mono', monospace; font-size: 11px; background: transparent; }");
     footer->addWidget(m_countLabel);
     footer->addStretch();
 
     m_clearAllBtn = new QPushButton("Clear All", this);
+    m_clearAllBtn->setStyleSheet(
+        "QPushButton { background: transparent; color: #ef4444; border: 1px solid rgba(239,68,68,0.2);"
+        "  border-radius: 5px; padding: 5px 14px; font-family: 'JetBrains Mono', monospace; font-size: 11px; }"
+        "QPushButton:hover { background: rgba(239,68,68,0.15); border-color: rgba(239,68,68,0.4); }"
+    );
     connect(m_clearAllBtn, &QPushButton::clicked, this, &HistoryWindow::onClearAll);
     footer->addWidget(m_clearAllBtn);
 
@@ -391,12 +446,30 @@ void HistoryWindow::onShowInFolder(const QString &path) {
     QDesktopServices::openUrl(QUrl::fromLocalFile(dir));
 }
 
-void HistoryWindow::onCopyEntry(const QString &path) {
-    QImage img(path);
-    if (img.isNull()) return;
+void HistoryWindow::resizeEvent(QResizeEvent *event) {
+    QWidget::resizeEvent(event);
+    // L5: re-flow the card grid when the window is resized.
+    if (!m_allEntries.isEmpty()) {
+        applyFilters();
+    }
+}
 
-    // Convert to RGBA8888 for FFI
-    QImage rgba = img.convertToFormat(QImage::Format_RGBA8888);
-    snapforge_copy_to_clipboard(rgba.constBits(), static_cast<uint32_t>(rgba.width()),
-                                static_cast<uint32_t>(rgba.height()));
+void HistoryWindow::onCopyEntry(const QString &path) {
+    // M10: load the image off the UI thread (it can be several MB) and only
+    // touch the clipboard once the decoded RGBA pixels are ready.
+    auto *watcher = new QFutureWatcher<QImage>(this);
+    connect(watcher, &QFutureWatcher<QImage>::finished, this, [watcher]() {
+        QImage rgba = watcher->result();
+        if (!rgba.isNull()) {
+            snapforge_copy_to_clipboard(rgba.constBits(),
+                                        static_cast<uint32_t>(rgba.width()),
+                                        static_cast<uint32_t>(rgba.height()));
+        }
+        watcher->deleteLater();
+    });
+    watcher->setFuture(QtConcurrent::run([path]() -> QImage {
+        QImage img(path);
+        if (img.isNull()) return QImage();
+        return img.convertToFormat(QImage::Format_RGBA8888);
+    }));
 }

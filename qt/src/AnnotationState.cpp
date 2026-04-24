@@ -17,6 +17,21 @@ void AnnotationState::commitAnnotation(const Annotation &a)
     emit changed();
 }
 
+void AnnotationState::updateAnnotation(const QString &id, const Annotation &a)
+{
+    if (m_undoStack.size() >= MAX_UNDO)
+        m_undoStack.removeFirst();
+    m_undoStack.append(m_annotations);
+    m_redoStack.clear();
+    for (int i = 0; i < m_annotations.size(); ++i) {
+        if (m_annotations[i].id == id) {
+            m_annotations[i] = a;
+            break;
+        }
+    }
+    emit changed();
+}
+
 void AnnotationState::clearAnnotations()
 {
     m_undoStack.clear();
@@ -70,10 +85,27 @@ void AnnotationState::setActiveAnnotation(const Annotation &a)
     emit changed();
 }
 
+void AnnotationState::setActiveAnnotationQuiet(const Annotation &a)
+{
+    m_active = a;
+}
+
 void AnnotationState::clearActiveAnnotation()
 {
     m_active.reset();
     emit changed();
+}
+
+void AnnotationState::recalcNextStep()
+{
+    int maxStep = 0;
+    for (const Annotation &a : m_annotations) {
+        if (a.tool == ToolType::Steps) {
+            const auto &sd = std::get<StepsData>(a.data);
+            if (sd.number > maxStep) maxStep = sd.number;
+        }
+    }
+    m_nextStep = maxStep + 1;
 }
 
 void AnnotationState::undo()
@@ -82,6 +114,7 @@ void AnnotationState::undo()
         return;
     m_redoStack.append(m_annotations);
     m_annotations = m_undoStack.takeLast();
+    recalcNextStep();
     emit changed();
 }
 
@@ -91,6 +124,7 @@ void AnnotationState::redo()
         return;
     m_undoStack.append(m_annotations);
     m_annotations = m_redoStack.takeLast();
+    recalcNextStep();
     emit changed();
 }
 

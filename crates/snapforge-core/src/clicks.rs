@@ -86,8 +86,9 @@ pub fn has_click_tracking_permission() -> bool {
 mod macos_tap {
     use super::ClickTracker;
     use std::ffi::c_void;
+    use std::mem::ManuallyDrop;
     use std::ptr;
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::mpsc;
     use std::sync::Arc;
 
     // CGEventTap types
@@ -151,27 +152,30 @@ mod macos_tap {
         unsafe { AXIsProcessTrustedWithOptions(ptr::null()) }
     }
 
-    /// Wrapper to make CFRunLoopRef Send/Sync — we only use it to signal stop.
+    /// Wrapper to make CF pointers Send/Sync — we only use them to signal stop.
     #[derive(Copy, Clone)]
     struct SendableRunLoop(CFRunLoopRef);
     unsafe impl Send for SendableRunLoop {}
     unsafe impl Sync for SendableRunLoop {}
 
+    #[derive(Copy, Clone)]
+    struct SendableTap(CFMachPortRef);
+    unsafe impl Send for SendableTap {}
+    unsafe impl Sync for SendableTap {}
+
     pub struct MacOSClickTapHandle {
-        stop_flag: Arc<AtomicBool>,
-        run_loop: Arc<Mutex<Option<SendableRunLoop>>>,
+        run_loop: SendableRunLoop,
+        tap: SendableTap,
         thread: Option<std::thread::JoinHandle<()>>,
     }
 
-    use std::sync::Mutex;
-
     impl Drop for MacOSClickTapHandle {
         fn drop(&mut self) {
-            self.stop_flag.store(true, Ordering::SeqCst);
-            if let Ok(guard) = self.run_loop.lock() {
-                if let Some(rl) = *guard {
-                    unsafe { CFRunLoopStop(rl.0) };
-                }
+            unsafe {
+                // Disable the tap first so no more events fire.
+                CGEventTapEnable(self.tap.0, false);
+                // Stop the thread's CFRunLoopRun.
+                CFRunLoopStop(self.run_loop.0);
             }
             if let Some(t) = self.thread.take() {
                 let _ = t.join();
@@ -189,25 +193,38 @@ mod macos_tap {
         event: CGEventRef,
         user_info: *mut c_void,
     ) -> CGEventRef {
-        if !user_info.is_null() {
-            let data = &*(user_info as *const CallbackData);
-            let loc = CGEventGetLocation(event);
-            data.tracker.add(loc.x, loc.y);
+        if user_info.is_null() {
+            return event;
         }
+        // user_info is a *mut Arc<CallbackData>. We only want a borrow — never
+        // drop it here; the owning thread will drop it on teardown.
+        let arc_ptr = user_info as *const Arc<CallbackData>;
+        let data = ManuallyDrop::new(unsafe { std::ptr::read(arc_ptr) });
+        let loc = CGEventGetLocation(event);
+        data.tracker.add(loc.x, loc.y);
         event
     }
 
+    /// Result of the tap-creation step, sent from the worker thread back to `start`.
+    enum SetupResult {
+        Ok {
+            run_loop: SendableRunLoop,
+            tap: SendableTap,
+        },
+        Err,
+    }
+
     pub fn start(tracker: ClickTracker) -> Option<MacOSClickTapHandle> {
-        let stop_flag = Arc::new(AtomicBool::new(false));
-        let run_loop: Arc<Mutex<Option<SendableRunLoop>>> = Arc::new(Mutex::new(None));
-        let run_loop_clone = run_loop.clone();
+        let (tx, rx) = mpsc::sync_channel::<SetupResult>(1);
 
         let thread = std::thread::spawn(move || {
             let mask: CGEventMask =
                 (1u64 << KCG_EVENT_LEFT_MOUSE_DOWN) | (1u64 << KCG_EVENT_RIGHT_MOUSE_DOWN);
 
-            let data = Box::new(CallbackData { tracker });
-            let data_ptr = Box::into_raw(data).cast::<c_void>();
+            let data = Arc::new(CallbackData { tracker });
+            // Heap-allocate a copy of the Arc that the C callback will borrow.
+            // We own this raw pointer on this thread and free it after CFRunLoopRun returns.
+            let data_raw: *mut Arc<CallbackData> = Box::into_raw(Box::new(Arc::clone(&data)));
 
             let tap = unsafe {
                 CGEventTapCreate(
@@ -216,44 +233,59 @@ mod macos_tap {
                     KCG_EVENT_TAP_OPTION_LISTEN_ONLY,
                     mask,
                     event_callback,
-                    data_ptr,
+                    data_raw.cast::<c_void>(),
                 )
             };
 
             if tap.is_null() {
                 eprintln!("[clicks] CGEventTapCreate failed — accessibility permission required");
+                // Free the raw Arc pointer we created.
                 unsafe {
-                    let _ = Box::from_raw(data_ptr.cast::<CallbackData>());
+                    let _ = Box::from_raw(data_raw);
                 }
+                let _ = tx.send(SetupResult::Err);
                 return;
             }
 
+            let source =
+                unsafe { CFMachPortCreateRunLoopSource(ptr::null(), tap, 0) };
+            let current_rl = unsafe { CFRunLoopGetCurrent() };
             unsafe {
-                let source = CFMachPortCreateRunLoopSource(ptr::null(), tap, 0);
-                let current_rl = CFRunLoopGetCurrent();
                 CFRunLoopAddSource(current_rl, source, kCFRunLoopCommonModes);
                 CGEventTapEnable(tap, true);
+            }
 
-                if let Ok(mut guard) = run_loop_clone.lock() {
-                    *guard = Some(SendableRunLoop(current_rl));
-                }
+            // Signal to start() that the tap is live.
+            let _ = tx.send(SetupResult::Ok {
+                run_loop: SendableRunLoop(current_rl),
+                tap: SendableTap(tap),
+            });
 
+            unsafe {
                 CFRunLoopRun();
 
-                // Cleanup
+                // Cleanup — CFRunLoopRun returned because CFRunLoopStop was called on teardown.
                 CFRelease(source);
                 CFRelease(tap);
-                let _ = Box::from_raw(data_ptr.cast::<CallbackData>());
+                // Free the raw Arc last, so any callback in-flight has already returned.
+                let _ = Box::from_raw(data_raw);
             }
+
+            drop(data);
         });
 
-        // Give the thread a moment to set up
-        std::thread::sleep(std::time::Duration::from_millis(50));
-
-        Some(MacOSClickTapHandle {
-            stop_flag,
-            run_loop,
-            thread: Some(thread),
-        })
+        // Block until the worker thread either reports the tap is live, or fails.
+        match rx.recv() {
+            Ok(SetupResult::Ok { run_loop, tap }) => Some(MacOSClickTapHandle {
+                run_loop,
+                tap,
+                thread: Some(thread),
+            }),
+            _ => {
+                // Worker thread failed or channel dropped — join it so we don't leak.
+                let _ = thread.join();
+                None
+            }
+        }
     }
 }
