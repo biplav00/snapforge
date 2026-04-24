@@ -74,7 +74,14 @@ private:
 
     void loadConfig();
     void saveConfig();
+
+public:
+    // Fix #20: re-run the current theme preference. Called from a
+    // QApplication event filter when the system palette changes so "Auto"
+    // follows system dark/light mode, while explicit Light/Dark ignore it.
     void applyTheme();
+
+private:
 
     // Hotkey helpers
     void startRecording(int rowIndex);

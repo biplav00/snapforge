@@ -172,6 +172,12 @@ mod tests {
     }
 
     #[test]
+    fn test_find_ffmpeg_returns_result() {
+        // Just verify find_ffmpeg doesn't panic — returns Some or None.
+        let _ = find_ffmpeg(None);
+    }
+
+    #[test]
     fn test_record_error_display() {
         let err = RecordError::FfmpegNotFound;
         let msg = format!("{}", err);

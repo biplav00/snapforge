@@ -6,6 +6,8 @@
 #include <QHBoxLayout>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QMessageBox>
+#include <QMap>
 #include <QScrollArea>
 #include <QShowEvent>
 #include <QTabWidget>
@@ -1003,6 +1005,31 @@ void PreferencesWindow::onResetHotkeys()
 
 void PreferencesWindow::onSave()
 {
+    // Fix #15: block duplicate hotkey bindings from being persisted. Two
+    // actions on the same chord is always a bug — one of them will never
+    // fire. Single pass: bucket every non-empty shortcut; any bucket with
+    // more than one entry is a conflict. Dedupe the reported list so a
+    // shortcut bound three times doesn't show three copies of each row.
+    QMap<QString, QStringList> buckets; // shortcut -> list of "section: action"
+    for (const HotkeyRow &row : m_hotkeyRows) {
+        if (row.shortcut.isEmpty()) continue;
+        buckets[row.shortcut]
+            << (row.section + QStringLiteral(": ") + row.displayName);
+    }
+    QStringList dupes;
+    for (auto it = buckets.constBegin(); it != buckets.constEnd(); ++it) {
+        if (it.value().size() > 1) {
+            dupes << (it.key() + QStringLiteral("  →  ")
+                      + it.value().join(QStringLiteral(", ")));
+        }
+    }
+    if (!dupes.isEmpty()) {
+        QMessageBox::warning(this,
+            QStringLiteral("Duplicate shortcuts"),
+            QStringLiteral("The following shortcuts are bound to more than one action; "
+                           "change them before saving:\n\n") + dupes.join('\n'));
+        return;
+    }
     saveConfig();
     emit configSaved();
 }

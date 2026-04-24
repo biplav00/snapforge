@@ -23,6 +23,7 @@ signals:
     void clipboardReady(QImage composited, int w, int h);
     void cancelled();
     void recordingRequested(int display, QRect region);
+    void regionInvalid(QString reason);
 
 protected:
     void paintEvent(QPaintEvent *event) override;

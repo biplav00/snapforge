@@ -1,5 +1,5 @@
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{mpsc, Mutex};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{mpsc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use image::RgbaImage;
@@ -22,6 +22,9 @@ struct CGPointRaw {
     y: f64,
 }
 
+type CGDisplayReconfigurationCallBack =
+    unsafe extern "C" fn(display: u32, flags: u32, user_info: *mut std::ffi::c_void);
+
 extern "C" {
     fn CGPreflightScreenCaptureAccess() -> bool;
     fn CGRequestScreenCaptureAccess() -> bool;
@@ -38,6 +41,46 @@ extern "C" {
         displays: *mut u32,
         matching_count: *mut u32,
     ) -> i32;
+    fn CGDisplayRegisterReconfigurationCallback(
+        callback: CGDisplayReconfigurationCallBack,
+        user_info: *mut std::ffi::c_void,
+    ) -> i32;
+}
+
+/// Bumped whenever CoreGraphics tells us the display topology changed. Any
+/// cache keyed on `CGDirectDisplayID` has to invalidate itself when this moves.
+static DISPLAY_TOPOLOGY_VERSION: AtomicU64 = AtomicU64::new(0);
+
+unsafe extern "C" fn display_reconfig_callback(
+    _display: u32,
+    _flags: u32,
+    _user_info: *mut std::ffi::c_void,
+) {
+    DISPLAY_TOPOLOGY_VERSION.fetch_add(1, Ordering::SeqCst);
+}
+
+fn ensure_display_reconfig_registered() {
+    // SAFETY/NOTE: CGDisplayRegisterReconfigurationCallback delivers its
+    // callback on the main run loop. When snapforge runs without a main run
+    // loop spinning (e.g. a headless CLI invocation), the callback will never
+    // fire, DISPLAY_TOPOLOGY_VERSION stays at 0, and the capture cache falls
+    // back to its TTL-based invalidation. That's acceptable — the TTL exists
+    // precisely for this case.
+    static REGISTERED: OnceLock<()> = OnceLock::new();
+    REGISTERED.get_or_init(|| {
+        unsafe {
+            let err = CGDisplayRegisterReconfigurationCallback(
+                display_reconfig_callback,
+                std::ptr::null_mut(),
+            );
+            if err != 0 {
+                eprintln!(
+                    "[snapforge] CGDisplayRegisterReconfigurationCallback failed: {}",
+                    err
+                );
+            }
+        }
+    });
 }
 
 /// Get the point-to-pixel scale factor of the primary display.
@@ -141,11 +184,18 @@ pub fn request_screen_capture_permission() -> bool {
 /// 2-second TTL cache for the display ID list. The SCK `Retained<NSArray<...>>`
 /// isn't `Send`, so we cache only what's safely shareable: the CGDirectDisplayIDs
 /// in their SCK ordering. Callers that need the NSArray itself still re-query.
-static DISPLAY_IDS_CACHE: Mutex<Option<(Instant, Vec<u32>)>> = Mutex::new(None);
+///
+/// Entry tuple: (timestamp, topology_version_at_capture, ids).
+static DISPLAY_IDS_CACHE: Mutex<Option<(Instant, u64, Vec<u32>)>> = Mutex::new(None);
 const DISPLAYS_CACHE_TTL: Duration = Duration::from_secs(2);
 
 /// Fetch available displays via SCShareableContent (async → sync bridge).
+/// Returns `None` if SCK doesn't respond within 2s. An empty/None result
+/// means callers should surface a permission or daemon error — the SCK
+/// daemon is the first thing to wedge on permission loss.
 fn get_shareable_displays() -> Option<Retained<NSArray<SCDisplay>>> {
+    ensure_display_reconfig_registered();
+
     let (tx, rx) = mpsc::channel();
     let block = block2::RcBlock::new(
         move |content: *mut SCShareableContent, error: *mut objc2_foundation::NSError| {
@@ -165,7 +215,7 @@ fn get_shareable_displays() -> Option<Retained<NSArray<SCDisplay>>> {
         );
     }
     let result = rx
-        .recv_timeout(std::time::Duration::from_secs(5))
+        .recv_timeout(std::time::Duration::from_secs(2))
         .ok()
         .flatten();
 
@@ -177,19 +227,26 @@ fn get_shareable_displays() -> Option<Retained<NSArray<SCDisplay>>> {
             ids.push(unsafe { sc.displayID() });
         }
         if let Ok(mut guard) = DISPLAY_IDS_CACHE.lock() {
-            *guard = Some((Instant::now(), ids));
+            *guard = Some((
+                Instant::now(),
+                DISPLAY_TOPOLOGY_VERSION.load(Ordering::SeqCst),
+                ids,
+            ));
         }
     }
 
     result
 }
 
-/// Fast display ID list — uses cached IDs if fresh, else a live SCK query.
-/// Safe across threads (unlike `Retained<NSArray<...>>`).
+/// Fast display ID list — uses cached IDs if fresh AND the display topology
+/// version matches, else a live SCK query. Safe across threads (unlike
+/// `Retained<NSArray<...>>`).
 fn get_display_ids_cached() -> Vec<u32> {
+    ensure_display_reconfig_registered();
+    let current_ver = DISPLAY_TOPOLOGY_VERSION.load(Ordering::SeqCst);
     if let Ok(guard) = DISPLAY_IDS_CACHE.lock() {
-        if let Some((ts, ids)) = guard.as_ref() {
-            if ts.elapsed() < DISPLAYS_CACHE_TTL {
+        if let Some((ts, ver, ids)) = guard.as_ref() {
+            if *ver == current_ver && ts.elapsed() < DISPLAYS_CACHE_TTL {
                 return ids.clone();
             }
         }
@@ -211,7 +268,14 @@ fn get_display_ids_cached() -> Vec<u32> {
 pub fn display_count() -> usize {
     let ids = get_display_ids_cached();
     if ids.is_empty() {
-        eprintln!("[capture] display_count: no displays found (SCK query failed?)");
+        // Empty list most likely means Screen Recording permission has been
+        // revoked (SCK then stalls/refuses). Surface a specific hint so users
+        // don't chase a ghost capture bug.
+        if unsafe { !CGPreflightScreenCaptureAccess() } {
+            eprintln!("[capture] screen recording permission not granted");
+        } else {
+            eprintln!("[capture] display_count: no displays found (SCK query failed?)");
+        }
     }
     ids.len()
 }
@@ -298,12 +362,23 @@ pub fn capture_fullscreen(display: usize) -> Result<RgbaImage, CaptureError> {
 }
 
 fn capture_fullscreen_inner(display: usize) -> Result<RgbaImage, CaptureError> {
+    let cached_ids = get_display_ids_cached();
+    let target_id = cached_ids
+        .get(display)
+        .copied()
+        .ok_or(CaptureError::NoDisplay(display))?;
+
     let displays = get_shareable_displays().ok_or(CaptureError::CaptureFailed)?;
-    if display >= displays.len() {
-        return Err(CaptureError::NoDisplay(display));
+    let mut sc_display_opt = None;
+    for i in 0..displays.len() {
+        let d = displays.objectAtIndex(i);
+        if unsafe { d.displayID() } == target_id {
+            sc_display_opt = Some(d);
+            break;
+        }
     }
-    let sc_display = displays.objectAtIndex(display);
-    let display_id = unsafe { sc_display.displayID() };
+    let sc_display = sc_display_opt.ok_or(CaptureError::NoDisplay(display))?;
+    let display_id = target_id;
 
     let filter = unsafe {
         let excluded: Retained<NSArray<SCWindow>> = NSArray::new();
@@ -421,12 +496,23 @@ impl CaptureContext {
     /// `max_dimension` optionally limits the output size (e.g. 1920 to cap at ~1080p
     /// while preserving aspect ratio). Pass None for native resolution.
     pub fn new(display: usize, max_dimension: Option<u32>) -> Result<Self, CaptureError> {
+        let cached_ids = get_display_ids_cached();
+        let target_id = cached_ids
+            .get(display)
+            .copied()
+            .ok_or(CaptureError::NoDisplay(display))?;
+
         let displays = get_shareable_displays().ok_or(CaptureError::CaptureFailed)?;
-        if display >= displays.len() {
-            return Err(CaptureError::NoDisplay(display));
+        let mut sc_display_opt = None;
+        for i in 0..displays.len() {
+            let d = displays.objectAtIndex(i);
+            if unsafe { d.displayID() } == target_id {
+                sc_display_opt = Some(d);
+                break;
+            }
         }
-        let sc_display = displays.objectAtIndex(display);
-        let display_id = unsafe { sc_display.displayID() };
+        let sc_display = sc_display_opt.ok_or(CaptureError::NoDisplay(display))?;
+        let display_id = target_id;
 
         let filter = unsafe {
             let excluded: Retained<NSArray<SCWindow>> = NSArray::new();

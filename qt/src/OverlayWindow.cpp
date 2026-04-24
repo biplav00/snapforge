@@ -72,17 +72,16 @@ void OverlayWindow::activateInternal() {
         m_endPos = QPoint();
     }
 
-    // Detect which display we're on and capture that display
-    QScreen *screen = QGuiApplication::primaryScreen();
+    // Detect which display the user is on (cursor position), NOT primary —
+    // otherwise capturing a windowed app on a secondary display grabs the
+    // primary display's current Space instead.
+    QPoint cursor = QCursor::pos();
+    QScreen *screen = QGuiApplication::screenAt(cursor);
+    if (!screen) screen = QGuiApplication::primaryScreen();
     if (!screen) {
         m_displayIndex = 0;
     } else {
-        // Find display index for this screen's top-left. CGGetDisplaysWithPoint
-        // (used on the Rust side) takes *point* coordinates (the global
-        // desktop coord space), which matches what Qt returns from
-        // QScreen::geometry() on macOS — no DPR scaling needed here.
-        QRect screenGeom = screen->geometry();
-        int display = snapforge_display_at_point(screenGeom.x(), screenGeom.y());
+        int display = snapforge_display_at_point(cursor.x(), cursor.y());
         m_displayIndex = (display >= 0) ? display : 0;
     }
 
@@ -94,15 +93,24 @@ void OverlayWindow::activateInternal() {
     // Rust side detects main-thread invocation and hops to a worker thread
     // (SCK's completion handler needs the main RunLoop free). So this does
     // not starve the UI thread — the thread spawn+join is fast.
+    // Always clear previous capture so a failed fresh capture can't
+    // silently reuse the last activation's image (which would show the
+    // wrong window when switching apps between screenshots).
+    m_screenshot = QImage();
+    m_scaledScreenshot = QImage();
+
     CapturedImage img = snapforge_capture_fullscreen(m_displayIndex);
     if (img.data && img.width > 0) {
         QImage qimg(img.data, img.width, img.height, img.width * 4,
                     QImage::Format_RGBA8888);
         m_screenshot = qimg.copy();
         snapforge_free_buffer(img.data, img.len);
+    } else {
+        qWarning("Overlay: snapforge_capture_fullscreen failed");
     }
 
-    // Size to primary screen
+    // Size overlay to the cursor's screen (not primary), matching the
+    // display we captured above.
     if (screen) {
         setGeometry(screen->geometry());
     }
@@ -188,6 +196,10 @@ void OverlayWindow::enterAnnotateMode() {
     // Create canvas over the selected region
     if (!m_canvas) {
         m_canvas = new AnnotationCanvas(&m_annotationState, m_screenshot, this);
+    } else {
+        // Canvas is reused across activations — refresh its screenshot
+        // reference so it crops from the LATEST capture, not the first one.
+        m_canvas->setScreenshot(m_screenshot);
     }
     m_canvas->setRegion(sel.x(), sel.y(), sel.width(), sel.height());
     m_canvas->setGeometry(sel);
@@ -350,7 +362,34 @@ void OverlayWindow::exitRecordSelectMode() {
 
 void OverlayWindow::emitRecordRegion() {
     QRect sel = selectedRect();
-    double dpr = snapforge_display_scale_factor();
+
+    // Fix #19: Qt side — bail out on zero/subpixel regions before hitting FFI.
+    if (sel.width() < 1 || sel.height() < 1) {
+        emit regionInvalid(QStringLiteral("selection is too small"));
+        return;
+    }
+
+    // Fix #11: refuse selections that span multiple displays. Capture backend
+    // is single-display only, so a multi-monitor rect would silently clip.
+    const QList<QScreen *> screens = QGuiApplication::screens();
+    bool contained = false;
+    QScreen *selScreen = nullptr;
+    for (QScreen *s : screens) {
+        if (s->geometry().contains(sel)) {
+            contained = true;
+            selScreen = s;
+            break;
+        }
+    }
+    if (!contained) {
+        emit regionInvalid(QStringLiteral("selection must be on one display"));
+        return;
+    }
+
+    // Fix #12: use the DPR of the display that actually contains the region,
+    // not the primary's.
+    double dpr = selScreen ? selScreen->devicePixelRatio()
+                           : snapforge_display_scale_factor();
     QRect pixelRegion(
         static_cast<int>(sel.x()      * dpr),
         static_cast<int>(sel.y()      * dpr),
@@ -639,7 +678,20 @@ void OverlayWindow::keyPressEvent(QKeyEvent *event) {
     } else if ((event->modifiers() & Qt::ControlModifier) && event->key() == Qt::Key_C && m_hasRegion) {
         // Cmd+C / Ctrl+C -- copy to clipboard
         QRect sel = selectedRect();
-        double dpr = snapforge_display_scale_factor();
+
+        // Fix #19: ignore zero-size regions.
+        if (sel.width() < 2 || sel.height() < 2) {
+            emit regionInvalid(QStringLiteral("selection is too small"));
+            return;
+        }
+
+        // Fix #12: use the DPR of the display containing the region.
+        QScreen *selScreen = nullptr;
+        for (QScreen *s : QGuiApplication::screens()) {
+            if (s->geometry().contains(sel)) { selScreen = s; break; }
+        }
+        double dpr = selScreen ? selScreen->devicePixelRatio()
+                               : snapforge_display_scale_factor();
         int px = static_cast<int>(sel.x() * dpr);
         int py = static_cast<int>(sel.y() * dpr);
         int pw = static_cast<int>(sel.width() * dpr);

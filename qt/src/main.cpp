@@ -13,6 +13,7 @@
 #include <QClipboard>
 #include <QMimeData>
 #include <QUrl>
+#include <QEvent>
 #include <QFile>
 #include <QFileInfo>
 #include <QGuiApplication>
@@ -21,6 +22,9 @@
 #include "HistoryWindow.h"
 #include "PreferencesWindow.h"
 #include "snapforge_ffi.h"
+#ifdef Q_OS_MAC
+#include "WorkspaceSleepObserver.h"
+#endif
 
 #ifdef Q_OS_MAC
 #include <Carbon/Carbon.h>
@@ -49,16 +53,39 @@ OSStatus hotkeyHandler(EventHandlerCallRef, EventRef event, void *) {
                       typeEventHotKeyID, nullptr,
                       sizeof(firedID), nullptr, &firedID);
 
+    // Fix #14: ignore any hotkey that would re-enter the overlay while it's
+    // already on screen. Repeat presses would otherwise stack activations
+    // and double-capture the screen.
+    const bool overlayBusy = g_overlay && g_overlay->isVisible();
+
+    auto notifyBusy = []() {
+        // Give the user some feedback so the hotkey doesn't feel dead. The
+        // record-toggle path intentionally bypasses this — stopping an
+        // in-progress recording is the whole point.
+        QApplication::beep();
+        auto *tray = qobject_cast<QSystemTrayIcon *>(
+            qApp->property("systemTray").value<QObject *>());
+        if (tray) {
+            tray->showMessage("Snapforge",
+                              "Capture in progress",
+                              QSystemTrayIcon::Information, 2000);
+        }
+    };
+
     switch (firedID.id) {
     case kHotkeyIDScreenshot:
-        if (g_overlay)
-            QTimer::singleShot(0, g_overlay, &OverlayWindow::activate);
+        if (g_overlay) {
+            if (overlayBusy) notifyBusy();
+            else QTimer::singleShot(0, g_overlay, &OverlayWindow::activate);
+        }
         break;
 
     case kHotkeyIDRecord:
         if (g_recording && g_overlay) {
             if (g_recording->isRecording()) {
                 QTimer::singleShot(0, g_recording, &RecordingManager::stopRecording);
+            } else if (overlayBusy) {
+                notifyBusy();
             } else {
                 QTimer::singleShot(0, g_overlay, &OverlayWindow::activateForRecording);
             }
@@ -67,12 +94,16 @@ OSStatus hotkeyHandler(EventHandlerCallRef, EventRef event, void *) {
 
     case kHotkeyIDHistory:
         if (g_history) {
-            QTimer::singleShot(0, []() {
-                g_history->refreshHistory();
-                g_history->show();
-                g_history->raise();
-                g_history->activateWindow();
-            });
+            if (overlayBusy) {
+                notifyBusy();
+            } else {
+                QTimer::singleShot(0, []() {
+                    g_history->refreshHistory();
+                    g_history->show();
+                    g_history->raise();
+                    g_history->activateWindow();
+                });
+            }
         }
         break;
 
@@ -165,7 +196,25 @@ static void saveImage(const QImage &img) {
         if (saveDir) snapforge_free_string(saveDir);
     }
 
-    QDir().mkpath(dir);
+    // Fix #16: if the directory doesn't exist, try to create it. We skip the
+    // QFileInfo::isWritable pre-check — it's unreliable on macOS under
+    // sandboxing / TCC and can return false for paths that are in fact
+    // writable. Let snapforge_save_image attempt the write and surface the
+    // real errno via the tray if it fails.
+    QDir d(dir);
+    if (!d.exists()) {
+        if (!QDir().mkpath(dir)) {
+            auto *tray = qobject_cast<QSystemTrayIcon *>(
+                qApp->property("systemTray").value<QObject *>());
+            if (tray) {
+                tray->showMessage("Snapforge — Save failed",
+                                  "Could not create save directory: " + dir,
+                                  QSystemTrayIcon::Warning, 5000);
+            }
+            qWarning("Save failed: cannot create %s", qPrintable(dir));
+            return;
+        }
+    }
     QString filename = buildFilename(pattern, fmt);
     QString path = dir + "/" + filename;
 
@@ -184,6 +233,15 @@ static void saveImage(const QImage &img) {
                                   QSystemTrayIcon::Information, 2000);
             }
         }
+    } else {
+        auto *tray = qobject_cast<QSystemTrayIcon *>(
+            qApp->property("systemTray").value<QObject *>());
+        if (tray) {
+            tray->showMessage("Snapforge — Save failed",
+                              "Could not write " + filename + " (disk full or permission denied?)",
+                              QSystemTrayIcon::Warning, 5000);
+        }
+        qWarning("Save failed: snapforge_save_image returned %d for %s", result, qPrintable(path));
     }
 }
 
@@ -259,6 +317,12 @@ int main(int argc, char *argv[]) {
     // Create manager/window instances
     RecordingManager recording;
 
+#ifdef Q_OS_MAC
+    // Fix #10: auto-pause/resume around system sleep.
+    WorkspaceSleepObserver sleepObserver(&recording);
+    Q_UNUSED(sleepObserver);
+#endif
+
     // Connect recording requested from overlay
     QObject::connect(&overlay, &OverlayWindow::recordingRequested,
                      [&](int display, QRect region) {
@@ -275,6 +339,24 @@ int main(int argc, char *argv[]) {
     PreferencesWindow prefs;
     g_prefs = &prefs;
     g_prefsRef = &prefs;
+
+    // Fix #20: re-apply theme whenever the system palette changes. The
+    // filter fires for any QApplication palette change (which QPA triggers
+    // on macOS dark mode flips). "Auto" follows; explicit Light/Dark ignore.
+    class PaletteFilter : public QObject {
+    public:
+        PreferencesWindow *prefs;
+        explicit PaletteFilter(PreferencesWindow *p, QObject *parent)
+            : QObject(parent), prefs(p) {}
+        bool eventFilter(QObject *obj, QEvent *event) override {
+            if (event->type() == QEvent::ApplicationPaletteChange && prefs) {
+                prefs->applyTheme();
+            }
+            return QObject::eventFilter(obj, event);
+        }
+    };
+    auto *paletteFilter = new PaletteFilter(&prefs, &app);
+    app.installEventFilter(paletteFilter);
 
     // Sync prefs → overlay
     auto syncPrefsToOverlay = [&]() {
@@ -456,6 +538,15 @@ int main(int argc, char *argv[]) {
     tray.setToolTip("Snapforge");
     app.setProperty("systemTray", QVariant::fromValue(static_cast<QObject *>(&tray)));
 
+    // Q2: surface invalid-selection feedback (too small, multi-display) via
+    // the tray instead of silently dropping. Wired here because `tray` needs
+    // to exist first.
+    QObject::connect(&overlay, &OverlayWindow::regionInvalid,
+                     [&tray](const QString &reason) {
+        tray.showMessage("Snapforge — Selection invalid",
+                         reason,
+                         QSystemTrayIcon::Information, 3000);
+    });
 
     // Stack-allocated so the menu is destroyed deterministically when main returns.
     // QMenu requires a QWidget parent and QSystemTrayIcon is a QObject, so we can't

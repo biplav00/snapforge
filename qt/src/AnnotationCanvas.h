@@ -14,6 +14,7 @@ class AnnotationCanvas : public QWidget {
 public:
     explicit AnnotationCanvas(AnnotationState *state, const QImage &screenshot, QWidget *parent = nullptr);
 
+    void setScreenshot(const QImage &screenshot);
     void setRegion(int x, int y, int w, int h);
 
     QImage compositeImage() const;

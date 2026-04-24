@@ -70,6 +70,38 @@ impl ClickTracker {
 #[cfg(target_os = "macos")]
 pub use macos_tap::{has_accessibility_permission, MacOSClickTapHandle};
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_tracker_new_and_recent_empty() {
+        let t = ClickTracker::new();
+        let r = t.recent(1000);
+        assert!(r.is_empty());
+    }
+
+    #[test]
+    fn test_tracker_add_and_recent() {
+        let t = ClickTracker::new();
+        t.add(10.0, 20.0);
+        let r = t.recent(10_000);
+        assert_eq!(r.len(), 1);
+        assert_eq!(r[0].x, 10.0);
+    }
+
+    // Tap creation requires Accessibility permission and a live CGSession;
+    // skip in CI / sandbox by default.
+    #[cfg(target_os = "macos")]
+    #[ignore]
+    #[test]
+    fn test_macos_tap_start_drop() {
+        let t = ClickTracker::new();
+        let h = t.start_macos_tap();
+        drop(h);
+    }
+}
+
 /// Check if click tracking is available (Accessibility permission granted on macOS).
 pub fn has_click_tracking_permission() -> bool {
     #[cfg(target_os = "macos")]
@@ -106,6 +138,14 @@ mod macos_tap {
     const KCG_EVENT_TAP_OPTION_LISTEN_ONLY: u32 = 1;
     const KCG_EVENT_LEFT_MOUSE_DOWN: u32 = 1;
     const KCG_EVENT_RIGHT_MOUSE_DOWN: u32 = 3;
+    /// Emitted when CG disables our tap because our callback took too long
+    /// OR because Accessibility permission was revoked. Value: 0xFFFFFFFE.
+    const KCG_EVENT_TAP_DISABLED_BY_TIMEOUT: u32 = 0xFFFF_FFFE;
+    /// Emitted when the tap was disabled via `CGEventTapEnable(false)`.
+    const KCG_EVENT_TAP_DISABLED_BY_USER_INPUT: u32 = 0xFFFF_FFFF;
+    /// If we fail to re-enable this many times in a row, give up — otherwise
+    /// we could spin forever on a permanently revoked permission.
+    const MAX_REENABLE_ATTEMPTS: u32 = 5;
 
     #[repr(C)]
     struct CGPoint {
@@ -185,11 +225,13 @@ mod macos_tap {
 
     struct CallbackData {
         tracker: ClickTracker,
+        tap: std::sync::atomic::AtomicPtr<c_void>,
+        reenable_attempts: std::sync::atomic::AtomicU32,
     }
 
     unsafe extern "C" fn event_callback(
         _proxy: CGEventTapProxy,
-        _event_type: CGEventType,
+        event_type: CGEventType,
         event: CGEventRef,
         user_info: *mut c_void,
     ) -> CGEventRef {
@@ -200,6 +242,41 @@ mod macos_tap {
         // drop it here; the owning thread will drop it on teardown.
         let arc_ptr = user_info as *const Arc<CallbackData>;
         let data = ManuallyDrop::new(unsafe { std::ptr::read(arc_ptr) });
+
+        // Handle tap-disabled notifications. macOS disables a tap when our
+        // callback exceeds the time budget or when Accessibility permission
+        // is revoked mid-session; we have to explicitly re-enable it.
+        if event_type == KCG_EVENT_TAP_DISABLED_BY_TIMEOUT
+            || event_type == KCG_EVENT_TAP_DISABLED_BY_USER_INPUT
+        {
+            let tap = data.tap.load(std::sync::atomic::Ordering::SeqCst);
+            if !tap.is_null() {
+                let attempts = data
+                    .reenable_attempts
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+                    + 1;
+                if attempts <= MAX_REENABLE_ATTEMPTS {
+                    CGEventTapEnable(tap, true);
+                    eprintln!(
+                        "[clicks] event tap disabled (type 0x{:x}); re-enabled (attempt {})",
+                        event_type, attempts
+                    );
+                } else {
+                    eprintln!(
+                        "[clicks] event tap disabled (type 0x{:x}); giving up after {} attempts — \
+                         Accessibility permission may have been revoked",
+                        event_type, attempts
+                    );
+                }
+            }
+            return event;
+        }
+
+        // NOTE: the re-enable counter is intentionally monotonic. Resetting it
+        // on a healthy click lets a permanently-denied permission loop forever
+        // (revoke → re-enable fails → click from another app → reset → revoke
+        // again). After MAX_REENABLE_ATTEMPTS permanent failures we log once
+        // and stop retrying; the tap stays disabled and the tracker goes quiet.
         let loc = CGEventGetLocation(event);
         data.tracker.add(loc.x, loc.y);
         event
@@ -218,10 +295,19 @@ mod macos_tap {
         let (tx, rx) = mpsc::sync_channel::<SetupResult>(1);
 
         let thread = std::thread::spawn(move || {
+            // Additionally listen for tap-disabled events so we can re-enable
+            // on timeout / revoked permission. CGEventMask is a bit field of
+            // CGEventType values; both disable codes are > 63 so we can't OR
+            // them into the mask, but CG delivers them unconditionally when
+            // they fire on our tap.
             let mask: CGEventMask =
                 (1u64 << KCG_EVENT_LEFT_MOUSE_DOWN) | (1u64 << KCG_EVENT_RIGHT_MOUSE_DOWN);
 
-            let data = Arc::new(CallbackData { tracker });
+            let data = Arc::new(CallbackData {
+                tracker,
+                tap: std::sync::atomic::AtomicPtr::new(std::ptr::null_mut()),
+                reenable_attempts: std::sync::atomic::AtomicU32::new(0),
+            });
             // Heap-allocate a copy of the Arc that the C callback will borrow.
             // We own this raw pointer on this thread and free it after CFRunLoopRun returns.
             let data_raw: *mut Arc<CallbackData> = Box::into_raw(Box::new(Arc::clone(&data)));
@@ -246,6 +332,12 @@ mod macos_tap {
                 let _ = tx.send(SetupResult::Err);
                 return;
             }
+
+            // Publish the tap pointer BEFORE wiring the run loop source and
+            // enabling the tap. If CG dispatches a disable-notification the
+            // instant the source is added, the callback must be able to find
+            // the tap to re-enable it.
+            data.tap.store(tap, std::sync::atomic::Ordering::SeqCst);
 
             let source =
                 unsafe { CFMachPortCreateRunLoopSource(ptr::null(), tap, 0) };

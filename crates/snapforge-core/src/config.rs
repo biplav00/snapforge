@@ -164,8 +164,52 @@ impl AppConfig {
             return Ok(Self::default());
         }
         let contents = std::fs::read_to_string(&path)?;
-        let config: Self = serde_json::from_str(&contents)?;
-        Ok(config)
+        match serde_json::from_str::<Self>(&contents) {
+            Ok(config) => Ok(config),
+            Err(e) => {
+                // Preserve the corrupt file with a timestamped suffix instead of
+                // clobbering it, then return defaults so the app still boots.
+                let ts = chrono::Local::now().format("%Y%m%d-%H%M%S");
+                let bak = path.with_file_name(format!(
+                    "{}.bak-{}",
+                    path.file_name()
+                        .map(|n| n.to_string_lossy().to_string())
+                        .unwrap_or_else(|| "config.json".into()),
+                    ts
+                ));
+                // Use copy-then-overwrite rather than rename. Rename can fail
+                // across filesystems or on locked files; copy is more forgiving
+                // and, crucially, if the copy fails we still want to replace
+                // the corrupt file with defaults so the app boots cleanly.
+                let default = Self::default();
+                match std::fs::copy(&path, &bak) {
+                    Ok(_) => eprintln!(
+                        "[config] corrupt config at {} ({}); preserved as {}; using defaults",
+                        path.display(),
+                        e,
+                        bak.display()
+                    ),
+                    Err(copy_err) => eprintln!(
+                        "[config] corrupt config at {} ({}); failed to back up to {}: {}; \
+                         overwriting with defaults anyway",
+                        path.display(),
+                        e,
+                        bak.display(),
+                        copy_err
+                    ),
+                }
+                if let Ok(bytes) = serde_json::to_vec_pretty(&default) {
+                    if let Err(write_err) = std::fs::write(&path, bytes) {
+                        eprintln!(
+                            "[config] failed to write default config to {}: {}",
+                            path.display(),
+                            write_err
+                        );
+                    }
+                }
+                Ok(default)
+            }
+        }
     }
 
     pub fn save(&self) -> Result<(), ConfigError> {

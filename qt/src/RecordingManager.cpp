@@ -2,6 +2,8 @@
 
 #include <QDateTime>
 #include <QDebug>
+#include <QFile>
+#include <QFileInfo>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonValue>
@@ -219,7 +221,30 @@ void RecordingManager::stopRecording()
         return;
     }
 
-    snapforge_history_add(m_outputPath.toUtf8().constData());
+    // Guard against "success but the file is empty / gone" — happens when
+    // the volume runs out of space mid-record, or when the mp4 is missing its
+    // moov atom (truncated container). Delegate the structural check to Rust.
+    QFileInfo fi(m_outputPath);
+    if (!fi.exists() || fi.size() == 0) {
+        emit recordingError(QStringLiteral("Recording output is empty or missing (disk full?)"));
+        return;
+    }
+    if (snapforge_is_incomplete_mp4(m_outputPath.toUtf8().constData()) == 1) {
+        emit recordingError(QStringLiteral("Recording output is corrupt (missing moov atom)"));
+        return;
+    }
+
+    int addRc = snapforge_history_add(m_outputPath.toUtf8().constData());
+    if (addRc == -2) {
+        // Benign: Rust detected an incomplete mp4 and skipped indexing. This
+        // shouldn't normally happen here since we already checked above, but
+        // handle it defensively as a warning (no error signal).
+        qWarning("RecordingManager: history skipped incomplete mp4: %s",
+                 qUtf8Printable(m_outputPath));
+    } else if (addRc == -1) {
+        emit recordingError(QStringLiteral("Failed to add recording to history"));
+        return;
+    }
 
     emit recordingStopped(m_outputPath);
 }

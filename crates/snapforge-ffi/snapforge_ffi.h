@@ -97,7 +97,9 @@ char *snapforge_last_recording_error(void);
 /* List history entries as JSON. Caller frees via snapforge_free_string. Returns NULL on error. */
 char *snapforge_history_list(void);
 
-/* Add a file path to history. Returns 0 on success, -1 on error. */
+/* Add a file path to history.
+ * Returns 0 on success, -1 on error, -2 if skipped because the file is an
+ * incomplete mp4 (non-fatal; caller may warn). */
 int snapforge_history_add(const char *path);
 
 /* Delete a history entry by path. Returns 0 on success, -1 on error. */
@@ -105,6 +107,10 @@ int snapforge_history_delete(const char *path);
 
 /* Clear all history. Returns 0 on success, -1 on error. */
 int snapforge_history_clear(void);
+
+/* Returns 1 if the given path is an incomplete mp4 (zero-byte or no moov atom),
+ * 0 otherwise. Returns -1 on null/invalid input. Non-mp4 paths return 0. */
+int snapforge_is_incomplete_mp4(const char *path);
 
 /* --- Config --- */
 

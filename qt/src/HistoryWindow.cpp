@@ -13,6 +13,7 @@
 #include <QLabel>
 #include <QMessageBox>
 #include <QPixmap>
+#include <QPointer>
 #include <QPushButton>
 #include <QResizeEvent>
 #include <QScrollArea>
@@ -457,8 +458,19 @@ void HistoryWindow::resizeEvent(QResizeEvent *event) {
 void HistoryWindow::onCopyEntry(const QString &path) {
     // M10: load the image off the UI thread (it can be several MB) and only
     // touch the clipboard once the decoded RGBA pixels are ready.
+    //
+    // Fix #13: the watcher is parented to `this` so it dies with the window,
+    // and we capture a QPointer guard so the continuation no-ops rather than
+    // touching a freed `this` if the window closed mid-decode.
     auto *watcher = new QFutureWatcher<QImage>(this);
-    connect(watcher, &QFutureWatcher<QImage>::finished, this, [watcher]() {
+    QPointer<HistoryWindow> guard(this);
+    connect(watcher, &QFutureWatcher<QImage>::finished, this, [watcher, guard]() {
+        if (!guard) {
+            // Parent (this) was destroyed, which means Qt has already
+            // scheduled the watcher for deletion as a child. Calling
+            // deleteLater() here would be a double-delete. Just bail.
+            return;
+        }
         QImage rgba = watcher->result();
         if (!rgba.isNull()) {
             snapforge_copy_to_clipboard(rgba.constBits(),

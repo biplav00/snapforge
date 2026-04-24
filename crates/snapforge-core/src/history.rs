@@ -22,9 +22,20 @@ fn thumbnail_tx() -> &'static Mutex<Option<mpsc::Sender<ThumbJob>>> {
             .name("snapforge-thumbnails".into())
             .spawn(move || {
                 while let Ok(job) = rx.recv() {
-                    if let Ok(img) = image::open(&job.image_path) {
-                        let thumb = img.thumbnail(200, 200);
-                        let _ = thumb.save(&job.thumb_path);
+                    // Isolate any panic inside image decode / save so one bad
+                    // file can't take down the worker and block every future
+                    // thumbnail job.
+                    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        if let Ok(img) = image::open(&job.image_path) {
+                            let thumb = img.thumbnail(200, 200);
+                            let _ = thumb.save(&job.thumb_path);
+                        }
+                    }));
+                    if result.is_err() {
+                        eprintln!(
+                            "[history] thumbnail worker caught panic for {}",
+                            job.image_path
+                        );
                     }
                 }
             })
@@ -162,6 +173,58 @@ impl ScreenshotHistory {
     }
 }
 
+/// Heuristic check for "ffmpeg was killed mid-write" — a file whose first 8
+/// bytes look like an MP4 (ftyp box) but that never got a `moov` atom written.
+/// Used by the FFI `snapforge_history_add` path to refuse to index garbage
+/// after a SIGKILL. Returns `false` for non-mp4 paths, missing files, or any
+/// IO error (we prefer a false negative to refusing a valid file).
+pub fn is_incomplete_mp4(path: &str) -> bool {
+    let p = std::path::Path::new(path);
+    let ext_is_mp4 = p
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|s| s.eq_ignore_ascii_case("mp4"))
+        .unwrap_or(false);
+    if !ext_is_mp4 {
+        return false;
+    }
+
+    let Ok(mut f) = std::fs::File::open(p) else {
+        return false;
+    };
+    use std::io::{Read, Seek, SeekFrom};
+
+    let mut header = [0u8; 8];
+    if f.read_exact(&mut header).is_err() {
+        return false;
+    }
+    // Bytes 4..8 = box type. Real MP4s start with an `ftyp` box.
+    if &header[4..8] != b"ftyp" {
+        return false;
+    }
+
+    let Ok(metadata) = f.metadata() else {
+        return false;
+    };
+    let size = metadata.len();
+    if size < 16 {
+        return true; // practically empty — treat as incomplete
+    }
+
+    // Scan the last 64KB for a `moov` atom. ffmpeg (faststart OFF) writes the
+    // moov atom at the end of the file when it finalizes; an abruptly killed
+    // ffmpeg never gets there.
+    let tail_len = std::cmp::min(size, 64 * 1024);
+    if f.seek(SeekFrom::End(-(tail_len as i64))).is_err() {
+        return false;
+    }
+    let mut tail = vec![0u8; tail_len as usize];
+    if f.read_exact(&mut tail).is_err() {
+        return false;
+    }
+    !tail.windows(4).any(|w| w == b"moov")
+}
+
 /// Detect the media kind of a file from its extension.
 /// Returns "video" for mp4/mov/gif, "image" for everything else.
 pub fn media_kind(path: &str) -> &'static str {
@@ -173,5 +236,54 @@ pub fn media_kind(path: &str) -> &'static str {
     match ext.as_str() {
         "mp4" | "mov" | "m4v" | "webm" => "video",
         _ => "image",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    #[test]
+    fn non_mp4_extension_never_incomplete() {
+        assert!(!is_incomplete_mp4("foo.png"));
+        assert!(!is_incomplete_mp4("foo.mov"));
+        assert!(!is_incomplete_mp4("foo"));
+    }
+
+    #[test]
+    fn missing_file_is_not_incomplete() {
+        assert!(!is_incomplete_mp4("/definitely/not/here/xyz.mp4"));
+    }
+
+    #[test]
+    fn ftyp_without_moov_is_incomplete() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("broken.mp4");
+        let mut f = std::fs::File::create(&path).unwrap();
+        // 4 bytes size + "ftyp" + some filler — no moov atom anywhere.
+        let mut buf = vec![0u8; 0];
+        buf.extend_from_slice(&[0, 0, 0, 0x20]);
+        buf.extend_from_slice(b"ftyp");
+        buf.extend_from_slice(&[0u8; 64]);
+        f.write_all(&buf).unwrap();
+        drop(f);
+        assert!(is_incomplete_mp4(path.to_str().unwrap()));
+    }
+
+    #[test]
+    fn ftyp_with_moov_is_complete() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ok.mp4");
+        let mut f = std::fs::File::create(&path).unwrap();
+        let mut buf = vec![0u8; 0];
+        buf.extend_from_slice(&[0, 0, 0, 0x20]);
+        buf.extend_from_slice(b"ftyp");
+        buf.extend_from_slice(&[0u8; 64]);
+        buf.extend_from_slice(b"moov");
+        buf.extend_from_slice(&[0u8; 16]);
+        f.write_all(&buf).unwrap();
+        drop(f);
+        assert!(!is_incomplete_mp4(path.to_str().unwrap()));
     }
 }

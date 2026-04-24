@@ -40,7 +40,7 @@ qt_add_resources(SNAPFORGE_QRC_FILES
     "${CMAKE_SOURCE_DIR}/resources/snapforge.qrc"
 )
 
-add_executable(snapforge-qt MACOSX_BUNDLE
+set(SNAPFORGE_SOURCES
     src/main.cpp
     src/OverlayWindow.cpp
     src/AnnotationState.cpp
@@ -50,6 +50,17 @@ add_executable(snapforge-qt MACOSX_BUNDLE
     src/RecordingManager.cpp
     src/HistoryWindow.cpp
     src/PreferencesWindow.cpp
+)
+
+if(APPLE)
+    list(APPEND SNAPFORGE_SOURCES src/WorkspaceSleepObserver.mm)
+    # The .mm file uses ARC's __bridge_retained / __bridge_transfer; enable ARC.
+    set_source_files_properties(src/WorkspaceSleepObserver.mm
+        PROPERTIES COMPILE_FLAGS "-fobjc-arc")
+endif()
+
+add_executable(snapforge-qt MACOSX_BUNDLE
+    ${SNAPFORGE_SOURCES}
     ${APP_ICON_MACOSX}
     ${SNAPFORGE_QRC_FILES}
 )

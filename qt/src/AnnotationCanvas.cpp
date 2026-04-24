@@ -52,6 +52,11 @@ AnnotationCanvas::AnnotationCanvas(AnnotationState *state,
 // setRegion
 // ---------------------------------------------------------------------------
 
+void AnnotationCanvas::setScreenshot(const QImage &screenshot) {
+    m_fullScreenshot = screenshot;
+    m_croppedScreenshot = QImage();
+}
+
 void AnnotationCanvas::setRegion(int x, int y, int w, int h) {
     setGeometry(x, y, w, h);
 
@@ -95,6 +100,14 @@ QImage AnnotationCanvas::compositeImage() const {
 
     QPainter p(&result);
     p.setRenderHint(QPainter::Antialiasing, true);
+
+    // Annotations stored in widget-local (logical point) coords; composited
+    // image is at pixel size (point_size * dpr). Scale painter so annotation
+    // coords map into pixel space.
+    const double dpr = snapforge_display_scale_factor();
+    if (dpr > 0.0 && dpr != 1.0) {
+        p.scale(dpr, dpr);
+    }
 
     for (const Annotation &a : m_state->annotations()) {
         AnnotationRenderer::render(p, a, m_croppedScreenshot);

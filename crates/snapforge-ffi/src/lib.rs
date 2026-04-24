@@ -8,7 +8,7 @@
 use std::ffi::{c_char, c_int, c_void, CStr, CString};
 use std::path::{Path, PathBuf};
 use std::ptr;
-use std::sync::Mutex;
+use std::sync::{Mutex, MutexGuard};
 
 /// Last recording-related error, set whenever a recording FFI call fails.
 /// Read via `snapforge_last_recording_error`.
@@ -17,6 +17,19 @@ static LAST_RECORDING_ERROR: Mutex<Option<String>> = Mutex::new(None);
 fn set_recording_error(msg: impl Into<String>) {
     if let Ok(mut guard) = LAST_RECORDING_ERROR.lock() {
         *guard = Some(msg.into());
+    }
+}
+
+/// Build a `CString` even when the input has embedded NUL bytes. The FFI
+/// contract is "null-terminated string" so we strip the NULs and log once
+/// so the silent corruption is at least visible in logs.
+fn cstring_sanitized(s: &str) -> Result<CString, std::ffi::NulError> {
+    if s.as_bytes().contains(&0) {
+        eprintln!("[snapforge] stripping embedded NUL from FFI string");
+        let cleaned: String = s.chars().filter(|c| *c != '\0').collect();
+        CString::new(cleaned)
+    } else {
+        CString::new(s)
     }
 }
 
@@ -89,6 +102,16 @@ pub extern "C" fn snapforge_capture_region(
     w: u32,
     h: u32,
 ) -> CapturedImage {
+    // Zero / subpixel regions would produce a null image or a crash depending
+    // on the backend. Short-circuit to the zeroed error struct.
+    if w < 1 || h < 1 {
+        return CapturedImage {
+            data: ptr::null_mut(),
+            len: 0,
+            width: 0,
+            height: 0,
+        };
+    }
     let region = Rect {
         x,
         y,
@@ -294,7 +317,7 @@ pub extern "C" fn snapforge_default_save_path() -> *mut c_char {
         }
     };
     let dir = &config.save_directory;
-    match CString::new(dir.to_string_lossy().as_ref()) {
+    match cstring_sanitized(dir.to_string_lossy().as_ref()) {
         Ok(cs) => cs.into_raw(),
         Err(_) => ptr::null_mut(),
     }
@@ -324,6 +347,14 @@ pub unsafe extern "C" fn snapforge_free_string(s: *mut c_char) {
 /// aliased `&mut` / `&` references on the same pointer.
 struct FfiRecordingHandle {
     inner: Mutex<Option<RecordingHandle>>,
+}
+
+impl FfiRecordingHandle {
+    /// Lock the inner mutex, recovering automatically if the record thread
+    /// panicked (which would otherwise poison the mutex and hand back UB to C).
+    fn lock_recording(&self) -> MutexGuard<'_, Option<RecordingHandle>> {
+        self.inner.lock().unwrap_or_else(|e| e.into_inner())
+    }
 }
 
 /// Start a screen recording.
@@ -453,13 +484,7 @@ pub unsafe extern "C" fn snapforge_stop_recording(handle: *mut c_void) -> c_int 
         return -1;
     }
     let wrapper = &*handle.cast::<FfiRecordingHandle>();
-    let taken = match wrapper.inner.lock() {
-        Ok(mut guard) => guard.take(),
-        Err(_) => {
-            set_recording_error("recording handle mutex poisoned");
-            return -1;
-        }
-    };
+    let taken = wrapper.lock_recording().take();
     match taken {
         Some(h) => match h.stop() {
             Ok(()) => 0,
@@ -484,9 +509,7 @@ pub unsafe extern "C" fn snapforge_pause_recording(handle: *mut c_void) -> c_int
         return -1;
     }
     let wrapper = &*handle.cast::<FfiRecordingHandle>();
-    let Ok(guard) = wrapper.inner.lock() else {
-        return -1;
-    };
+    let guard = wrapper.lock_recording();
     match guard.as_ref() {
         Some(h) => {
             h.pause();
@@ -507,9 +530,7 @@ pub unsafe extern "C" fn snapforge_resume_recording(handle: *mut c_void) -> c_in
         return -1;
     }
     let wrapper = &*handle.cast::<FfiRecordingHandle>();
-    let Ok(guard) = wrapper.inner.lock() else {
-        return -1;
-    };
+    let guard = wrapper.lock_recording();
     match guard.as_ref() {
         Some(h) => {
             h.resume();
@@ -530,9 +551,7 @@ pub unsafe extern "C" fn snapforge_is_paused(handle: *mut c_void) -> c_int {
         return 0;
     }
     let wrapper = &*handle.cast::<FfiRecordingHandle>();
-    let Ok(guard) = wrapper.inner.lock() else {
-        return 0;
-    };
+    let guard = wrapper.lock_recording();
     match guard.as_ref() {
         Some(h) => c_int::from(h.is_paused()),
         None => 0,
@@ -548,7 +567,7 @@ pub extern "C" fn snapforge_last_recording_error() -> *mut c_char {
         Err(_) => return ptr::null_mut(),
     };
     match guard.as_deref() {
-        Some(msg) => match CString::new(msg) {
+        Some(msg) => match cstring_sanitized(msg) {
             Ok(cs) => cs.into_raw(),
             Err(_) => ptr::null_mut(),
         },
@@ -569,9 +588,7 @@ pub unsafe extern "C" fn snapforge_is_recording(handle: *mut c_void) -> c_int {
         return 0;
     }
     let wrapper = &*handle.cast::<FfiRecordingHandle>();
-    let Ok(guard) = wrapper.inner.lock() else {
-        return 0;
-    };
+    let guard = wrapper.lock_recording();
     match guard.as_ref() {
         Some(h) => c_int::from(h.is_running()),
         None => 0,
@@ -613,7 +630,8 @@ pub extern "C" fn snapforge_history_list() -> *mut c_char {
 }
 
 /// Add a file path to the screenshot history.
-/// Returns 0 on success, -1 on error.
+/// Returns 0 on success, -1 on error, -2 if the file was skipped because it is
+/// an incomplete mp4 (non-fatal; caller may warn).
 ///
 /// # Safety
 ///
@@ -626,6 +644,16 @@ pub unsafe extern "C" fn snapforge_history_add(path: *const c_char) -> c_int {
     let Ok(path_str) = CStr::from_ptr(path).to_str() else {
         return -1;
     };
+    // Refuse to index half-written recordings (e.g. after the app was SIGKILLed
+    // mid-record). Return -2 so the caller can distinguish this benign skip
+    // from a real error.
+    if snapforge_core::history::is_incomplete_mp4(path_str) {
+        eprintln!(
+            "[history] skipping incomplete mp4 (no moov atom): {}",
+            path_str
+        );
+        return -2;
+    }
     let Ok(mut history) = ScreenshotHistory::load() else {
         return -1;
     };
@@ -668,6 +696,28 @@ pub extern "C" fn snapforge_history_clear() -> c_int {
     match history.clear() {
         Ok(()) => 0,
         Err(_) => -1,
+    }
+}
+
+/// Returns 1 if the given path looks like a recording that was never finalized
+/// (zero-byte or missing moov atom), 0 otherwise. Non-mp4 paths always return 0.
+/// Returns -1 if the input pointer is null or not valid UTF-8.
+///
+/// # Safety
+///
+/// `path` must be a valid null-terminated UTF-8 string.
+#[no_mangle]
+pub unsafe extern "C" fn snapforge_is_incomplete_mp4(path: *const c_char) -> c_int {
+    if path.is_null() {
+        return -1;
+    }
+    let Ok(path_str) = CStr::from_ptr(path).to_str() else {
+        return -1;
+    };
+    if snapforge_core::history::is_incomplete_mp4(path_str) {
+        1
+    } else {
+        0
     }
 }
 
