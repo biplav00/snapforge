@@ -1,0 +1,8 @@
+<!DOCTYPE RCC>
+<RCC version="1.0">
+  <qresource prefix="/icons">
+    <file alias="tray.png">icons/128x128.png</file>
+    <file alias="tray@2x.png">icons/128x128@2x.png</file>
+    <file alias="app-512.png">icons/512x512.png</file>
+  </qresource>
+</RCC>
