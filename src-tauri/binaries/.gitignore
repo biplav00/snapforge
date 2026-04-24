@@ -1,4 +1,0 @@
-# FFmpeg sidecar binaries (downloaded by scripts/download-ffmpeg.sh)
-ffmpeg-*
-!.gitkeep
-!.gitignore

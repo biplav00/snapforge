@@ -3,8 +3,6 @@ resolver = "2"
 members = [
     "crates/snapforge-core",
     "crates/snapforge-ffi",
-    "cli",
-    "src-tauri",
 ]
 
 [profile.release]

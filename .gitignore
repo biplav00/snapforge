@@ -1,10 +1,6 @@
 # Rust
 /target
 
-# Node
-node_modules/
-dist/
-
 # macOS
 .DS_Store
 *.swp
@@ -22,20 +18,9 @@ dist/
 .env
 .env.*
 
-# Tauri
-src-tauri/target/
-src-tauri/gen/
-
-# FFmpeg binaries (downloaded by scripts/download-ffmpeg.sh)
-src-tauri/binaries/ffmpeg-*
-
 # Coverage
 coverage/
 lcov-rust.info
 
 # Build artifacts
-src-tauri/target/**/*.dmg
 qt/build/
-
-# Backups
-src-tauri/icons/icon.ico.bak

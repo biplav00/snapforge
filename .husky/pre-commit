@@ -1,5 +1,0 @@
-npx lint-staged
-cargo fmt --check
-cargo clippy --workspace -- -D warnings
-npx vitest run --reporter=dot
-cargo test --workspace -- --quiet

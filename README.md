@@ -14,7 +14,6 @@ Fast, lightweight screenshot and screen recording tool with annotation support.
 - **Auto-copy to clipboard** -- Annotated screenshots copied automatically
 - **Remember last region** -- Re-capture the same area instantly
 - **Cross-platform** -- macOS, Windows, Linux
-- **Auto-update support** -- Built-in updater via Tauri plugin
 - **CLI for scripted captures** -- Automate screenshots and recordings from the terminal
 
 ## Tech Stack
@@ -22,29 +21,37 @@ Fast, lightweight screenshot and screen recording tool with annotation support.
 | Layer | Technology |
 |-------|------------|
 | Core | Rust (`snapforge-core`) |
-| GUI | Tauri v2 |
-| Frontend | Svelte 5, TypeScript, Vite |
+| FFI | Rust (`snapforge-ffi`) -- C API for Qt integration |
+| GUI | Qt 6 (C++17) |
 | Recording | FFmpeg (piped via stdin) |
-| Linting | Biome |
-| Testing | Vitest + Cargo test |
+| CLI | Rust (`cli`) |
 
 ## Installation
 
 ### Prerequisites
 
 - [Rust](https://rustup.rs/) (1.70+)
-- [Node.js](https://nodejs.org/) (20+)
-- [Cargo Tauri CLI](https://v2.tauri.app/start/): `cargo install tauri-cli --version "^2"`
+- [Qt 6](https://www.qt.io/) (Widgets, Gui)
+- [CMake](https://cmake.org/) (3.20+)
 - [FFmpeg](https://ffmpeg.org/) (for screen recording): `brew install ffmpeg`
 
 ### Build from Source
 
 ```bash
-npm install
-cargo tauri build
+# Build the Rust FFI library
+cargo build --release -p snapforge-ffi
+
+# Build the Qt application
+cd qt
+mkdir -p build && cd build
+cmake ..
+make
+
+# Create DMG (macOS)
+make dmg
 ```
 
-The built application will be in `src-tauri/target/release`.
+The built application will be in `qt/build/snapforge-qt.app`.
 
 ## Keyboard Shortcuts
 
@@ -100,39 +107,17 @@ snapforge record --region 0,0,1920,1080 --format gif --fps 15
 ## Development
 
 ```bash
-# Install dependencies
-npm install
+# Build Rust workspace
+cargo build
 
-# Run in development mode
-cargo tauri dev
+# Run tests
+cargo test
 
-# Run frontend dev server only
-npm run dev
+# Run clippy
+cargo clippy --workspace
 
-# Lint
-npm run lint
-
-# Auto-fix lint issues
-npm run lint:fix
-
-# Format code
-npm run format
-
-# Type-check
-npm run typecheck
-
-# Run frontend tests
-npm run test
-
-# Run all tests (frontend + Rust)
-npm run test:all
-
-# Test coverage
-npm run test:coverage
-npm run test:coverage:rust
-
-# Full check (lint + typecheck)
-npm run check
+# Format
+cargo fmt --all
 ```
 
 ## License
