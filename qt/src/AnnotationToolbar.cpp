@@ -135,7 +135,12 @@ void AnnotationToolbar::buildUi()
 
         const ToolType tool = entry.tool;
         connect(btn, &QPushButton::clicked, this, [this, tool]() {
-            m_state->setActiveTool(tool);
+            // Toggle: clicking the active tool deselects it.
+            if (m_state->activeTool() == tool) {
+                m_state->setActiveTool(ToolType::None);
+            } else {
+                m_state->setActiveTool(tool);
+            }
         });
 
         m_toolButtons.append(btn);

@@ -15,6 +15,7 @@ class OverlayWindow : public QWidget {
 public:
     explicit OverlayWindow(QWidget *parent = nullptr);
     void activate();
+    void activateFullscreen();
     void activateForRecording();
     void setRememberRegion(bool enabled) { m_rememberRegion = enabled; }
 

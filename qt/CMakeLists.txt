@@ -53,9 +53,13 @@ set(SNAPFORGE_SOURCES
 )
 
 if(APPLE)
-    list(APPEND SNAPFORGE_SOURCES src/WorkspaceSleepObserver.mm)
-    # The .mm file uses ARC's __bridge_retained / __bridge_transfer; enable ARC.
+    list(APPEND SNAPFORGE_SOURCES
+        src/WorkspaceSleepObserver.mm
+        src/SpaceChangeObserver.mm)
+    # The .mm files use ARC's __bridge_retained / __bridge_transfer; enable ARC.
     set_source_files_properties(src/WorkspaceSleepObserver.mm
+        PROPERTIES COMPILE_FLAGS "-fobjc-arc")
+    set_source_files_properties(src/SpaceChangeObserver.mm
         PROPERTIES COMPILE_FLAGS "-fobjc-arc")
 endif()
 

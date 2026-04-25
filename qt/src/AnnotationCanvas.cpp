@@ -157,6 +157,12 @@ void AnnotationCanvas::mousePressEvent(QMouseEvent *event) {
     const QPointF pos = event->position();
     const ToolType tool = m_state->activeTool();
 
+    // No tool selected — let the overlay handle the press (resize / move).
+    if (tool == ToolType::None) {
+        event->ignore();
+        return;
+    }
+
     // --- ColorPicker ---
     if (tool == ToolType::ColorPicker) {
         if (!m_croppedScreenshot.isNull()) {

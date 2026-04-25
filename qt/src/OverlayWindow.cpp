@@ -138,6 +138,16 @@ void OverlayWindow::activateInternal() {
             ((void (*)(id, SEL, unsigned long))objc_msgSend)(
                 nsWindow, sel_registerName("setCollectionBehavior:"), behavior);
 
+            // Lock the NSWindow against user-initiated edge-drag move/resize.
+            // Qt::Tool gives macOS a resizable utility-window border by default.
+            ((void (*)(id, SEL, BOOL))objc_msgSend)(
+                nsWindow, sel_registerName("setMovable:"), NO);
+            ((void (*)(id, SEL, BOOL))objc_msgSend)(
+                nsWindow, sel_registerName("setMovableByWindowBackground:"), NO);
+            // Clear all NSWindowStyleMask bits that imply resizability.
+            ((void (*)(id, SEL, unsigned long))objc_msgSend)(
+                nsWindow, sel_registerName("setStyleMask:"), 0UL); // NSWindowStyleMaskBorderless
+
             // Activate app + make key window (required for accessory apps after hide)
             id nsApp = ((id (*)(id, SEL))objc_msgSend)(
                 (id)objc_getClass("NSApplication"), sel_registerName("sharedApplication"));
@@ -167,6 +177,16 @@ void OverlayWindow::activate() {
             enterAnnotateMode();
         }
     }
+}
+
+void OverlayWindow::activateFullscreen() {
+    m_purpose = Screenshot;
+    activateInternal();
+    m_startPos = QPoint(0, 0);
+    m_endPos = QPoint(width() - 1, height() - 1);
+    m_hasRegion = true;
+    m_drawing = false;
+    enterAnnotateMode();
 }
 
 void OverlayWindow::activateForRecording() {
@@ -464,11 +484,12 @@ void OverlayWindow::paintEvent(QPaintEvent *) {
     QPainter p(this);
     p.setRenderHint(QPainter::Antialiasing);
 
-    // Draw pre-captured screenshot as background (pre-scaled in activateInternal).
-    if (!m_scaledScreenshot.isNull()) {
-        p.drawImage(0, 0, m_scaledScreenshot);
-    } else if (!m_screenshot.isNull()) {
-        p.drawImage(0, 0, m_screenshot.scaled(size(), Qt::IgnoreAspectRatio, Qt::FastTransformation));
+    // Draw pre-captured screenshot as background. Fit to the widget rect so
+    // it always covers exactly the overlay regardless of widget size or
+    // image's stored dpr. Using rect()-target also avoids stale scale when
+    // geometry changes between activations.
+    if (!m_screenshot.isNull()) {
+        p.drawImage(rect(), m_screenshot);
     }
 
     if (m_drawing || m_hasRegion) {

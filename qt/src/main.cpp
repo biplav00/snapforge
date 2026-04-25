@@ -24,6 +24,7 @@
 #include "snapforge_ffi.h"
 #ifdef Q_OS_MAC
 #include "WorkspaceSleepObserver.h"
+#include "SpaceChangeObserver.h"
 #endif
 
 #ifdef Q_OS_MAC
@@ -42,10 +43,11 @@ static PreferencesWindow *g_prefs     = nullptr;
 static const UInt32 kHotkeyIDScreenshot = 1;
 static const UInt32 kHotkeyIDRecord     = 2;
 static const UInt32 kHotkeyIDHistory    = 3;
+static const UInt32 kHotkeyIDFullscreen = 4;
 
 // H6: track every registered hotkey so we can unregister them on quit.
 // Previously we only kept the last one, so two were leaked on app exit.
-static std::array<EventHotKeyRef, 3> g_hotkeys = { nullptr, nullptr, nullptr };
+static std::array<EventHotKeyRef, 4> g_hotkeys = { nullptr, nullptr, nullptr, nullptr };
 
 OSStatus hotkeyHandler(EventHandlerCallRef, EventRef event, void *) {
     EventHotKeyID firedID;
@@ -57,6 +59,11 @@ OSStatus hotkeyHandler(EventHandlerCallRef, EventRef event, void *) {
     // already on screen. Repeat presses would otherwise stack activations
     // and double-capture the screen.
     const bool overlayBusy = g_overlay && g_overlay->isVisible();
+    qDebug("hotkey id=%u overlayExists=%d overlayVisible=%d overlayMinimized=%d",
+           (unsigned)firedID.id,
+           g_overlay != nullptr,
+           g_overlay && g_overlay->isVisible(),
+           g_overlay && g_overlay->isMinimized());
 
     auto notifyBusy = []() {
         // Give the user some feedback so the hotkey doesn't feel dead. The
@@ -77,6 +84,13 @@ OSStatus hotkeyHandler(EventHandlerCallRef, EventRef event, void *) {
         if (g_overlay) {
             if (overlayBusy) notifyBusy();
             else QTimer::singleShot(0, g_overlay, &OverlayWindow::activate);
+        }
+        break;
+
+    case kHotkeyIDFullscreen:
+        if (g_overlay) {
+            if (overlayBusy) notifyBusy();
+            else QTimer::singleShot(0, g_overlay, &OverlayWindow::activateFullscreen);
         }
         break;
 
@@ -138,6 +152,11 @@ void registerGlobalHotkey() {
     hotKeyID.id = kHotkeyIDHistory;
     RegisterEventHotKey(0x04, cmdKey | shiftKey, hotKeyID,
                         GetApplicationEventTarget(), 0, &g_hotkeys[2]);
+
+    // Cmd+Shift+F — Fullscreen capture (kVK_ANSI_F = 0x03)
+    hotKeyID.id = kHotkeyIDFullscreen;
+    RegisterEventHotKey(0x03, cmdKey | shiftKey, hotKeyID,
+                        GetApplicationEventTarget(), 0, &g_hotkeys[3]);
 }
 
 void unregisterGlobalHotkeys() {
@@ -321,6 +340,10 @@ int main(int argc, char *argv[]) {
     // Fix #10: auto-pause/resume around system sleep.
     WorkspaceSleepObserver sleepObserver(&recording);
     Q_UNUSED(sleepObserver);
+    // Re-activate overlay when user returns from another Space / fullscreen
+    // app — otherwise key-window state is lost and shortcuts go dead.
+    SpaceChangeObserver spaceObserver(&overlay);
+    Q_UNUSED(spaceObserver);
 #endif
 
     // Connect recording requested from overlay
@@ -558,6 +581,7 @@ int main(int argc, char *argv[]) {
         menu->clear();
 
         menu->addAction("Screenshot (Cmd+Shift+S)", &overlay, &OverlayWindow::activate);
+        menu->addAction("Capture Fullscreen (Cmd+Shift+F)", &overlay, &OverlayWindow::activateFullscreen);
 
         menu->addAction("Record (Cmd+Shift+R)", [&]() {
             if (recording.isRecording()) {

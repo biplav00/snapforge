@@ -8,6 +8,7 @@
 #include <variant>
 
 enum class ToolType {
+    None,
     Arrow,
     Rect,
     Circle,
