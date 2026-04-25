@@ -540,24 +540,6 @@ pub unsafe extern "C" fn snapforge_resume_recording(handle: *mut c_void) -> c_in
     }
 }
 
-/// Returns 1 if the recording is currently paused, 0 otherwise.
-///
-/// # Safety
-///
-/// `handle` must be a valid pointer returned by `snapforge_start_recording`.
-#[no_mangle]
-pub unsafe extern "C" fn snapforge_is_paused(handle: *mut c_void) -> c_int {
-    if handle.is_null() {
-        return 0;
-    }
-    let wrapper = &*handle.cast::<FfiRecordingHandle>();
-    let guard = wrapper.lock_recording();
-    match guard.as_ref() {
-        Some(h) => c_int::from(h.is_paused()),
-        None => 0,
-    }
-}
-
 /// Retrieve the last recording-related error message, or NULL if none.
 /// Caller must free via `snapforge_free_string`.
 #[no_mangle]

@@ -86,9 +86,6 @@ int snapforge_pause_recording(void *handle);
 /* Resume a paused recording. Returns 0 on success. */
 int snapforge_resume_recording(void *handle);
 
-/* Check whether a recording is paused. Returns 1 if paused, 0 otherwise. */
-int snapforge_is_paused(void *handle);
-
 /* Last recording error message, or NULL. Caller frees via snapforge_free_string. */
 char *snapforge_last_recording_error(void);
 

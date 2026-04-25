@@ -90,10 +90,6 @@ private:
     void refreshBadge(int rowIndex);
     static QString formatKeyToShortcut(int key, Qt::KeyboardModifiers mods);
 
-    // Applied stylesheet helpers
-    static QString cardButtonStyle(bool selected);
-    static QString pillButtonStyle(bool selected);
-
     // General tab
     QLineEdit   *m_saveDir        = nullptr;
     QCheckBox   *m_autoCopy       = nullptr;

@@ -192,28 +192,9 @@ fn handle_capture(
         )?;
         println!("Saved to: {}", path.display());
     } else {
-        // Launch the Tauri overlay app for interactive region selection
-        let exe = std::env::current_exe().unwrap_or_default();
-        let app_dir = exe.parent().unwrap_or(std::path::Path::new("."));
-        let app_path = app_dir.join("screensnap-app");
-
-        if app_path.exists() {
-            let status = std::process::Command::new(&app_path)
-                .status()
-                .map_err(|e| {
-                    eprintln!("Failed to launch overlay: {}", e);
-                    std::process::exit(1);
-                })
-                .unwrap();
-
-            if !status.success() {
-                std::process::exit(status.code().unwrap_or(1));
-            }
-        } else {
-            eprintln!("Interactive region selection requires the ScreenSnap app.");
-            eprintln!("Use --fullscreen, --region, or --last-region for CLI-only capture.");
-            std::process::exit(1);
-        }
+        eprintln!("Interactive region selection is not supported by the CLI.");
+        eprintln!("Use --fullscreen, --region, or --last-region for CLI-only capture.");
+        std::process::exit(1);
     }
 
     Ok(())

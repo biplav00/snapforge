@@ -225,20 +225,6 @@ pub fn is_incomplete_mp4(path: &str) -> bool {
     !tail.windows(4).any(|w| w == b"moov")
 }
 
-/// Detect the media kind of a file from its extension.
-/// Returns "video" for mp4/mov/gif, "image" for everything else.
-pub fn media_kind(path: &str) -> &'static str {
-    let ext = std::path::Path::new(path)
-        .extension()
-        .and_then(|e| e.to_str())
-        .map(str::to_lowercase)
-        .unwrap_or_default();
-    match ext.as_str() {
-        "mp4" | "mov" | "m4v" | "webm" => "video",
-        _ => "image",
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
