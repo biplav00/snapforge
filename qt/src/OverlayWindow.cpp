@@ -11,6 +11,8 @@
 #include <QTimer>
 #include <QFontMetrics>
 #include <QPushButton>
+#include <algorithm>
+#include <cmath>
 #include "snapforge_ffi.h"
 
 #ifdef Q_OS_MAC
@@ -205,6 +207,111 @@ bool OverlayWindow::isOnRegionEdge(QPoint pos) const {
     QRect outer = sel.adjusted(-margin, -margin, margin, margin);
     QRect inner = sel.adjusted(margin, margin, -margin, -margin);
     return outer.contains(pos) && !inner.contains(pos);
+}
+
+OverlayWindow::ResizeEdge OverlayWindow::edgeAt(QPoint pos) const {
+    if (!m_hasRegion) return EdgeNone;
+    QRect sel = selectedRect();
+    const int m = 8;
+
+    // Quick-reject: must be near the rect at all
+    QRect outer = sel.adjusted(-m, -m, m, m);
+    if (!outer.contains(pos)) return EdgeNone;
+
+    auto near = [&](int v, int target) {
+        return std::abs(v - target) <= m;
+    };
+
+    bool nL = near(pos.x(), sel.left());
+    bool nR = near(pos.x(), sel.right());
+    bool nT = near(pos.y(), sel.top());
+    bool nB = near(pos.y(), sel.bottom());
+
+    // Corner detection takes priority
+    if (nT && nL) return EdgeTopLeft;
+    if (nT && nR) return EdgeTopRight;
+    if (nB && nL) return EdgeBottomLeft;
+    if (nB && nR) return EdgeBottomRight;
+
+    // Edges -- but the perpendicular axis must be within the rect range
+    bool xInRange = pos.x() >= sel.left() - m && pos.x() <= sel.right() + m;
+    bool yInRange = pos.y() >= sel.top()  - m && pos.y() <= sel.bottom() + m;
+
+    if (nT && xInRange) return EdgeTop;
+    if (nB && xInRange) return EdgeBottom;
+    if (nL && yInRange) return EdgeLeft;
+    if (nR && yInRange) return EdgeRight;
+
+    return EdgeNone;
+}
+
+void OverlayWindow::beginResize(ResizeEdge edge) {
+    QRect sel = selectedRect();
+    m_resizing = true;
+    m_activeResize = edge;
+    m_resizeFixedLeft   = sel.left();
+    m_resizeFixedRight  = sel.right();
+    m_resizeFixedTop    = sel.top();
+    m_resizeFixedBottom = sel.bottom();
+}
+
+void OverlayWindow::applyResize(QPoint pos) {
+    // Clamp mouse position to widget bounds
+    int mx = std::max(0, std::min(width()  - 1, pos.x()));
+    int my = std::max(0, std::min(height() - 1, pos.y()));
+
+    int left   = m_resizeFixedLeft;
+    int right  = m_resizeFixedRight;
+    int top    = m_resizeFixedTop;
+    int bottom = m_resizeFixedBottom;
+
+    switch (m_activeResize) {
+        case EdgeTop:         top = my; break;
+        case EdgeBottom:      bottom = my; break;
+        case EdgeLeft:        left = mx; break;
+        case EdgeRight:       right = mx; break;
+        case EdgeTopLeft:     top = my; left = mx; break;
+        case EdgeTopRight:    top = my; right = mx; break;
+        case EdgeBottomLeft:  bottom = my; left = mx; break;
+        case EdgeBottomRight: bottom = my; right = mx; break;
+        default: break;
+    }
+
+    // Min size 5x5 -- keep the fixed side anchored
+    if (right - left < 5) {
+        if (m_activeResize == EdgeLeft || m_activeResize == EdgeTopLeft || m_activeResize == EdgeBottomLeft) {
+            left = right - 5;
+        } else if (m_activeResize == EdgeRight || m_activeResize == EdgeTopRight || m_activeResize == EdgeBottomRight) {
+            right = left + 5;
+        }
+    }
+    if (bottom - top < 5) {
+        if (m_activeResize == EdgeTop || m_activeResize == EdgeTopLeft || m_activeResize == EdgeTopRight) {
+            top = bottom - 5;
+        } else if (m_activeResize == EdgeBottom || m_activeResize == EdgeBottomLeft || m_activeResize == EdgeBottomRight) {
+            bottom = top + 5;
+        }
+    }
+
+    // Final clamp to widget bounds
+    left   = std::max(0, std::min(width()  - 1, left));
+    right  = std::max(0, std::min(width()  - 1, right));
+    top    = std::max(0, std::min(height() - 1, top));
+    bottom = std::max(0, std::min(height() - 1, bottom));
+
+    m_startPos = QPoint(left, top);
+    m_endPos   = QPoint(right, bottom);
+
+    if (m_mode == Annotate && m_canvas) {
+        QRect sel = selectedRect();
+        m_canvas->setRegion(sel.x(), sel.y(), sel.width(), sel.height());
+        m_canvas->setGeometry(sel);
+        if (m_toolbar) {
+            m_toolbar->positionRelativeTo(sel.x(), sel.y(), sel.width(), sel.height());
+        }
+    }
+
+    update();
 }
 
 void OverlayWindow::enterAnnotateMode() {
@@ -526,11 +633,12 @@ void OverlayWindow::paintEvent(QPaintEvent *) {
         p.setPen(Qt::white);
         p.drawText(lx + 2, ly + labelRect.height() - 2, label);
 
-        // Resize handles (8 points) -- only in Select mode (not RecordSelect)
-        if (m_hasRegion && !m_drawing && m_mode == Select) {
-            p.setPen(QColor(0, 0, 0, 128));
+        // Resize handles (8 points) -- in Select and Annotate modes (not RecordSelect)
+        if (m_hasRegion && !m_drawing && (m_mode == Select || m_mode == Annotate)) {
+            QPen handlePen(QColor(0, 0, 0, 200), 1);
+            p.setPen(handlePen);
             p.setBrush(Qt::white);
-            int hs = 4; // half-size
+            int hs = 4; // half-size -> 8x8 handles
             QPoint handles[] = {
                 sel.topLeft(), sel.topRight(), sel.bottomLeft(), sel.bottomRight(),
                 QPoint(sel.center().x(), sel.top()),
@@ -551,22 +659,39 @@ void OverlayWindow::paintEvent(QPaintEvent *) {
 void OverlayWindow::mousePressEvent(QMouseEvent *event) {
     if (event->button() == Qt::LeftButton) {
         if (m_mode == Annotate) {
-            // Clicking outside the region starts a new selection
+            // Edge resize takes priority over click-outside-cancels
+            ResizeEdge edge = edgeAt(event->pos());
+            if (edge != EdgeNone) {
+                beginResize(edge);
+                return;
+            }
+
+            // Clicking outside the region cancels and hides the overlay
+            // so the next hotkey press can re-enter with a fresh capture.
+            // Previously this entered a "draw new region" state that left
+            // the overlay visible, which the hotkey handler treats as busy
+            // (see Fix #14 in main.cpp::hotkeyHandler).
             QRect sel = selectedRect();
             if (!sel.contains(event->pos())) {
                 m_annotationState.clearAnnotations();
                 exitAnnotateMode();
-                m_startPos = event->pos();
-                m_endPos = event->pos();
-                m_drawing = true;
                 m_hasRegion = false;
-                update();
+                m_drawing = false;
+                hideOverlay();
+                emit cancelled();
             }
             // Clicks inside the region are handled by AnnotationCanvas
             return;
         }
 
         if (m_mode == RecordSelect) {
+            // Edge resize takes priority
+            ResizeEdge edge = edgeAt(event->pos());
+            if (edge != EdgeNone) {
+                beginResize(edge);
+                return;
+            }
+
             // Clicking outside the region lets user re-draw
             QRect sel = selectedRect();
             if (!sel.contains(event->pos())) {
@@ -580,6 +705,15 @@ void OverlayWindow::mousePressEvent(QMouseEvent *event) {
             return;
         }
 
+        // Select mode: edge resize when we already have a region
+        if (m_hasRegion && !m_drawing && m_mode == Select) {
+            ResizeEdge edge = edgeAt(event->pos());
+            if (edge != EdgeNone) {
+                beginResize(edge);
+                return;
+            }
+        }
+
         m_startPos = event->pos();
         m_endPos = event->pos();
         m_drawing = true;
@@ -589,13 +723,67 @@ void OverlayWindow::mousePressEvent(QMouseEvent *event) {
 }
 
 void OverlayWindow::mouseMoveEvent(QMouseEvent *event) {
+    if (m_resizing) {
+        applyResize(event->pos());
+        return;
+    }
+
     if (m_drawing) {
         m_endPos = event->pos();
         update();
+        return;
+    }
+
+    // Update cursor based on edge proximity
+    if (m_hasRegion && (m_mode == Select || m_mode == Annotate || m_mode == RecordSelect)) {
+        ResizeEdge edge = edgeAt(event->pos());
+        switch (edge) {
+            case EdgeTopLeft:
+            case EdgeBottomRight:
+                setCursor(Qt::SizeFDiagCursor);
+                break;
+            case EdgeTopRight:
+            case EdgeBottomLeft:
+                setCursor(Qt::SizeBDiagCursor);
+                break;
+            case EdgeTop:
+            case EdgeBottom:
+                setCursor(Qt::SizeVerCursor);
+                break;
+            case EdgeLeft:
+            case EdgeRight:
+                setCursor(Qt::SizeHorCursor);
+                break;
+            case EdgeNone:
+            default:
+                if (m_mode == Select && !m_hasRegion) {
+                    setCursor(Qt::CrossCursor);
+                } else {
+                    setCursor(Qt::ArrowCursor);
+                }
+                break;
+        }
+    } else if (m_mode == Select) {
+        setCursor(Qt::CrossCursor);
     }
 }
 
 void OverlayWindow::mouseReleaseEvent(QMouseEvent *event) {
+    if (event->button() == Qt::LeftButton && m_resizing) {
+        m_resizing = false;
+        m_activeResize = EdgeNone;
+        if (m_mode == Annotate && m_canvas) {
+            QRect sel = selectedRect();
+            m_canvas->setRegion(sel.x(), sel.y(), sel.width(), sel.height());
+            m_canvas->setGeometry(sel);
+            if (m_toolbar) {
+                m_toolbar->positionRelativeTo(sel.x(), sel.y(), sel.width(), sel.height());
+            }
+        }
+        update();
+        return;
+    }
+
     if (event->button() == Qt::LeftButton && m_drawing) {
         m_drawing = false;
         QRect sel = selectedRect();

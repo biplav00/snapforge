@@ -36,6 +36,17 @@ protected:
 private:
     enum Mode { Select, Annotate, RecordSelect };
     enum Purpose { Screenshot, Record };
+    enum ResizeEdge {
+        EdgeNone,
+        EdgeTop,
+        EdgeBottom,
+        EdgeLeft,
+        EdgeRight,
+        EdgeTopLeft,
+        EdgeTopRight,
+        EdgeBottomLeft,
+        EdgeBottomRight,
+    };
 
     void activateInternal();
     void enterAnnotateMode();
@@ -47,6 +58,9 @@ private:
     void handleSaveAndCopy();
     void hideOverlay();
     bool isOnRegionEdge(QPoint pos) const;
+    ResizeEdge edgeAt(QPoint pos) const;
+    void beginResize(ResizeEdge edge);
+    void applyResize(QPoint pos);
     void emitRecordRegion();
     void emitRecordFullscreen();
 
@@ -56,6 +70,12 @@ private:
     QPoint m_endPos;
     bool m_drawing = false;
     bool m_hasRegion = false;
+    bool m_resizing = false;
+    ResizeEdge m_activeResize = EdgeNone;
+    int m_resizeFixedLeft = 0;
+    int m_resizeFixedRight = 0;
+    int m_resizeFixedTop = 0;
+    int m_resizeFixedBottom = 0;
     bool m_rememberRegion = false;
     QPoint m_lastStartPos;
     QPoint m_lastEndPos;
