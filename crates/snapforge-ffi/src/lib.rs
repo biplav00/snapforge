@@ -260,37 +260,6 @@ pub extern "C" fn snapforge_request_permission() -> c_int {
     c_int::from(capture::request_permission())
 }
 
-/// Get the number of available displays.
-#[no_mangle]
-pub extern "C" fn snapforge_display_count() -> u32 {
-    capture::display_count() as u32
-}
-
-/// Get display info (width, height, scale_factor) for a given display index.
-/// Returns 0 on success, -1 if display index out of bounds.
-#[no_mangle]
-pub extern "C" fn snapforge_get_display_info(
-    display: u32,
-    width: *mut u32,
-    height: *mut u32,
-    scale_factor: *mut f64,
-) -> c_int {
-    let info = match capture::get_display_info(display as usize) {
-        Some(i) => i,
-        None => return -1,
-    };
-    if !width.is_null() {
-        unsafe { *width = info.width }
-    }
-    if !height.is_null() {
-        unsafe { *height = info.height }
-    }
-    if !scale_factor.is_null() {
-        unsafe { *scale_factor = info.scale_factor }
-    }
-    0
-}
-
 /// Find the display index for a given point (in screen coordinates).
 /// Returns the display index, or -1 if no display contains that point.
 #[no_mangle]

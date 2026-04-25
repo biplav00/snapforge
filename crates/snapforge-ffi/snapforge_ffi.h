@@ -45,12 +45,6 @@ int snapforge_has_permission(void);
 /* Request screen capture permission. Returns 1 if granted. */
 int snapforge_request_permission(void);
 
-/* Get number of displays. */
-uint32_t snapforge_display_count(void);
-
-/* Get display info. width/height/scale_factor can be NULL. Returns 0 on success, -1 on error. */
-int snapforge_get_display_info(uint32_t display, uint32_t *width, uint32_t *height, double *scale_factor);
-
 /* Find display index for a point (in screen coordinates). Returns display index or -1. */
 int snapforge_display_at_point(int32_t x, int32_t y);
 

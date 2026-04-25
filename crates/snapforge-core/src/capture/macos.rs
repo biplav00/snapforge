@@ -13,7 +13,7 @@ use objc2_screen_capture_kit::{
 
 use crate::types::Rect;
 
-use super::{CaptureError, DisplayInfo};
+use super::CaptureError;
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -146,11 +146,6 @@ fn display_pixel_size(display_id: u32) -> Result<(usize, usize), CaptureError> {
     }
 }
 
-/// Backwards-compatible wrapper for paths that prefer (0,0) on failure.
-fn display_pixel_size_or_zero(display_id: u32) -> (usize, usize) {
-    display_pixel_size(display_id).unwrap_or((0, 0))
-}
-
 /// Cached permission state — once granted, skip re-checking.
 static PERMISSION_GRANTED: AtomicBool = AtomicBool::new(false);
 
@@ -280,23 +275,6 @@ pub fn display_count() -> usize {
     ids.len()
 }
 
-pub fn get_display_info(display: usize) -> Option<DisplayInfo> {
-    use crate::capture::DisplayInfo;
-    let displays = get_shareable_displays()?;
-    if display >= displays.len() {
-        return None;
-    }
-    let sc_display = displays.objectAtIndex(display);
-    let display_id = unsafe { sc_display.displayID() };
-    let (w, h) = display_pixel_size_or_zero(display_id);
-    let scale = primary_display_scale_factor_for(display_id);
-    Some(DisplayInfo {
-        width: w as u32,
-        height: h as u32,
-        scale_factor: scale,
-    })
-}
-
 /// Map a screen point (in global point coordinates) to the display index
 /// in our `get_shareable_displays()` ordering. Returns None if no display
 /// contains the point or the mapping fails.
@@ -324,23 +302,6 @@ pub fn display_at_point(x: i32, y: i32) -> Option<usize> {
             }
         }
         Some(0)
-    }
-}
-
-fn primary_display_scale_factor_for(display_id: u32) -> f64 {
-    unsafe {
-        let mode = CGDisplayCopyDisplayMode(display_id);
-        if mode.is_null() {
-            return 2.0;
-        }
-        let pixel_w = CGDisplayModeGetPixelWidth(mode);
-        let point_w = CGDisplayModeGetWidth(mode);
-        CGDisplayModeRelease(mode);
-        if point_w == 0 {
-            2.0
-        } else {
-            pixel_w as f64 / point_w as f64
-        }
     }
 }
 
