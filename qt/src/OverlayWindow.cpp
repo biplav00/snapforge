@@ -66,7 +66,7 @@ void OverlayWindow::activateInternal() {
     exitRecordSelectMode();
 
     // Restore last region if "remember region" is enabled
-    if (m_rememberRegion && !m_lastStartPos.isNull() && !m_lastEndPos.isNull()) {
+    if (m_rememberRegion && (m_lastStartPos != m_lastEndPos)) {
         m_startPos = m_lastStartPos;
         m_endPos = m_lastEndPos;
     } else {
@@ -173,9 +173,10 @@ void OverlayWindow::activate() {
     m_purpose = Screenshot;
     activateInternal();
     // If we restored a remembered region, go straight to annotate mode
-    if (m_rememberRegion && !m_startPos.isNull() && !m_endPos.isNull()) {
+    if (m_rememberRegion && (m_startPos != m_endPos)) {
         QRect sel = selectedRect();
         if (sel.width() > 5 && sel.height() > 5) {
+            m_hasRegion = true;
             enterAnnotateMode();
         }
     }
