@@ -1,0 +1,75 @@
+name: release
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    if: ${{ !contains(github.event.head_commit.message, '[skip ci]') && !contains(github.event.head_commit.message, 'chore(release):') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute next version (patch bump)
+        id: ver
+        run: |
+          set -euo pipefail
+          CURRENT=$(grep -m1 '^version = ' crates/snapforge-core/Cargo.toml | sed -E 's/version = "([^"]+)".*/\1/')
+          IFS='.' read -r MAJOR MINOR PATCH <<<"$CURRENT"
+          NEXT="$MAJOR.$MINOR.$((PATCH + 1))"
+          echo "current=$CURRENT" >>"$GITHUB_OUTPUT"
+          echo "next=$NEXT" >>"$GITHUB_OUTPUT"
+          echo "Bumping $CURRENT -> $NEXT"
+
+      - name: Bump version in Cargo.toml and CMakeLists.txt
+        env:
+          NEXT: ${{ steps.ver.outputs.next }}
+        run: |
+          set -euo pipefail
+          sed -i.bak -E "0,/^version = \"[^\"]+\"/{s//version = \"$NEXT\"/}" crates/snapforge-core/Cargo.toml
+          sed -i.bak -E "s/(MACOSX_BUNDLE_BUNDLE_VERSION \")[^\"]+(\")/\1$NEXT\2/" qt/CMakeLists.txt
+          sed -i.bak -E "s/(MACOSX_BUNDLE_SHORT_VERSION_STRING \")[^\"]+(\")/\1$NEXT\2/" qt/CMakeLists.txt
+          rm -f crates/snapforge-core/Cargo.toml.bak qt/CMakeLists.txt.bak
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Sync Cargo.lock
+        env:
+          NEXT: ${{ steps.ver.outputs.next }}
+        run: cargo update -p snapforge-core --precise "$NEXT" --offline || cargo update -p snapforge-core --precise "$NEXT"
+
+      - name: Commit, tag, push
+        env:
+          NEXT: ${{ steps.ver.outputs.next }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add crates/snapforge-core/Cargo.toml qt/CMakeLists.txt Cargo.lock
+          git commit -m "chore(release): v$NEXT [skip ci]"
+          git tag "v$NEXT"
+          git push origin main "v$NEXT"
+
+      - name: Create GitHub Release (auto-generated notes)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NEXT: ${{ steps.ver.outputs.next }}
+          PREV: ${{ steps.ver.outputs.current }}
+        run: |
+          gh release create "v$NEXT" \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "v$NEXT" \
+            --target main \
+            --generate-notes \
+            --notes-start-tag "v$PREV"

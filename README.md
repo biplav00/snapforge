@@ -117,13 +117,15 @@ cargo fmt --all          # format
 
 ### Releases
 
-Releases are automated via [release-please](https://github.com/googleapis/release-please). Use [Conventional Commits](https://www.conventionalcommits.org/) on `main`:
+Releases are fully automated. Every push to `main` (other than the workflow's own `chore(release):` commit) triggers `release.yml`, which:
 
-- `feat: …` → minor bump
-- `fix: …` → patch bump
-- `feat!: …` or `BREAKING CHANGE:` footer → major bump
+1. Patch-bumps the version in `crates/snapforge-core/Cargo.toml` and `qt/CMakeLists.txt`
+2. Updates `Cargo.lock`
+3. Commits as `chore(release): vX.Y.Z [skip ci]` and tags `vX.Y.Z`
+4. Creates a GitHub Release with auto-generated notes (commits since previous tag)
+5. `release-build.yml` then fires on `release: published`, builds `Snapforge-vX.Y.Z.dmg` on macOS, and uploads it as a Release asset
 
-When a `feat`/`fix` commit lands on `main`, release-please opens (or updates) a **release PR** that bumps versions and the changelog. Merging that PR creates a tag, publishes a GitHub Release, and triggers `release-build.yml` to build and upload `Snapforge-vX.Y.Z.dmg` as a Release asset.
+Every `main` push is a release. Want to land changes without releasing? Include `[skip ci]` in the commit subject — `release.yml` will skip that push. Major/minor bumps need to be done by hand: edit `crates/snapforge-core/Cargo.toml` and `qt/CMakeLists.txt` to the desired `X.Y.Z` *minus one patch* (so the workflow bumps the patch *to* it), then push — or just push the desired version and tag manually and let `release-build.yml` build the dmg.
 
 ## License
 
