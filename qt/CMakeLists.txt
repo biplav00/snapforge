@@ -24,8 +24,8 @@ set(FFI_HEADER_DIR "${CMAKE_SOURCE_DIR}/../crates/snapforge-ffi")
 
 set(MACOSX_BUNDLE_BUNDLE_NAME "Snapforge")
 set(MACOSX_BUNDLE_GUI_IDENTIFIER "com.snapforge.app")
-set(MACOSX_BUNDLE_BUNDLE_VERSION "1.0.0")
-set(MACOSX_BUNDLE_SHORT_VERSION_STRING "1.0.0")
+set(MACOSX_BUNDLE_BUNDLE_VERSION "1.3.1") # x-release-please-version
+set(MACOSX_BUNDLE_SHORT_VERSION_STRING "1.3.1") # x-release-please-version
 set(MACOSX_BUNDLE_INFO_STRING "Snapforge Screenshot Tool")
 set(MACOSX_BUNDLE_ICON_FILE "AppIcon.icns")
 
