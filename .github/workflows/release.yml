@@ -113,7 +113,7 @@ jobs:
         run: cmake --build qt/build --parallel --target dmg
 
       - name: Rename .dmg
-        run: mv qt/build/snapforge-qt.dmg "qt/build/Snapforge-${TAG_NAME}.dmg"
+        run: mv qt/build/Snapforge.dmg "qt/build/Snapforge-${TAG_NAME}.dmg"
 
       - name: Upload to Release
         env:
