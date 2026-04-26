@@ -69,6 +69,11 @@ add_executable(snapforge-qt MACOSX_BUNDLE
     ${SNAPFORGE_QRC_FILES}
 )
 
+# Produce Snapforge.app / Contents/MacOS/Snapforge so macOS Privacy
+# settings, the dock, and TCC all show "Snapforge" instead of the CMake
+# target name.
+set_target_properties(snapforge-qt PROPERTIES OUTPUT_NAME "Snapforge")
+
 target_include_directories(snapforge-qt PRIVATE
     ${FFI_HEADER_DIR}
 )
@@ -112,6 +117,19 @@ if(APPLE AND MACDEPLOYQT)
     add_custom_command(TARGET snapforge-qt POST_BUILD
         COMMAND ${MACDEPLOYQT} "$<TARGET_BUNDLE_DIR:snapforge-qt>"
         COMMENT "Rewriting bundle framework paths via macdeployqt..."
+        VERBATIM
+    )
+
+    # Ad-hoc sign with a stable identifier. Without this, every CI build
+    # gets a fresh ad-hoc signature, so macOS TCC treats each build as a
+    # different app and the user has to re-grant Screen Recording. Pinning
+    # the identifier to com.snapforge.app keeps TCC's grant stable across
+    # rebuilds. Runs after macdeployqt so the framework re-bundling doesn't
+    # invalidate the signature.
+    add_custom_command(TARGET snapforge-qt POST_BUILD
+        COMMAND codesign --force --deep --sign - --identifier com.snapforge.app
+                "$<TARGET_BUNDLE_DIR:snapforge-qt>"
+        COMMENT "Ad-hoc signing with stable identifier..."
         VERBATIM
     )
 endif()

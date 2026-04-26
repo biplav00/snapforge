@@ -29,8 +29,8 @@ echo "=== Building Qt app ==="
 cmake --build build
 
 echo "=== Done ==="
-echo "Binary: $SCRIPT_DIR/build/snapforge-qt.app"
+echo "Binary: $SCRIPT_DIR/build/Snapforge.app"
 echo "Rust artefacts: $RUST_TARGET_DIR"
 echo ""
 echo "To run (development):"
-echo "  QT_PLUGIN_PATH=\"$QT_PREFIX/share/qt/plugins\" $SCRIPT_DIR/build/snapforge-qt.app/Contents/MacOS/snapforge-qt"
+echo "  QT_PLUGIN_PATH=\"$QT_PREFIX/share/qt/plugins\" $SCRIPT_DIR/build/Snapforge.app/Contents/MacOS/Snapforge"
