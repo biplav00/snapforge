@@ -149,17 +149,38 @@ fn display_pixel_size(display_id: u32) -> Result<(usize, usize), CaptureError> {
 /// Cached permission state — once granted, skip re-checking.
 static PERMISSION_GRANTED: AtomicBool = AtomicBool::new(false);
 
+/// Latches once we've established this process can't see screen-recording
+/// permission. macOS only applies a freshly-granted Screen Recording grant to
+/// processes started *after* the grant; a running process keeps getting the
+/// system prompt every time it touches SCK. Latching means we stop pinging
+/// SCK after the first denial of this session, so the user isn't spammed with
+/// repeated TCC dialogs. Cleared if `CGPreflightScreenCaptureAccess` ever
+/// flips to true (e.g. some external recovery).
+static PERMISSION_DENIED_LATCH: AtomicBool = AtomicBool::new(false);
+
+/// Set after `request_screen_capture_permission` triggers the system dialog
+/// once. Subsequent requests in the same process are no-ops to avoid stacking
+/// dialogs that the user can't dismiss into a usable state without a restart.
+static PERMISSION_REQUESTED_THIS_SESSION: AtomicBool = AtomicBool::new(false);
+
 /// Check if screen recording permission is granted.
-/// Uses cached result after first success, falls back to SCK content query.
+/// Uses cached result after first success, falls back to a *single* SCK
+/// content query per session if preflight is stale-false.
 pub fn has_screen_capture_permission() -> bool {
     if PERMISSION_GRANTED.load(Ordering::Relaxed) {
         return true;
     }
     if unsafe { CGPreflightScreenCaptureAccess() } {
         PERMISSION_GRANTED.store(true, Ordering::Relaxed);
+        PERMISSION_DENIED_LATCH.store(false, Ordering::Relaxed);
         return true;
     }
-    // Preflight can return stale false. Try fetching SCK content as proof of permission.
+    if PERMISSION_DENIED_LATCH.load(Ordering::Relaxed) {
+        // Already determined denied this session — don't ping SCK again.
+        return false;
+    }
+    // First check this session with preflight false. Try SCK once as proof.
+    // Failure here will set the latch via get_shareable_displays.
     if get_shareable_displays().is_some() {
         PERMISSION_GRANTED.store(true, Ordering::Relaxed);
         return true;
@@ -167,11 +188,22 @@ pub fn has_screen_capture_permission() -> bool {
     false
 }
 
-/// Request screen recording permission. Returns true if granted.
+/// Request screen recording permission. Triggers the system dialog the first
+/// time it's called per session and returns whatever Core Graphics reports.
+/// Subsequent calls in the same process are no-ops (return false) — macOS
+/// applies the grant only to *new* processes, so re-prompting the same
+/// process doesn't help and just spams the user.
 pub fn request_screen_capture_permission() -> bool {
+    if PERMISSION_GRANTED.load(Ordering::Relaxed) {
+        return true;
+    }
+    if PERMISSION_REQUESTED_THIS_SESSION.swap(true, Ordering::Relaxed) {
+        return false;
+    }
     let result = unsafe { CGRequestScreenCaptureAccess() };
     if result {
         PERMISSION_GRANTED.store(true, Ordering::Relaxed);
+        PERMISSION_DENIED_LATCH.store(false, Ordering::Relaxed);
     }
     result
 }
@@ -188,7 +220,15 @@ const DISPLAYS_CACHE_TTL: Duration = Duration::from_secs(2);
 /// Returns `None` if SCK doesn't respond within 2s. An empty/None result
 /// means callers should surface a permission or daemon error — the SCK
 /// daemon is the first thing to wedge on permission loss.
+///
+/// Skips the SCK call entirely once the per-session permission-denied latch
+/// is set: SCShareableContent triggers the macOS TCC dialog every time it's
+/// called from a process that hasn't been granted Screen Recording, so
+/// repeating the call after a known denial just spams the user.
 fn get_shareable_displays() -> Option<Retained<NSArray<SCDisplay>>> {
+    if PERMISSION_DENIED_LATCH.load(Ordering::Relaxed) {
+        return None;
+    }
     ensure_display_reconfig_registered();
 
     let (tx, rx) = mpsc::channel();
@@ -228,6 +268,11 @@ fn get_shareable_displays() -> Option<Retained<NSArray<SCDisplay>>> {
                 ids,
             ));
         }
+    } else if !unsafe { CGPreflightScreenCaptureAccess() } {
+        // SCK gave us nothing and the system says permission isn't granted.
+        // Latch so we don't trigger another TCC prompt on the next call.
+        // The latch clears if preflight ever flips back to true.
+        PERMISSION_DENIED_LATCH.store(true, Ordering::Relaxed);
     }
 
     result
