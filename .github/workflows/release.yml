@@ -13,7 +13,7 @@ concurrency:
 
 jobs:
   release:
-    if: ${{ !contains(github.event.head_commit.message, '[skip ci]') && !contains(github.event.head_commit.message, 'chore(release):') }}
+    if: ${{ !contains(github.event.head_commit.message, '[skip release]') && !contains(github.event.head_commit.message, 'chore(release):') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -57,7 +57,7 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add crates/snapforge-core/Cargo.toml qt/CMakeLists.txt Cargo.lock
-          git commit -m "chore(release): v$NEXT [skip ci]"
+          git commit -m "chore(release): v$NEXT"
           git tag "v$NEXT"
           git push origin main "v$NEXT"
 

@@ -117,15 +117,15 @@ cargo fmt --all          # format
 
 ### Releases
 
-Releases are fully automated. Every push to `main` (other than the workflow's own `chore(release):` commit) triggers `release.yml`, which:
+Releases are fully automated. Every push to `main` (except the workflow's own `chore(release):` auto-commit) triggers `release.yml`, which:
 
 1. Patch-bumps the version in `crates/snapforge-core/Cargo.toml` and `qt/CMakeLists.txt`
 2. Updates `Cargo.lock`
-3. Commits as `chore(release): vX.Y.Z [skip ci]` and tags `vX.Y.Z`
+3. Commits as `chore(release): vX.Y.Z` and tags `vX.Y.Z`
 4. Creates a GitHub Release with auto-generated notes (commits since previous tag)
 5. `release-build.yml` then fires on `release: published`, builds `Snapforge-vX.Y.Z.dmg` on macOS, and uploads it as a Release asset
 
-Every `main` push is a release. Want to land changes without releasing? Include `[skip ci]` in the commit subject — `release.yml` will skip that push. Major/minor bumps need to be done by hand: edit `crates/snapforge-core/Cargo.toml` and `qt/CMakeLists.txt` to the desired `X.Y.Z` *minus one patch* (so the workflow bumps the patch *to* it), then push — or just push the desired version and tag manually and let `release-build.yml` build the dmg.
+Every `main` push is a release. To land changes without releasing, include the literal opt-out tag in the commit subject (square-bracketed `skip release`). `release.yml` checks for that token and bails. Major/minor bumps need to be done by hand: edit `crates/snapforge-core/Cargo.toml` and `qt/CMakeLists.txt` to the desired `X.Y.Z` *minus one patch* (so the workflow bumps the patch *to* it), then push — or push a tag manually and let `release-build.yml` build the dmg.
 
 ## License
 
