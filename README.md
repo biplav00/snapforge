@@ -123,9 +123,9 @@ Releases are fully automated. Every push to `main` (except the workflow's own `c
 2. Updates `Cargo.lock`
 3. Commits as `chore(release): vX.Y.Z` and tags `vX.Y.Z`
 4. Creates a GitHub Release with auto-generated notes (commits since previous tag)
-5. `release-build.yml` then fires on `release: published`, builds `Snapforge-vX.Y.Z.dmg` on macOS, and uploads it as a Release asset
+5. Builds `Snapforge-vX.Y.Z.dmg` on macOS in a follow-up job and uploads it as a Release asset
 
-Every `main` push is a release. To land changes without releasing, include the literal opt-out tag in the commit subject (square-bracketed `skip release`). `release.yml` checks for that token and bails. Major/minor bumps need to be done by hand: edit `crates/snapforge-core/Cargo.toml` and `qt/CMakeLists.txt` to the desired `X.Y.Z` *minus one patch* (so the workflow bumps the patch *to* it), then push — or push a tag manually and let `release-build.yml` build the dmg.
+Every `main` push is a release. To land changes without releasing, include the literal opt-out tag in the commit subject (square-bracketed `skip release`). `release.yml` checks for that token and bails. Major/minor bumps need to be done by hand: edit `crates/snapforge-core/Cargo.toml` and `qt/CMakeLists.txt` to the desired `X.Y.Z` *minus one patch* (so the workflow bumps the patch *to* it), then push.
 
 ## License
 

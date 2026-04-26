@@ -15,6 +15,9 @@ jobs:
   release:
     if: ${{ !contains(github.event.head_commit.message, '[skip release]') && !startsWith(github.event.head_commit.message, 'chore(release):') }}
     runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.ver.outputs.tag }}
+      next: ${{ steps.ver.outputs.next }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -30,6 +33,7 @@ jobs:
           NEXT="$MAJOR.$MINOR.$((PATCH + 1))"
           echo "current=$CURRENT" >>"$GITHUB_OUTPUT"
           echo "next=$NEXT" >>"$GITHUB_OUTPUT"
+          echo "tag=v$NEXT" >>"$GITHUB_OUTPUT"
           echo "Bumping $CURRENT -> $NEXT"
 
       - name: Bump version in Cargo.toml and CMakeLists.txt
@@ -73,3 +77,45 @@ jobs:
             --target main \
             --generate-notes \
             --notes-start-tag "v$PREV"
+
+  dmg:
+    name: Build & upload .dmg
+    needs: release
+    runs-on: macos-14
+    env:
+      TAG_NAME: ${{ needs.release.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.release.outputs.tag }}
+
+      - name: Install Qt6
+        run: brew install qt
+
+      - name: Cache cargo registry & target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-release-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Build snapforge-ffi (release)
+        run: cargo build --release -p snapforge-ffi
+
+      - name: Configure Qt build
+        run: cmake -S qt -B qt/build -DCMAKE_PREFIX_PATH="$(brew --prefix qt)"
+
+      - name: Build .dmg
+        run: cmake --build qt/build --parallel --target dmg
+
+      - name: Rename .dmg
+        run: mv qt/build/snapforge-qt.dmg "qt/build/Snapforge-${TAG_NAME}.dmg"
+
+      - name: Upload to Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "$TAG_NAME" qt/build/Snapforge-*.dmg --clobber --repo "$GITHUB_REPOSITORY"
