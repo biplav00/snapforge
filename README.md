@@ -31,7 +31,9 @@ The `.dmg` is **unsigned** (no Apple Developer ID), so on first launch macOS wil
   xattr -dr com.apple.quarantine /Applications/Snapforge.app
   ```
 
-On first screenshot/recording, macOS will prompt for **Screen Recording** permission — grant it in System Settings → Privacy & Security.
+On first screenshot/recording, macOS will prompt for **Screen Recording** permission — grant it in System Settings → Privacy & Security, then **fully quit Snapforge from the menu bar and reopen it**. macOS only applies a newly-granted Screen Recording permission to processes started *after* the grant; without a restart, the app keeps re-prompting.
+
+> Snapforge is unsigned, so each new release is treated as a fresh app by macOS. The grant is pinned to a stable ad-hoc identifier (`com.snapforge.app`), so it should persist across versions on the same machine. If you ever need to clear and re-grant: System Settings → Privacy & Security → Screen Recording → remove Snapforge → relaunch.
 
 ### Build from source
 
@@ -57,7 +59,7 @@ cmake --build qt/build --parallel
 cmake --build qt/build --target dmg
 ```
 
-The built application is at `qt/build/snapforge-qt.app`.
+The built application is at `qt/build/Snapforge.app`.
 
 ## Tech Stack
 
