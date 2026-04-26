@@ -7,7 +7,7 @@
       "release-type": "rust",
       "package-name": "snapforge",
       "extra-files": [
-        { "type": "generic", "path": "../../qt/CMakeLists.txt" }
+        { "type": "generic", "path": "/qt/CMakeLists.txt" }
       ]
     }
   }
