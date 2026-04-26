@@ -1,0 +1,50 @@
+name: release-build
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+jobs:
+  dmg:
+    name: Build & upload .dmg
+    runs-on: macos-14
+    env:
+      TAG_NAME: ${{ github.event.release.tag_name }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name }}
+
+      - name: Install Qt6
+        run: brew install qt
+
+      - name: Cache cargo registry & target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-release-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Build snapforge-ffi (release)
+        run: cargo build --release -p snapforge-ffi
+
+      - name: Configure Qt build
+        run: cmake -S qt -B qt/build -DCMAKE_PREFIX_PATH="$(brew --prefix qt)"
+
+      - name: Build .dmg
+        run: cmake --build qt/build --parallel --target dmg
+
+      - name: Rename .dmg
+        run: mv qt/build/snapforge-qt.dmg "qt/build/Snapforge-${TAG_NAME}.dmg"
+
+      - name: Upload to Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "$TAG_NAME" qt/build/Snapforge-*.dmg --clobber --repo "$GITHUB_REPOSITORY"
