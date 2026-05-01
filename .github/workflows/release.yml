@@ -19,7 +19,7 @@ jobs:
       tag: ${{ steps.ver.outputs.tag }}
       next: ${{ steps.ver.outputs.next }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
@@ -85,7 +85,7 @@ jobs:
     env:
       TAG_NAME: ${{ needs.release.outputs.tag }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           ref: ${{ needs.release.outputs.tag }}
 
@@ -93,7 +93,7 @@ jobs:
         run: brew install qt
 
       - name: Cache cargo registry & target
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/registry
