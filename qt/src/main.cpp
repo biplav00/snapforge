@@ -407,7 +407,7 @@ int main(int argc, char *argv[]) {
     // two opposing corner brackets (top-left + bottom-right) with a diagonal
     // slash, matching the original Snapforge logo glyph.
     auto makeIdleIcon = []() -> QIcon {
-        const qreal logicalSz = 22.0;
+        const qreal logicalSz = 18.0;
         const qreal dpr = 2.0;
         const int sz = static_cast<int>(logicalSz * dpr);
         QPixmap pm(sz, sz);
@@ -417,9 +417,9 @@ int main(int argc, char *argv[]) {
         QPainter p(&pm);
         p.setRenderHint(QPainter::Antialiasing);
 
-        const qreal margin = 2.5;
-        const qreal hook = 6.5;     // length of each bracket arm
-        const qreal stroke = 2.0;
+        const qreal margin = 2.0;
+        const qreal hook = 5.0;     // length of each bracket arm
+        const qreal stroke = 1.6;
         const qreal x0 = margin;
         const qreal y0 = margin;
         const qreal x1 = logicalSz - margin;
@@ -446,7 +446,7 @@ int main(int argc, char *argv[]) {
         p.drawPath(br);
 
         // Diagonal slash (top-right → bottom-left direction per original logo)
-        const qreal slashInset = 4.5;
+        const qreal slashInset = 3.5;
         p.drawLine(QPointF(x1 - slashInset, y0 + slashInset),
                    QPointF(x0 + slashInset, y1 - slashInset));
 
