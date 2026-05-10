@@ -37,7 +37,6 @@
 static OverlayWindow     *g_overlay   = nullptr;
 static RecordingManager  *g_recording = nullptr;
 static HistoryWindow     *g_history   = nullptr;
-static PreferencesWindow *g_prefs     = nullptr;
 
 // Hotkey IDs
 static const UInt32 kHotkeyIDScreenshot = 1;
@@ -373,7 +372,6 @@ int main(int argc, char *argv[]) {
     g_history = &history;
 
     PreferencesWindow prefs;
-    g_prefs = &prefs;
     g_prefsRef = &prefs;
 
     // Fix #20: re-apply theme whenever the system palette changes. The
@@ -765,7 +763,6 @@ int main(int argc, char *argv[]) {
     g_overlay = nullptr;
     g_recording = nullptr;
     g_history = nullptr;
-    g_prefs = nullptr;
 #endif
     g_prefsRef = nullptr;
 

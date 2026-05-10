@@ -57,7 +57,6 @@ private:
     void handleCopy();
     void handleSaveAndCopy();
     void hideOverlay();
-    bool isOnRegionEdge(QPoint pos) const;
     ResizeEdge edgeAt(QPoint pos) const;
     void beginResize(ResizeEdge edge);
     void applyResize(QPoint pos);
@@ -80,7 +79,6 @@ private:
     QPoint m_lastStartPos;
     QPoint m_lastEndPos;
     QImage m_screenshot;
-    QImage m_scaledScreenshot; // cached widget-size copy for paintEvent
     Mode m_mode = Select;
     Purpose m_purpose = Screenshot;
     int m_displayIndex = 0; // which display this overlay captures from

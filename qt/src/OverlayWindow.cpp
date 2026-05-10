@@ -95,7 +95,6 @@ void OverlayWindow::activateInternal() {
     // silently reuse the last activation's image (which would show the
     // wrong window when switching apps between screenshots).
     m_screenshot = QImage();
-    m_scaledScreenshot = QImage();
 
     // Size overlay to the cursor's screen (not primary).
     if (screen) {
@@ -211,15 +210,6 @@ void OverlayWindow::activateForRecording() {
 
 QRect OverlayWindow::selectedRect() const {
     return QRect(m_startPos, m_endPos).normalized();
-}
-
-bool OverlayWindow::isOnRegionEdge(QPoint pos) const {
-    if (!m_hasRegion) return false;
-    QRect sel = selectedRect();
-    const int margin = 6;
-    QRect outer = sel.adjusted(-margin, -margin, margin, margin);
-    QRect inner = sel.adjusted(margin, margin, -margin, -margin);
-    return outer.contains(pos) && !inner.contains(pos);
 }
 
 OverlayWindow::ResizeEdge OverlayWindow::edgeAt(QPoint pos) const {

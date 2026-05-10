@@ -86,7 +86,6 @@ private:
     // Hotkey helpers
     void startRecording(int rowIndex);
     void stopRecording(int rowIndex, bool accept, const QString &newShortcut = {});
-    QWidget *makeBadgeWidget(const QString &shortcut, QWidget *parent);
     void refreshBadge(int rowIndex);
     static QString formatKeyToShortcut(int key, Qt::KeyboardModifiers mods);
 
