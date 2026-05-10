@@ -2454,6 +2454,7 @@ dependencies = [
  "image",
  "serde_json",
  "snapforge-core",
+ "tempfile",
 ]
 
 [[package]]
