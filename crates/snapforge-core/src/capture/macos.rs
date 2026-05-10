@@ -34,6 +34,11 @@ extern "C" {
     fn CGDisplayModeGetWidth(mode: *const std::ffi::c_void) -> usize;
     fn CGDisplayModeRelease(mode: *const std::ffi::c_void);
     fn CGMainDisplayID() -> u32;
+    /// Legacy display capture API. Deprecated in macOS 14 in favor of SCK,
+    /// but still functional and the only path that reliably captures
+    /// fullscreen-Space content (SCK returns a black frame for many
+    /// fullscreen apps on macOS 14+). Returns NULL on failure.
+    fn CGDisplayCreateImage(display: u32) -> *mut objc2_core_graphics::CGImage;
     /// Returns the number of displays that contain `point` and fills `displays` with their IDs.
     fn CGGetDisplaysWithPoint(
         point: CGPointRaw,
@@ -376,6 +381,54 @@ fn capture_fullscreen_inner(display: usize) -> Result<RgbaImage, CaptureError> {
         .copied()
         .ok_or(CaptureError::NoDisplay(display))?;
 
+    // Primary path: CGDisplayCreateImage. Deprecated in macOS 14 but still
+    // functional and the only path that reliably captures fullscreen-Space
+    // content. SCK's captureImageWithFilter often returns a black frame for
+    // a window that's running in its own fullscreen Space (browsers entering
+    // fullscreen, video players, games), so we try the legacy API first and
+    // fall through to SCK only if it fails.
+    if let Some(img) = capture_via_cgdisplay(target_id) {
+        return Ok(img);
+    }
+
+    capture_fullscreen_via_sck(display, target_id)
+}
+
+/// Capture a display via CGDisplayCreateImage and convert to RGBA.
+/// Returns None on any failure so the caller can fall back to SCK.
+fn capture_via_cgdisplay(display_id: u32) -> Option<RgbaImage> {
+    use objc2_core_graphics::CGImage;
+    let cg_ptr = unsafe { CGDisplayCreateImage(display_id) };
+    if cg_ptr.is_null() {
+        return None;
+    }
+    // CGImageRef is owned by the caller per Create rule — we must release it.
+    // Rust binding's Retained::from_raw takes ownership and releases on drop.
+    let cg_image: Retained<CGImage> = unsafe { Retained::from_raw(cg_ptr)? };
+    let rgba = cg_image_to_rgba(&cg_image).ok()?;
+    // Sanity: if the captured frame is entirely zero (black) we'd rather let
+    // SCK have a chance — a fullscreen DRM window can produce all-zero bytes
+    // even from CGDisplayCreateImage, in which case SCK might do better.
+    if is_all_zero(&rgba) {
+        eprintln!("[capture] CGDisplayCreateImage returned an all-zero frame; falling back to SCK");
+        return None;
+    }
+    Some(rgba)
+}
+
+fn is_all_zero(img: &RgbaImage) -> bool {
+    // Cheap check: scan only every Nth pixel. A real screenshot will have
+    // some non-zero pixel within the first few hundred samples.
+    img.as_raw()
+        .chunks_exact(4)
+        .step_by(64)
+        .all(|p| p[0] == 0 && p[1] == 0 && p[2] == 0)
+}
+
+fn capture_fullscreen_via_sck(
+    display: usize,
+    target_id: u32,
+) -> Result<RgbaImage, CaptureError> {
     let displays = get_shareable_displays().ok_or(CaptureError::CaptureFailed)?;
     let mut sc_display_opt = None;
     for i in 0..displays.len() {
