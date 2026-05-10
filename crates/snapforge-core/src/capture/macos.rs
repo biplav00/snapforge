@@ -682,8 +682,12 @@ fn cg_image_to_rgba(cg_image: &objc2_core_graphics::CGImage) -> Result<RgbaImage
     let cf_data = CGDataProvider::data(Some(&provider)).ok_or(CaptureError::ImageDataFailed)?;
     let raw_bytes: &[u8] = unsafe { cf_data.as_bytes_unchecked() };
 
-    let expected_pixels = (width * height) as usize;
-    let expected_bytes = expected_pixels * 4;
+    let expected_pixels = (width as usize)
+        .checked_mul(height as usize)
+        .ok_or(CaptureError::ImageDataFailed)?;
+    let expected_bytes = expected_pixels
+        .checked_mul(4)
+        .ok_or(CaptureError::ImageDataFailed)?;
 
     let last_row_start = (height as usize - 1) * bytes_per_row;
     let min_required = last_row_start + (width as usize) * 4;

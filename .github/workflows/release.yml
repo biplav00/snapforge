@@ -46,7 +46,7 @@ jobs:
           sed -i.bak -E "s/(MACOSX_BUNDLE_SHORT_VERSION_STRING \")[^\"]+(\")/\1$NEXT\2/" qt/CMakeLists.txt
           rm -f crates/snapforge-core/Cargo.toml.bak qt/CMakeLists.txt.bak
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable as of 2026-03-27
 
       - name: Sync Cargo.lock
         env:

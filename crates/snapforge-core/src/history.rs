@@ -95,6 +95,14 @@ impl ScreenshotHistory {
         if !path.exists() {
             return Ok(Self::default());
         }
+        // 32 MiB ceiling — history grows over time but should never approach this.
+        // Caps memory amplification on a corrupt or hostile file.
+        const MAX_HISTORY_BYTES: u64 = 32 * 1024 * 1024;
+        if let Ok(meta) = std::fs::metadata(&path) {
+            if meta.len() > MAX_HISTORY_BYTES {
+                return Ok(Self::default());
+            }
+        }
         let contents = std::fs::read_to_string(&path)?;
         let history: Self = serde_json::from_str(&contents)?;
         Ok(history)

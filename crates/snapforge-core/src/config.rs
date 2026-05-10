@@ -163,6 +163,14 @@ impl AppConfig {
         if !path.exists() {
             return Ok(Self::default());
         }
+        // 4 MiB ceiling — well above any legitimate config; protects against a corrupt
+        // or attacker-supplied file ballooning RAM via read_to_string.
+        const MAX_CONFIG_BYTES: u64 = 4 * 1024 * 1024;
+        if let Ok(meta) = std::fs::metadata(&path) {
+            if meta.len() > MAX_CONFIG_BYTES {
+                return Ok(Self::default());
+            }
+        }
         let contents = std::fs::read_to_string(&path)?;
         match serde_json::from_str::<Self>(&contents) {
             Ok(config) => Ok(config),

@@ -900,6 +900,9 @@ fn spawn_ffmpeg(
         }
     }
 
+    // `--` ends ffmpeg's option parsing so `output_path` cannot be misread as a flag
+    // (e.g. a path beginning with `-`). The output path is user-controlled via config.
+    args.push("--".into());
     args.push(output_path);
 
     Command::new(ffmpeg_path)
