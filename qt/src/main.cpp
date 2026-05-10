@@ -128,6 +128,23 @@ OSStatus hotkeyHandler(EventHandlerCallRef, EventRef event, void *) {
     return noErr;
 }
 
+// Wrap RegisterEventHotKey so a failed registration (e.g. another app already
+// owns the chord) is logged instead of silently swallowed. `name` is shown so
+// the user can correlate the warning with the action that won't fire.
+static void registerHotkeyChecked(unsigned int virtualKey,
+                                  unsigned int modifiers,
+                                  EventHotKeyID hotKeyID,
+                                  EventHotKeyRef *outRef,
+                                  const char *name) {
+    OSStatus status = RegisterEventHotKey(virtualKey, modifiers, hotKeyID,
+                                          GetApplicationEventTarget(), 0, outRef);
+    if (status != noErr || *outRef == nullptr) {
+        qWarning("RegisterEventHotKey failed for %s (status=%d) — chord may be in use by another app",
+                 name, static_cast<int>(status));
+        *outRef = nullptr;
+    }
+}
+
 void registerGlobalHotkey() {
     EventTypeSpec eventType;
     eventType.eventClass = kEventClassKeyboard;
@@ -140,23 +157,19 @@ void registerGlobalHotkey() {
 
     // Cmd+Shift+S — Screenshot (kVK_ANSI_S = 0x01)
     hotKeyID.id = kHotkeyIDScreenshot;
-    RegisterEventHotKey(0x01, cmdKey | shiftKey, hotKeyID,
-                        GetApplicationEventTarget(), 0, &g_hotkeys[0]);
+    registerHotkeyChecked(0x01, cmdKey | shiftKey, hotKeyID, &g_hotkeys[0], "Cmd+Shift+S (screenshot)");
 
     // Cmd+Shift+R — Record (kVK_ANSI_R = 0x0F)
     hotKeyID.id = kHotkeyIDRecord;
-    RegisterEventHotKey(0x0F, cmdKey | shiftKey, hotKeyID,
-                        GetApplicationEventTarget(), 0, &g_hotkeys[1]);
+    registerHotkeyChecked(0x0F, cmdKey | shiftKey, hotKeyID, &g_hotkeys[1], "Cmd+Shift+R (record)");
 
     // Cmd+Shift+H — History (kVK_ANSI_H = 0x04)
     hotKeyID.id = kHotkeyIDHistory;
-    RegisterEventHotKey(0x04, cmdKey | shiftKey, hotKeyID,
-                        GetApplicationEventTarget(), 0, &g_hotkeys[2]);
+    registerHotkeyChecked(0x04, cmdKey | shiftKey, hotKeyID, &g_hotkeys[2], "Cmd+Shift+H (history)");
 
     // Cmd+Shift+F — Fullscreen capture (kVK_ANSI_F = 0x03)
     hotKeyID.id = kHotkeyIDFullscreen;
-    RegisterEventHotKey(0x03, cmdKey | shiftKey, hotKeyID,
-                        GetApplicationEventTarget(), 0, &g_hotkeys[3]);
+    registerHotkeyChecked(0x03, cmdKey | shiftKey, hotKeyID, &g_hotkeys[3], "Cmd+Shift+F (fullscreen)");
 }
 
 void unregisterGlobalHotkeys() {

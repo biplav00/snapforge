@@ -120,9 +120,9 @@ using AnnotationData = std::variant<
 
 struct Annotation {
     QString id;
-    ToolType tool;
+    ToolType tool = ToolType::None;
     QColor color;
-    int strokeWidth;
+    int strokeWidth = 0;
     AnnotationData data;
 };
 

@@ -337,7 +337,7 @@ pub fn display_at_point(x: i32, y: i32) -> Option<usize> {
             &mut count,
         );
         if status != 0 || count == 0 {
-            return Some(0);
+            return None;
         }
         let target_id = matches[0];
         let ids = get_display_ids_cached();
@@ -346,7 +346,9 @@ pub fn display_at_point(x: i32, y: i32) -> Option<usize> {
                 return Some(i);
             }
         }
-        Some(0)
+        // Display ID returned by CGGetDisplaysWithPoint isn't in our list:
+        // honor the C contract (-1 == None) instead of silently snapping to 0.
+        None
     }
 }
 

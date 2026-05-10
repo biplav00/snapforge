@@ -193,8 +193,12 @@ void OverlayWindow::activate() {
 void OverlayWindow::activateFullscreen() {
     m_purpose = Screenshot;
     activateInternal();
+    // Use the full widget rect (width(), height()) — selectedRect() is built
+    // from QRect(m_startPos, m_endPos) which is inclusive on both ends, so
+    // (0,0) to (w,h) covers the entire pixel range. The previous (w-1, h-1)
+    // dropped the rightmost column and bottom row.
     m_startPos = QPoint(0, 0);
-    m_endPos = QPoint(width() - 1, height() - 1);
+    m_endPos = QPoint(width(), height());
     m_hasRegion = true;
     m_drawing = false;
     enterAnnotateMode();

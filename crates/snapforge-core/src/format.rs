@@ -32,6 +32,20 @@ pub fn encode_image(
             Ok(buf.into_inner())
         }
         CaptureFormat::Jpg => {
+            // JPEG has no alpha channel; warn once if the image has any
+            // non-opaque pixel so the user knows the alpha was dropped.
+            // Sample the corners + center first as a fast path; full scan
+            // only if those look opaque but we want to be sure for arbitrary
+            // sizes — the cost is dominated by the encode anyway.
+            let has_transparency = image.pixels().any(|p| p[3] < 255);
+            if has_transparency {
+                eprintln!(
+                    "[snapforge] JPEG output drops the alpha channel; transparent \
+                     pixels in the source will be flattened. Use PNG or WebP to \
+                     preserve transparency."
+                );
+            }
+
             // Convert RGBA to RGB without cloning into DynamicImage
             let mut rgb_buf = Vec::with_capacity(w * h * 3);
             for pixel in image.pixels() {

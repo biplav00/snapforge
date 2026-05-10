@@ -6,6 +6,7 @@
 #include <QPaintEvent>
 #include <QMouseEvent>
 #include <QKeyEvent>
+#include <QScreen>
 #include <cmath>
 
 // ---------------------------------------------------------------------------
@@ -104,7 +105,18 @@ QImage AnnotationCanvas::compositeImage() const {
     // Annotations stored in widget-local (logical point) coords; composited
     // image is at pixel size (point_size * dpr). Scale painter so annotation
     // coords map into pixel space.
-    const double dpr = snapforge_display_scale_factor();
+    //
+    // Use the DPR of the screen this canvas is actually on, not the primary
+    // display's DPR — otherwise compositing on a secondary display with a
+    // different DPR shifts annotations off-target. Falls back to the global
+    // helper if the widget isn't yet attached to a screen.
+    double dpr = 0.0;
+    if (auto *scr = this->screen()) {
+        dpr = scr->devicePixelRatio();
+    }
+    if (dpr <= 0.0) {
+        dpr = snapforge_display_scale_factor();
+    }
     if (dpr > 0.0 && dpr != 1.0) {
         p.scale(dpr, dpr);
     }

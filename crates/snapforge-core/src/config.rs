@@ -1,5 +1,6 @@
 use crate::types::{CaptureFormat, LastRegion};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use thiserror::Error;
 
@@ -126,6 +127,12 @@ pub struct AppConfig {
     pub filename_pattern: String,
     pub hotkey_bindings: HotkeyBindings,
     pub recording: RecordingConfig,
+    /// Catch-all for fields the Qt frontend persists that Rust doesn't model
+    /// (e.g. `hotkeys`, `theme`). Without this, a save+load round-trip would
+    /// silently strip every Qt-only field. BTreeMap so on-disk key order is
+    /// stable across saves.
+    #[serde(flatten)]
+    pub extra: BTreeMap<String, serde_json::Value>,
 }
 
 impl Default for AppConfig {
@@ -146,6 +153,7 @@ impl Default for AppConfig {
             filename_pattern: "screenshot-{date}-{time}".to_string(),
             hotkey_bindings: HotkeyBindings::default(),
             recording: RecordingConfig::default(),
+            extra: BTreeMap::new(),
         }
     }
 }

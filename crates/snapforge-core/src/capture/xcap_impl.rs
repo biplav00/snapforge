@@ -22,7 +22,8 @@ pub fn display_at_point(x: i32, y: i32) -> Option<usize> {
             return Some(i);
         }
     }
-    Some(0)
+    // Honor C contract: no display contains the point → caller sees -1.
+    None
 }
 
 pub fn capture_fullscreen(display: usize) -> Result<RgbaImage, CaptureError> {
