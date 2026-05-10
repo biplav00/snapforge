@@ -7,6 +7,7 @@
 #include <QTimer>
 #include <QElapsedTimer>
 #include <QFuture>
+#include <atomic>
 
 class RecordingManager : public QObject {
     Q_OBJECT
@@ -42,7 +43,10 @@ public slots:
 private:
     void loadPrefsIfNeeded();
 
-    void *m_handle = nullptr;
+    // Atomic so dtor and stopRecording cannot both observe the same non-null
+    // pointer and end up double-stopping / double-freeing it. Whoever swaps
+    // it to nullptr first owns the teardown.
+    std::atomic<void *> m_handle{nullptr};
     QString m_outputPath;
     QTimer *m_timer = nullptr;
     QElapsedTimer m_elapsed;

@@ -5,14 +5,32 @@
 //! - Caller-owned buffers are allocated here and freed via snapforge_free_buffer.
 //! - String out-params are allocated here and freed via snapforge_free_string.
 
+use std::collections::HashMap;
 use std::ffi::{c_char, c_int, c_void, CStr, CString};
 use std::path::{Path, PathBuf};
 use std::ptr;
-use std::sync::{Mutex, MutexGuard};
+use std::sync::{Mutex, MutexGuard, OnceLock};
 
 /// Last recording-related error, set whenever a recording FFI call fails.
 /// Read via `snapforge_last_recording_error`.
 static LAST_RECORDING_ERROR: Mutex<Option<String>> = Mutex::new(None);
+
+/// Tracks every live `(ptr, len)` returned by `snapforge_capture_*` so
+/// `snapforge_free_buffer` can detect a length mismatch (which would otherwise
+/// hand a wrong-layout `Box<[u8]>` to the global allocator and corrupt the heap).
+static BUFFER_REGISTRY: OnceLock<Mutex<HashMap<usize, usize>>> = OnceLock::new();
+
+fn buffer_registry() -> &'static Mutex<HashMap<usize, usize>> {
+    BUFFER_REGISTRY.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn register_buffer(ptr: *mut u8, len: usize) {
+    if !ptr.is_null() {
+        if let Ok(mut map) = buffer_registry().lock() {
+            map.insert(ptr as usize, len);
+        }
+    }
+}
 
 fn set_recording_error(msg: impl Into<String>) {
     if let Ok(mut guard) = LAST_RECORDING_ERROR.lock() {
@@ -72,6 +90,7 @@ pub extern "C" fn snapforge_capture_fullscreen(display: u32) -> CapturedImage {
             let boxed: Box<[u8]> = image.into_raw().into_boxed_slice();
             let len = boxed.len();
             let data = Box::into_raw(boxed) as *mut u8;
+            register_buffer(data, len);
             CapturedImage {
                 data,
                 len,
@@ -126,6 +145,7 @@ pub extern "C" fn snapforge_capture_region(
             let boxed: Box<[u8]> = image.into_raw().into_boxed_slice();
             let len = boxed.len();
             let data = Box::into_raw(boxed) as *mut u8;
+            register_buffer(data, len);
             CapturedImage {
                 data,
                 len,
@@ -150,13 +170,35 @@ pub extern "C" fn snapforge_capture_region(
 /// and must not have been freed already.
 #[no_mangle]
 pub unsafe extern "C" fn snapforge_free_buffer(data: *mut u8, len: usize) {
-    // Only null-check — a zero-length allocation is still a live Box we own.
-    // (In practice our captures never return len == 0 with a non-null data,
-    // but the previous short-circuit on len == 0 would leak if that ever
-    // happened. Trust the null check.)
-    if !data.is_null() {
-        let _ = Box::from_raw(std::ptr::slice_from_raw_parts_mut(data, len));
+    if data.is_null() {
+        return;
     }
+    // Cross-check the caller-supplied `len` against what we recorded at alloc.
+    // A wrong `len` would hand `Box::from_raw` a wrong-layout slice and corrupt
+    // the heap silently. Refuse to free if it doesn't match.
+    let recorded = match buffer_registry().lock() {
+        Ok(mut map) => map.remove(&(data as usize)),
+        Err(_) => None,
+    };
+    let real_len = match recorded {
+        Some(n) => n,
+        None => {
+            eprintln!("[snapforge] free_buffer: unknown pointer {:p} (already freed or never allocated by us); leaking", data);
+            return;
+        }
+    };
+    if real_len != len {
+        eprintln!(
+            "[snapforge] free_buffer: length mismatch for {:p}: caller says {}, we recorded {}; leaking to avoid heap corruption",
+            data, len, real_len
+        );
+        // Re-insert so a correct call can still free it.
+        if let Ok(mut map) = buffer_registry().lock() {
+            map.insert(data as usize, real_len);
+        }
+        return;
+    }
+    let _ = Box::from_raw(std::ptr::slice_from_raw_parts_mut(data, real_len));
 }
 
 /// Save RGBA pixel data to a file.
@@ -314,7 +356,15 @@ pub unsafe extern "C" fn snapforge_free_string(s: *mut c_char) {
 /// Wrapped in a `Mutex` so concurrent FFI calls (intended usage is
 /// single-threaded, but callers can't prove it) don't invoke UB via
 /// aliased `&mut` / `&` references on the same pointer.
+///
+/// `magic` is an in-band tag the FFI checks on every entry. Free zeroes it so
+/// a stale (use-after-free) pointer can be detected with high probability.
+const HANDLE_MAGIC_ALIVE: u64 = 0x534E_4150_4652_4748; // "SNAPFRGH"
+const HANDLE_MAGIC_DEAD: u64 = 0xDEAD_DEAD_DEAD_DEAD;
+
+#[repr(C)]
 struct FfiRecordingHandle {
+    magic: u64,
     inner: Mutex<Option<RecordingHandle>>,
 }
 
@@ -324,6 +374,30 @@ impl FfiRecordingHandle {
     fn lock_recording(&self) -> MutexGuard<'_, Option<RecordingHandle>> {
         self.inner.lock().unwrap_or_else(|e| e.into_inner())
     }
+}
+
+/// Validate a caller-supplied recording handle pointer. Returns a reference
+/// only when the in-band magic matches; otherwise logs and returns `None`.
+///
+/// # Safety
+///
+/// The caller must not mutate `handle` concurrently. The returned reference
+/// borrows from `handle` for the FFI call's lifetime.
+unsafe fn check_recording_handle<'a>(handle: *mut c_void) -> Option<&'a FfiRecordingHandle> {
+    if handle.is_null() {
+        return None;
+    }
+    let p = handle.cast::<FfiRecordingHandle>();
+    // `read_volatile` so the compiler doesn't elide the magic read in release.
+    let magic = std::ptr::read_volatile(std::ptr::addr_of!((*p).magic));
+    if magic != HANDLE_MAGIC_ALIVE {
+        eprintln!(
+            "[snapforge] recording handle {:p} failed magic check (got 0x{:016x}); rejecting",
+            handle, magic
+        );
+        return None;
+    }
+    Some(&*p)
 }
 
 /// Start a screen recording.
@@ -429,6 +503,7 @@ pub unsafe extern "C" fn snapforge_start_recording(config_json: *const c_char) -
                 *guard = None;
             }
             let wrapper = Box::new(FfiRecordingHandle {
+                magic: HANDLE_MAGIC_ALIVE,
                 inner: Mutex::new(Some(handle)),
             });
             Box::into_raw(wrapper).cast::<c_void>()
@@ -449,10 +524,9 @@ pub unsafe extern "C" fn snapforge_start_recording(config_json: *const c_char) -
 /// and must not have been freed.
 #[no_mangle]
 pub unsafe extern "C" fn snapforge_stop_recording(handle: *mut c_void) -> c_int {
-    if handle.is_null() {
+    let Some(wrapper) = check_recording_handle(handle) else {
         return -1;
-    }
-    let wrapper = &*handle.cast::<FfiRecordingHandle>();
+    };
     let taken = wrapper.lock_recording().take();
     match taken {
         Some(h) => match h.stop() {
@@ -474,10 +548,9 @@ pub unsafe extern "C" fn snapforge_stop_recording(handle: *mut c_void) -> c_int 
 /// `handle` must be a valid pointer returned by `snapforge_start_recording`.
 #[no_mangle]
 pub unsafe extern "C" fn snapforge_pause_recording(handle: *mut c_void) -> c_int {
-    if handle.is_null() {
+    let Some(wrapper) = check_recording_handle(handle) else {
         return -1;
-    }
-    let wrapper = &*handle.cast::<FfiRecordingHandle>();
+    };
     let guard = wrapper.lock_recording();
     match guard.as_ref() {
         Some(h) => {
@@ -495,10 +568,9 @@ pub unsafe extern "C" fn snapforge_pause_recording(handle: *mut c_void) -> c_int
 /// `handle` must be a valid pointer returned by `snapforge_start_recording`.
 #[no_mangle]
 pub unsafe extern "C" fn snapforge_resume_recording(handle: *mut c_void) -> c_int {
-    if handle.is_null() {
+    let Some(wrapper) = check_recording_handle(handle) else {
         return -1;
-    }
-    let wrapper = &*handle.cast::<FfiRecordingHandle>();
+    };
     let guard = wrapper.lock_recording();
     match guard.as_ref() {
         Some(h) => {
@@ -535,10 +607,9 @@ pub extern "C" fn snapforge_last_recording_error() -> *mut c_char {
 /// and must not have been freed.
 #[no_mangle]
 pub unsafe extern "C" fn snapforge_is_recording(handle: *mut c_void) -> c_int {
-    if handle.is_null() {
+    let Some(wrapper) = check_recording_handle(handle) else {
         return 0;
-    }
-    let wrapper = &*handle.cast::<FfiRecordingHandle>();
+    };
     let guard = wrapper.lock_recording();
     match guard.as_ref() {
         Some(h) => c_int::from(h.is_running()),
@@ -555,9 +626,23 @@ pub unsafe extern "C" fn snapforge_is_recording(handle: *mut c_void) -> c_int {
 /// and must not have been freed already.
 #[no_mangle]
 pub unsafe extern "C" fn snapforge_free_recording_handle(handle: *mut c_void) {
-    if !handle.is_null() {
-        let _ = Box::from_raw(handle.cast::<FfiRecordingHandle>());
+    if handle.is_null() {
+        return;
     }
+    let p = handle.cast::<FfiRecordingHandle>();
+    let magic = std::ptr::read_volatile(std::ptr::addr_of!((*p).magic));
+    if magic != HANDLE_MAGIC_ALIVE {
+        eprintln!(
+            "[snapforge] free_recording_handle: stale or invalid pointer {:p} (magic 0x{:016x}); ignoring",
+            handle, magic
+        );
+        return;
+    }
+    // Poison the magic before reclaiming so a subsequent stale call from
+    // C is detected by `check_recording_handle` instead of dereferencing
+    // the freed allocation.
+    std::ptr::write_volatile(std::ptr::addr_of_mut!((*p).magic), HANDLE_MAGIC_DEAD);
+    let _ = Box::from_raw(p);
 }
 
 // ---------------------------------------------------------------------------

@@ -2,7 +2,7 @@ pub mod ffmpeg;
 
 use crate::config::{RecordingFormat, RecordingQuality};
 use crate::types::Rect;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -37,9 +37,19 @@ pub struct RecordConfig {
 /// 2. Adjacent to current executable (bundled resource)
 /// 3. System PATH
 pub fn find_ffmpeg(provided_path: Option<&PathBuf>) -> Result<PathBuf, RecordError> {
-    // Check provided path
+    // Check provided path. Surfaced separately in the log so a non-system
+    // ffmpeg binary path (which can be set via config and would let an
+    // attacker with config-write access run arbitrary code) is at least
+    // visible during incident response.
     if let Some(path) = provided_path {
         if path.exists() {
+            if !is_trusted_ffmpeg_location(path) {
+                eprintln!(
+                    "[snapforge] WARNING: using non-system ffmpeg path: {} \
+                     (set via config; verify intent)",
+                    path.display()
+                );
+            }
             return Ok(path.clone());
         }
     }
@@ -106,6 +116,43 @@ pub fn find_ffmpeg(provided_path: Option<&PathBuf>) -> Result<PathBuf, RecordErr
 /// Check if FFmpeg is available (bundled or system).
 pub fn check_ffmpeg() -> Result<(), RecordError> {
     find_ffmpeg(None).map(|_| ())
+}
+
+/// Heuristic for "is this an ffmpeg binary in a location we'd expect?". Used
+/// only to gate a warning log — not as an authorization boundary.
+fn is_trusted_ffmpeg_location(path: &Path) -> bool {
+    use std::path::Component;
+    let abs = match path.canonicalize() {
+        Ok(p) => p,
+        Err(_) => return false,
+    };
+    // Adjacent to current executable (bundled in app)
+    if let Ok(exe) = std::env::current_exe() {
+        if let Ok(exe_abs) = exe.canonicalize() {
+            if let Some(exe_dir) = exe_abs.parent() {
+                if abs.starts_with(exe_dir) {
+                    return true;
+                }
+            }
+        }
+    }
+    // Conservative allowlist of canonical system locations.
+    const TRUSTED_PREFIXES: &[&str] = &[
+        "/usr/bin",
+        "/usr/local/bin",
+        "/usr/local/Cellar",
+        "/opt/homebrew",
+        "/opt/local/bin",
+        "/snap/bin",
+    ];
+    let abs_str = abs.to_string_lossy();
+    if TRUSTED_PREFIXES.iter().any(|p| abs_str.starts_with(p)) {
+        return true;
+    }
+    // Treat anything under the user's home that isn't in a hidden tmp-ish
+    // directory as suspicious — a tighter heuristic is brittle across distros.
+    let _ = Component::Normal; // silence unused import on some platforms
+    false
 }
 
 #[cfg(test)]

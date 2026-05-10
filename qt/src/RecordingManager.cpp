@@ -27,11 +27,12 @@ RecordingManager::~RecordingManager()
     // H5: bound shutdown to 5 seconds.
     // snapforge_stop_recording blocks until ffmpeg finalizes the file which
     // can be slow. Run it on a detached std::thread and wait via a promise.
-    if (!m_handle) {
+    // Atomically grab ownership of the handle: if stopRecording() races us, the
+    // exchange leaves us with nullptr and we just return.
+    void *handle = m_handle.exchange(nullptr);
+    if (!handle) {
         return;
     }
-    void *handle = m_handle;
-    m_handle = nullptr;
 
     auto donePromise = std::make_shared<std::promise<void>>();
     std::future<void> doneFuture = donePromise->get_future();
@@ -51,7 +52,8 @@ RecordingManager::~RecordingManager()
 
 bool RecordingManager::isRecording() const
 {
-    return m_handle != nullptr && snapforge_is_recording(m_handle) == 1;
+    void *h = m_handle.load();
+    return h != nullptr && snapforge_is_recording(h) == 1;
 }
 
 bool RecordingManager::isPaused() const
@@ -76,8 +78,9 @@ int RecordingManager::elapsedSeconds() const
 
 void RecordingManager::pauseRecording()
 {
-    if (!m_handle || m_paused) return;
-    if (snapforge_pause_recording(m_handle) != 0) {
+    void *h = m_handle.load();
+    if (!h || m_paused) return;
+    if (snapforge_pause_recording(h) != 0) {
         emit recordingError(QStringLiteral("Failed to pause recording"));
         return;
     }
@@ -92,8 +95,9 @@ void RecordingManager::pauseRecording()
 
 void RecordingManager::resumeRecording()
 {
-    if (!m_handle || !m_paused) return;
-    if (snapforge_resume_recording(m_handle) != 0) {
+    void *h = m_handle.load();
+    if (!h || !m_paused) return;
+    if (snapforge_resume_recording(h) != 0) {
         emit recordingError(QStringLiteral("Failed to resume recording"));
         return;
     }
@@ -180,8 +184,9 @@ void RecordingManager::startRecording(int display, QRect region, QString outputD
 
     QByteArray jsonBytes = QJsonDocument(config).toJson(QJsonDocument::Compact);
 
-    m_handle = snapforge_start_recording(jsonBytes.constData());
-    if (!m_handle) {
+    void *newHandle = snapforge_start_recording(jsonBytes.constData());
+    m_handle.store(newHandle);
+    if (!newHandle) {
         QString detail = QStringLiteral("Failed to start recording");
         if (char *errMsg = snapforge_last_recording_error()) {
             detail = QStringLiteral("Recording failed: %1").arg(QString::fromUtf8(errMsg));
@@ -201,15 +206,16 @@ void RecordingManager::startRecording(int display, QRect region, QString outputD
 
 void RecordingManager::stopRecording()
 {
-    if (!m_handle) {
+    // Atomically take ownership; dtor may race us, whoever wins finalizes.
+    void *h = m_handle.exchange(nullptr);
+    if (!h) {
         return;
     }
 
     m_timer->stop();
 
-    int rc = snapforge_stop_recording(m_handle);
-    snapforge_free_recording_handle(m_handle);
-    m_handle = nullptr;
+    int rc = snapforge_stop_recording(h);
+    snapforge_free_recording_handle(h);
 
     if (rc != 0) {
         QString detail = QStringLiteral("Recording failed during finalization");
