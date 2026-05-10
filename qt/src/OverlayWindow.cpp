@@ -11,6 +11,10 @@
 #include <QTimer>
 #include <QFontMetrics>
 #include <QPushButton>
+#include <QPointer>
+#include <QtConcurrent/QtConcurrent>
+#include <QFutureWatcher>
+#include <QThreadPool>
 #include <algorithm>
 #include <cmath>
 #include "snapforge_ffi.h"
@@ -87,44 +91,48 @@ void OverlayWindow::activateInternal() {
         m_displayIndex = (display >= 0) ? display : 0;
     }
 
-    // Capture screen FIRST (like Flameshot) — then show overlay with
-    // the screenshot as an opaque background. The user sees their desktop
-    // "freeze" because the overlay looks identical to it.
-    //
-    // NOTE: snapforge_capture_fullscreen is called synchronously here, but the
-    // Rust side detects main-thread invocation and hops to a worker thread
-    // (SCK's completion handler needs the main RunLoop free). So this does
-    // not starve the UI thread — the thread spawn+join is fast.
     // Always clear previous capture so a failed fresh capture can't
     // silently reuse the last activation's image (which would show the
     // wrong window when switching apps between screenshots).
     m_screenshot = QImage();
     m_scaledScreenshot = QImage();
 
-    CapturedImage img = snapforge_capture_fullscreen(m_displayIndex);
-    if (img.data && img.width > 0) {
-        QImage qimg(img.data, img.width, img.height, img.width * 4,
-                    QImage::Format_RGBA8888);
-        m_screenshot = qimg.copy();
-        snapforge_free_buffer(img.data, img.len);
-    } else {
-        qWarning("Overlay: snapforge_capture_fullscreen failed");
-    }
-
-    // Size overlay to the cursor's screen (not primary), matching the
-    // display we captured above.
+    // Size overlay to the cursor's screen (not primary).
     if (screen) {
         setGeometry(screen->geometry());
     }
 
-    // Cache the scaled screenshot at widget resolution so paintEvent
-    // doesn't re-scale a multi-MB image on every mouse move.
-    if (!m_screenshot.isNull()) {
-        m_scaledScreenshot = m_screenshot.scaled(size(), Qt::IgnoreAspectRatio,
-                                                 Qt::FastTransformation);
-    } else {
-        m_scaledScreenshot = QImage();
-    }
+    // Show the overlay BEFORE capturing. Previously snapforge_capture_fullscreen
+    // ran synchronously and could block the UI thread for several seconds when
+    // SCK was slow to deliver the first frame. We now show the dimmed overlay
+    // immediately and swap in the screenshot when the worker completes; until
+    // then, paintEvent draws light dim over the real desktop.
+    int displayIndex = m_displayIndex;
+    QPointer<OverlayWindow> self(this);
+    auto *watcher = new QFutureWatcher<QImage>(this);
+    connect(watcher, &QFutureWatcher<QImage>::finished, this, [self, watcher]() {
+        QImage img = watcher->result();
+        watcher->deleteLater();
+        if (!self) return;
+        if (img.isNull()) {
+            qWarning("Overlay: snapforge_capture_fullscreen failed");
+            return;
+        }
+        self->m_screenshot = img;
+        self->update();
+    });
+    QFuture<QImage> future = QtConcurrent::run([displayIndex]() -> QImage {
+        CapturedImage img = snapforge_capture_fullscreen(displayIndex);
+        if (!img.data || img.width == 0) {
+            return QImage();
+        }
+        QImage qimg(img.data, img.width, img.height, img.width * 4,
+                    QImage::Format_RGBA8888);
+        QImage copy = qimg.copy();
+        snapforge_free_buffer(img.data, img.len);
+        return copy;
+    });
+    watcher->setFuture(future);
 
     show();
     activateWindow();
@@ -907,15 +915,20 @@ void OverlayWindow::keyPressEvent(QKeyEvent *event) {
         int pw = static_cast<int>(sel.width() * dpr);
         int ph = static_cast<int>(sel.height() * dpr);
 
-        CapturedImage img = snapforge_capture_region(m_displayIndex, px, py, pw, ph);
-        if (img.data && img.width > 0) {
-            snapforge_copy_to_clipboard(img.data, img.width, img.height);
-            snapforge_free_buffer(img.data, img.len);
-        }
-
+        // Hide overlay first, then capture+copy on a worker so SCK latency
+        // doesn't block the UI thread. By the time the worker captures, the
+        // overlay is gone and the underlying desktop is what we want anyway.
+        int displayIndex = m_displayIndex;
         m_hasRegion = false;
         m_drawing = false;
         hideOverlay();
         emit cancelled();
+        QThreadPool::globalInstance()->start([displayIndex, px, py, pw, ph]() {
+            CapturedImage img = snapforge_capture_region(displayIndex, px, py, pw, ph);
+            if (img.data && img.width > 0) {
+                snapforge_copy_to_clipboard(img.data, img.width, img.height);
+                snapforge_free_buffer(img.data, img.len);
+            }
+        });
     }
 }
