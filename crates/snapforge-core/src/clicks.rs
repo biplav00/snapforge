@@ -47,15 +47,24 @@ impl ClickTracker {
 
     /// Get clicks from within the last `max_age_ms` milliseconds.
     pub fn recent(&self, max_age_ms: u64) -> Vec<ClickEvent> {
+        let mut out = Vec::new();
+        self.recent_into(max_age_ms, &mut out);
+        out
+    }
+
+    /// Same as `recent`, but writes into a caller-provided Vec to avoid an
+    /// allocation every frame on the recording hot loop.
+    pub fn recent_into(&self, max_age_ms: u64, out: &mut Vec<ClickEvent>) {
+        out.clear();
         let Ok(clicks) = self.clicks.lock() else {
-            return Vec::new();
+            return;
         };
         let now = Instant::now();
-        clicks
-            .iter()
-            .filter(|c| now.duration_since(c.timestamp).as_millis() <= max_age_ms as u128)
-            .copied()
-            .collect()
+        for c in clicks.iter() {
+            if now.duration_since(c.timestamp).as_millis() <= max_age_ms as u128 {
+                out.push(*c);
+            }
+        }
     }
 
     /// Start the macOS event tap that feeds this tracker.

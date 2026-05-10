@@ -385,20 +385,34 @@ fn start_recording_macos_bgra(
         let ctx = capture::CaptureContext::new(display, max_dimension)
             .map_err(|e| RecordError::CaptureFailed(e.to_string()))?;
 
-        let mut writer = std::io::BufWriter::with_capacity(256 * 1024, &mut stdin);
+        let frame_bytes = (width as usize) * (height as usize) * 4;
+        // Use a buffer roughly the size of one frame so each frame typically
+        // flushes once (the previous 256 KiB caused 30+ flushes per 1080p
+        // frame, which was strictly slower than no buffering).
+        let buf_capacity = frame_bytes.clamp(1 << 20, 8 << 20); // 1–8 MiB
+        let mut writer = std::io::BufWriter::with_capacity(buf_capacity, &mut stdin);
 
-        // Capture the initial frame
-        let mut last_frame_bytes: Vec<u8> = match ctx.capture_frame_raw_bgra() {
-            Ok(f) => crop_bgra_to_region(
+        // Two scratch buffers reused across the entire recording: one holds the
+        // most recent captured (and cropped) frame, the other is the per-output
+        // "composed" frame with clicks drawn over it. Pre-allocating eliminates
+        // ~240 MB/s of allocator traffic at 1080p30.
+        let mut last_frame_bytes: Vec<u8> = vec![0u8; frame_bytes];
+        let mut composed: Vec<u8> = vec![0u8; frame_bytes];
+        // Reused click snapshot — refreshed once per captured frame.
+        let mut click_snapshot: Vec<crate::clicks::ClickEvent> = Vec::with_capacity(32);
+
+        // Capture the initial frame into last_frame_bytes.
+        if let Ok(f) = ctx.capture_frame_raw_bgra() {
+            crop_bgra_to_region_into(
                 &f.bytes,
                 f.width,
                 f.height,
                 region_in_scaled.as_ref(),
                 width,
                 height,
-            ),
-            Err(_) => vec![0u8; (width as usize) * (height as usize) * 4],
-        };
+                &mut last_frame_bytes,
+            );
+        }
 
         if let Err(e) = writer.write_all(&last_frame_bytes) {
             if e.kind() == std::io::ErrorKind::BrokenPipe {
@@ -439,15 +453,21 @@ fn start_recording_macos_bgra(
             }
 
             if let Ok(raw) = ctx.capture_frame_raw_bgra() {
-                last_frame_bytes = crop_bgra_to_region(
+                crop_bgra_to_region_into(
                     &raw.bytes,
                     raw.width,
                     raw.height,
                     region_in_scaled.as_ref(),
                     width,
                     height,
+                    &mut last_frame_bytes,
                 );
             }
+
+            // Refresh the click snapshot once per captured frame, not per
+            // output frame. The lock + filter cost is amortized across all
+            // duplicated frames written below.
+            click_tracker.recent_into(CLICK_LIFETIME_MS, &mut click_snapshot);
 
             let effective_elapsed =
                 start.elapsed().checked_sub(paused_accum).unwrap_or_default();
@@ -455,20 +475,27 @@ fn start_recording_macos_bgra(
                 (effective_elapsed.as_secs_f64() / frame_interval.as_secs_f64()) as u64;
             let frames_to_write = elapsed_frames.saturating_sub(frame_count - 1).max(1);
 
-            // For each frame we need to write, draw clicks onto a copy and send it
             let mut pipe_broken = false;
             for _ in 0..frames_to_write {
-                let mut composed = last_frame_bytes.clone();
-                draw_clicks_bgra(
-                    &mut composed,
-                    width,
-                    height,
-                    &click_tracker,
-                    region_in_scaled.as_ref(),
-                    point_to_scaled_pixel_x,
-                    point_to_scaled_pixel_y,
-                );
-                if let Err(e) = writer.write_all(&composed) {
+                // Hot-path optimization: when no clicks are active, skip the
+                // copy and write the captured frame directly. With clicks,
+                // copy into the scratch buffer and overlay them in place.
+                let to_write: &[u8] = if click_snapshot.is_empty() {
+                    &last_frame_bytes
+                } else {
+                    composed.copy_from_slice(&last_frame_bytes);
+                    draw_clicks_bgra(
+                        &mut composed,
+                        width,
+                        height,
+                        &click_snapshot,
+                        region_in_scaled.as_ref(),
+                        point_to_scaled_pixel_x,
+                        point_to_scaled_pixel_y,
+                    );
+                    &composed
+                };
+                if let Err(e) = writer.write_all(to_write) {
                     if e.kind() == std::io::ErrorKind::BrokenPipe {
                         pipe_broken = true;
                     }
@@ -525,21 +552,26 @@ fn start_recording_macos_bgra(
     })
 }
 
-/// Crop a BGRA buffer to the target region (or return as-is if no region).
-/// If the source and target sizes already match and there's no region, returns a copy.
+/// Crop a BGRA buffer into the caller's destination buffer (no allocation).
+/// `dst` must already be sized to `dst_w * dst_h * 4`. The destination is
+/// fully overwritten — any pixels not covered by the crop are zeroed.
 #[cfg(target_os = "macos")]
-fn crop_bgra_to_region(
+fn crop_bgra_to_region_into(
     src: &[u8],
     src_w: u32,
     src_h: u32,
     region: Option<&crate::types::Rect>,
     dst_w: u32,
     dst_h: u32,
-) -> Vec<u8> {
+    dst: &mut [u8],
+) {
     let src_stride = (src_w as usize) * 4;
     let dst_stride = (dst_w as usize) * 4;
 
     if let Some(r) = region {
+        // Zero on entry so any partial-coverage region doesn't leak the
+        // previous frame's contents into the uncovered margin.
+        dst.fill(0);
         let rx = r.x.max(0) as usize;
         let ry = r.y.max(0) as usize;
         let rw = (r.width as usize).min((src_w as usize).saturating_sub(rx));
@@ -547,18 +579,16 @@ fn crop_bgra_to_region(
         let rw = rw.min(dst_w as usize);
         let rh = rh.min(dst_h as usize);
 
-        let mut dst = vec![0u8; dst_stride * (dst_h as usize)];
         for y in 0..rh {
             let src_off = (ry + y) * src_stride + rx * 4;
             let dst_off = y * dst_stride;
             dst[dst_off..dst_off + rw * 4].copy_from_slice(&src[src_off..src_off + rw * 4]);
         }
-        dst
     } else if src_w == dst_w && src_h == dst_h {
-        src.to_vec()
+        // Common no-region case: a single contiguous copy.
+        dst.copy_from_slice(&src[..dst_stride * (dst_h as usize)]);
     } else {
-        // Fallback: crop to top-left dst_w x dst_h
-        let mut dst = vec![0u8; dst_stride * (dst_h as usize)];
+        dst.fill(0);
         let copy_w = (dst_w as usize).min(src_w as usize) * 4;
         let copy_h = (dst_h as usize).min(src_h as usize);
         for y in 0..copy_h {
@@ -566,9 +596,13 @@ fn crop_bgra_to_region(
             let dst_off = y * dst_stride;
             dst[dst_off..dst_off + copy_w].copy_from_slice(&src[src_off..src_off + copy_w]);
         }
-        dst
     }
 }
+
+/// Lifetime in ms of a click marker on the recorded video. Promoted to a
+/// crate-level constant so the recording loop and `draw_clicks_bgra` agree.
+#[cfg(target_os = "macos")]
+const CLICK_LIFETIME_MS: u64 = 1000;
 
 /// Draw click markers onto a BGRA buffer (in-place).
 /// Each click produces a ripple animation: a filled dot at the click point
@@ -585,18 +619,16 @@ fn draw_clicks_bgra(
     buf: &mut [u8],
     width: u32,
     height: u32,
-    tracker: &ClickTracker,
+    clicks: &[crate::clicks::ClickEvent],
     region: Option<&crate::types::Rect>,
     scale_x: f64,
     scale_y: f64,
 ) {
-    const CLICK_LIFETIME_MS: u64 = 1000;
     const DOT_RADIUS: f64 = 8.0;
     const RING_START_RADIUS: f64 = 12.0;
     const RING_END_RADIUS: f64 = 52.0;
     const RING_THICKNESS: f64 = 3.5;
 
-    let clicks = tracker.recent(CLICK_LIFETIME_MS);
     if clicks.is_empty() {
         return;
     }
@@ -608,7 +640,7 @@ fn draw_clicks_bgra(
     let red = (60u8, 60u8, 255u8);
     let white = (255u8, 255u8, 255u8);
 
-    for click in &clicks {
+    for click in clicks {
         let age_ms = now.duration_since(click.timestamp).as_millis() as f64;
         let t = (age_ms / CLICK_LIFETIME_MS as f64).clamp(0.0, 1.0);
 
@@ -662,7 +694,24 @@ fn draw_clicks_bgra(
     }
 }
 
-/// Fill a solid circle in BGRA with alpha blending.
+/// Integer u8-domain alpha blend: `(s*a + d*(255-a) + 127) / 255`. Approximated
+/// with `(x + 128 + (x >> 8)) >> 8` so the divide is two shifts and an add,
+/// staying within 1 ULP of the exact result for u16 inputs. Massively faster
+/// than the previous f32 multiply path on the recording hot loop.
+#[inline(always)]
+fn blend_u8(src: u8, dst: u8, alpha: u8) -> u8 {
+    let s = u16::from(src);
+    let d = u16::from(dst);
+    let a = u16::from(alpha);
+    let v = s * a + d * (255 - a);
+    // Round-to-nearest divide by 255.
+    (((v + 128) + ((v + 128) >> 8)) >> 8) as u8
+}
+
+/// Fill a solid circle in BGRA with alpha blending. Inner loop uses integer
+/// squared-distance against `r_sq_q8` (radius squared in 8.8 fixed-point) so
+/// the per-pixel cost is two integer mults + a compare + (when inside) a
+/// short blend — no f64 in the hot loop.
 #[cfg(target_os = "macos")]
 #[allow(
     clippy::too_many_arguments,
@@ -684,7 +733,6 @@ fn fill_circle_bgra(
         return;
     }
     let stride = (width as usize) * 4;
-    let r_sq = radius * radius;
 
     let min_x = (cx - radius).floor().max(0.0) as u32;
     let max_x = ((cx + radius).ceil() as u32).min(width.saturating_sub(1));
@@ -695,27 +743,38 @@ fn fill_circle_bgra(
         return;
     }
 
-    let src_a = f32::from(alpha) / 255.0;
-    let inv_a = 1.0 - src_a;
+    // Center in 8.8 fixed point so subpixel positioning is preserved without
+    // floating-point math in the inner loop.
+    let cx_q8 = (cx * 256.0) as i32;
+    let cy_q8 = (cy * 256.0) as i32;
+    let r_q8 = (radius * 256.0) as i32;
+    let r_sq_q8 = (r_q8 as i64) * (r_q8 as i64);
+
     let (sb, sg, sr) = color;
 
     for y in min_y..=max_y {
+        let dy_q8 = (y as i32 * 256) - cy_q8;
+        let dy_sq = (dy_q8 as i64) * (dy_q8 as i64);
+        if dy_sq > r_sq_q8 {
+            continue;
+        }
+        let row_off = (y as usize) * stride;
         for x in min_x..=max_x {
-            let dx = f64::from(x) - cx;
-            let dy = f64::from(y) - cy;
-            let dist_sq = dx * dx + dy * dy;
-            if dist_sq <= r_sq {
-                let off = (y as usize) * stride + (x as usize) * 4;
-                buf[off] = (f32::from(sb) * src_a + f32::from(buf[off]) * inv_a) as u8;
-                buf[off + 1] = (f32::from(sg) * src_a + f32::from(buf[off + 1]) * inv_a) as u8;
-                buf[off + 2] = (f32::from(sr) * src_a + f32::from(buf[off + 2]) * inv_a) as u8;
+            let dx_q8 = (x as i32 * 256) - cx_q8;
+            let dist_sq = dy_sq + (dx_q8 as i64) * (dx_q8 as i64);
+            if dist_sq <= r_sq_q8 {
+                let off = row_off + (x as usize) * 4;
+                buf[off] = blend_u8(sb, buf[off], alpha);
+                buf[off + 1] = blend_u8(sg, buf[off + 1], alpha);
+                buf[off + 2] = blend_u8(sr, buf[off + 2], alpha);
                 buf[off + 3] = 255;
             }
         }
     }
 }
 
-/// Draw a hollow ring in BGRA with alpha blending.
+/// Draw a hollow ring in BGRA with alpha blending. Same fixed-point treatment
+/// as `fill_circle_bgra`.
 #[cfg(target_os = "macos")]
 #[allow(
     clippy::too_many_arguments,
@@ -739,8 +798,6 @@ fn draw_ring_bgra(
     }
     let stride = (width as usize) * 4;
     let inner = (outer_radius - thickness).max(0.0);
-    let inner_sq = inner * inner;
-    let outer_sq = outer_radius * outer_radius;
 
     let min_x = (cx - outer_radius).floor().max(0.0) as u32;
     let max_x = ((cx + outer_radius).ceil() as u32).min(width.saturating_sub(1));
@@ -751,20 +808,30 @@ fn draw_ring_bgra(
         return;
     }
 
-    let src_a = f32::from(alpha) / 255.0;
-    let inv_a = 1.0 - src_a;
+    let cx_q8 = (cx * 256.0) as i32;
+    let cy_q8 = (cy * 256.0) as i32;
+    let outer_q8 = (outer_radius * 256.0) as i32;
+    let inner_q8 = (inner * 256.0) as i32;
+    let outer_sq = (outer_q8 as i64) * (outer_q8 as i64);
+    let inner_sq = (inner_q8 as i64) * (inner_q8 as i64);
+
     let (sb, sg, sr) = color;
 
     for y in min_y..=max_y {
+        let dy_q8 = (y as i32 * 256) - cy_q8;
+        let dy_sq = (dy_q8 as i64) * (dy_q8 as i64);
+        if dy_sq > outer_sq {
+            continue;
+        }
+        let row_off = (y as usize) * stride;
         for x in min_x..=max_x {
-            let dx = f64::from(x) - cx;
-            let dy = f64::from(y) - cy;
-            let dist_sq = dx * dx + dy * dy;
+            let dx_q8 = (x as i32 * 256) - cx_q8;
+            let dist_sq = dy_sq + (dx_q8 as i64) * (dx_q8 as i64);
             if dist_sq <= outer_sq && dist_sq >= inner_sq {
-                let off = (y as usize) * stride + (x as usize) * 4;
-                buf[off] = (f32::from(sb) * src_a + f32::from(buf[off]) * inv_a) as u8;
-                buf[off + 1] = (f32::from(sg) * src_a + f32::from(buf[off + 1]) * inv_a) as u8;
-                buf[off + 2] = (f32::from(sr) * src_a + f32::from(buf[off + 2]) * inv_a) as u8;
+                let off = row_off + (x as usize) * 4;
+                buf[off] = blend_u8(sb, buf[off], alpha);
+                buf[off + 1] = blend_u8(sg, buf[off + 1], alpha);
+                buf[off + 2] = blend_u8(sr, buf[off + 2], alpha);
                 buf[off + 3] = 255;
             }
         }
