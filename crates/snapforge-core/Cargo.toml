@@ -29,7 +29,7 @@ objc2-screen-capture-kit = { version = "0.3", features = [
 block2 = "0.6"
 
 [target.'cfg(not(target_os = "macos"))'.dependencies]
-xcap = "0.9.3"
+xcap = "0.9.4"
 
 [lints]
 workspace = true
