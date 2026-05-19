@@ -2499,6 +2499,7 @@ version = "0.1.0"
 dependencies = [
  "image",
  "serde_json",
+ "snapforge-app",
  "snapforge-core",
  "tempfile",
 ]
