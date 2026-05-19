@@ -11,7 +11,7 @@ use objc2_screen_capture_kit::{
     SCWindow,
 };
 
-use crate::types::Rect;
+use snapforge_domain::Rect;
 
 use super::CaptureError;
 
@@ -803,7 +803,7 @@ mod tests {
 
     #[test]
     fn test_capture_region_main() {
-        let region = crate::types::Rect {
+        let region = snapforge_domain::Rect {
             x: 0,
             y: 0,
             width: 100,

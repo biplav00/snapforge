@@ -15,6 +15,8 @@
 #include <QtConcurrent/QtConcurrent>
 #include <QFutureWatcher>
 #include <QThreadPool>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <algorithm>
 #include <cmath>
 #include "snapforge_ffi.h"
@@ -941,9 +943,25 @@ void OverlayWindow::keyPressEvent(QKeyEvent *event) {
         hideOverlay();
         emit cancelled();
         QThreadPool::globalInstance()->start([displayIndex, px, py, pw, ph]() {
+            // Raw capture stays on the primitive (snapforge_capture_region):
+            // this is the unmodified desktop bitmap with no annotations to
+            // preserve. We pipe it through the use-case clipboard path so
+            // the clipboard write goes via snapforge_save_prerendered
+            // (output_path omitted = clipboard-only).
             CapturedImage img = snapforge_capture_region(displayIndex, px, py, pw, ph);
             if (img.data && img.width > 0) {
-                snapforge_copy_to_clipboard(img.data, img.width, img.height);
+                QJsonObject req;
+                req[QStringLiteral("copy_to_clipboard")] = true;
+                QByteArray reqBytes = QJsonDocument(req).toJson(QJsonDocument::Compact);
+                char *resJson = snapforge_save_prerendered(img.data, img.len,
+                                                           img.width, img.height,
+                                                           reqBytes.constData());
+                if (resJson) {
+                    snapforge_free_string(resJson);
+                } else if (char *err = snapforge_app_last_error()) {
+                    qWarning("Cmd+C clipboard copy failed: %s", err);
+                    snapforge_free_string(err);
+                }
                 snapforge_free_buffer(img.data, img.len);
             }
         });

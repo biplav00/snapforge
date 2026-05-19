@@ -25,7 +25,7 @@ RecordingManager::RecordingManager(QObject *parent)
 
 RecordingManager::~RecordingManager()
 {
-    // snapforge_stop_recording blocks until ffmpeg finalizes the file which can
+    // snapforge_record_stop blocks until ffmpeg finalizes the file which can
     // be slow (writing the moov atom for a long recording). Run it on a worker
     // thread so we can apply a deadline. Atomically grab ownership of the
     // handle: if stopRecording() races us, the exchange leaves us with nullptr
@@ -39,8 +39,8 @@ RecordingManager::~RecordingManager()
     std::future<void> doneFuture = donePromise->get_future();
 
     std::thread worker([handle, donePromise]() {
-        snapforge_stop_recording(handle);
-        snapforge_free_recording_handle(handle);
+        snapforge_record_stop(handle);
+        snapforge_record_free_handle(handle);
         donePromise->set_value();
     });
 
@@ -65,8 +65,12 @@ RecordingManager::~RecordingManager()
 
 bool RecordingManager::isRecording() const
 {
-    void *h = m_handle.load();
-    return h != nullptr && snapforge_is_recording(h) == 1;
+    // The use-case FFI doesn't expose an is_recording probe; the Qt wrapper
+    // owns the lifecycle (m_handle is atomically nulled on stop / error), so
+    // pointer-non-null is the authoritative liveness signal. If the Rust
+    // worker dies asynchronously, RecordingManager::recordingError surfaces
+    // it via the controller and the UI returns to idle.
+    return m_handle.load() != nullptr;
 }
 
 bool RecordingManager::isPaused() const
@@ -93,7 +97,7 @@ void RecordingManager::pauseRecording()
 {
     void *h = m_handle.load();
     if (!h || m_paused) return;
-    if (snapforge_pause_recording(h) != 0) {
+    if (snapforge_record_pause(h) != 0) {
         emit recordingError(QStringLiteral("Failed to pause recording"));
         return;
     }
@@ -110,7 +114,7 @@ void RecordingManager::resumeRecording()
 {
     void *h = m_handle.load();
     if (!h || !m_paused) return;
-    if (snapforge_resume_recording(h) != 0) {
+    if (snapforge_record_resume(h) != 0) {
         emit recordingError(QStringLiteral("Failed to resume recording"));
         return;
     }
@@ -195,13 +199,18 @@ void RecordingManager::startRecording(int display, QRect region, QString outputD
         config[QStringLiteral("region")] = QJsonValue::Null;
     }
 
+    // Use-case FFI handles history indexing on successful stop. Qt still does
+    // its own existence/incomplete-mp4 sanity checks below so the user gets a
+    // specific error message instead of a silent skip.
+    config[QStringLiteral("add_to_history_on_stop")] = true;
+
     QByteArray jsonBytes = QJsonDocument(config).toJson(QJsonDocument::Compact);
 
-    void *newHandle = snapforge_start_recording(jsonBytes.constData());
+    void *newHandle = snapforge_record_start(jsonBytes.constData());
     m_handle.store(newHandle);
     if (!newHandle) {
         QString detail = QStringLiteral("Failed to start recording");
-        if (char *errMsg = snapforge_last_recording_error()) {
+        if (char *errMsg = snapforge_app_last_error()) {
             detail = QStringLiteral("Recording failed: %1").arg(QString::fromUtf8(errMsg));
             snapforge_free_string(errMsg);
         }
@@ -231,12 +240,16 @@ void RecordingManager::stopRecording()
 
     m_timer->stop();
 
-    int rc = snapforge_stop_recording(h);
-    snapforge_free_recording_handle(h);
+    // The use-case stop adds the file to history on success (we set
+    // add_to_history_on_stop in startRecording). Qt still validates the file
+    // afterward so the user sees a clear error if disk-full / truncation
+    // produced an unusable output.
+    int rc = snapforge_record_stop(h);
+    snapforge_record_free_handle(h);
 
     if (rc != 0) {
         QString detail = QStringLiteral("Recording failed during finalization");
-        if (char *errMsg = snapforge_last_recording_error()) {
+        if (char *errMsg = snapforge_app_last_error()) {
             detail = QStringLiteral("Recording failed: %1").arg(QString::fromUtf8(errMsg));
             snapforge_free_string(errMsg);
         }
@@ -255,18 +268,6 @@ void RecordingManager::stopRecording()
     }
     if (snapforge_is_incomplete_mp4(m_outputPath.toUtf8().constData()) == 1) {
         emit recordingError(QStringLiteral("Recording output is corrupt (missing moov atom)"));
-        return;
-    }
-
-    int addRc = snapforge_history_add(m_outputPath.toUtf8().constData());
-    if (addRc == -2) {
-        // Benign: Rust detected an incomplete mp4 and skipped indexing. This
-        // shouldn't normally happen here since we already checked above, but
-        // handle it defensively as a warning (no error signal).
-        qWarning("RecordingManager: history skipped incomplete mp4: %s",
-                 qUtf8Printable(m_outputPath));
-    } else if (addRc == -1) {
-        emit recordingError(QStringLiteral("Failed to add recording to history"));
         return;
     }
 

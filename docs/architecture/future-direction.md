@@ -61,27 +61,34 @@ Scalable target for when growth hurts. Phases below are ordered by cost. Don't d
 | Extract tray pill + menu builders from `main.cpp` → `ui/tray/` (**Done** — `ui/tray/TrayIcon.{h,cpp}`) | Medium (~200 LOC moved) | `main.cpp` <100 LOC, only DI |
 | Extract recording lifecycle from `main.cpp` → `controllers/RecordingController.{h,cpp}` (**Done**) | Medium | Same |
 
-### Phase 2 — Rust crate splits (medium, defer until second-client or test pain)
+### Phase 2 — Rust crate splits (**Done**)
 
-| Move | Effort | Buys |
-|------|--------|------|
-| `snapforge-core` → `snapforge-domain` + `snapforge-capture` + `snapforge-encode` + `snapforge-storage` + `snapforge-app` | High (intra-crate boundaries + Cargo workspace plumbing) | Per-crate testing, parallel work, swappable platform impls |
-| Convert FFI to use-case surface | Medium | Frontends decoupled from internals |
-| Extract `clicks.rs` → `snapforge-clicks`. Delete `qt/src/ClickEventTap.{h,mm}`. Wire Qt overlay through a new `snapforge_clicks_start(callback)` FFI | Low–medium | Removes duplicated CGEventTap impl ([modules.md](modules.md)) |
+| Move | Effort | Buys | Status |
+|------|--------|------|--------|
+| `snapforge-core` → `snapforge-domain` + `snapforge-capture` + `snapforge-encode` + `snapforge-storage` + `snapforge-app` | High | Per-crate testing, parallel work, swappable platform impls | Done (Phase 2A). `snapforge-core` is now a thin facade kept for back-compat. |
+| Convert FFI to use-case surface | Medium | Frontends decoupled from internals | Done (Phases 2B–2D). Use cases: `snapforge_screenshot`, `snapforge_save_prerendered`, `snapforge_record_*`, `snapforge_clicks_*`. Errors flow through a single `snapforge_app_last_error()`. |
+| Extract `clicks.rs` → `snapforge-clicks` equivalent. Delete `qt/src/ClickEventTap.{h,mm}`. Wire Qt overlay through `snapforge_clicks_start(callback)` FFI | Low–medium | Removes duplicated CGEventTap impl | Done (Phase 2C). Clicks live in `snapforge-capture` / `snapforge-app`; Qt uses `ClickTap` over the new FFI. |
+| Delete deprecated primitive FFI (`snapforge_save_image`, `snapforge_copy_to_clipboard`, `snapforge_history_add`, recording-primitive set, `snapforge_last_recording_error`) | Low | Single error path, no parallel surface to keep in sync | Done (Phase 2D). |
 
-### Phase 3 — second client (defer until needed)
+### Phase 3 — second client (defer until needed; layout prep complete)
 
 | Move | Effort | Buys |
 |------|--------|------|
 | Add `clients/swiftui/` or `clients/cli/` | High | Validates the architecture is real |
 | Promote shared concepts (e.g. click ripple compositor) to core when duplicated | Low (per move) | DRY across frontends |
 
-## Known debt (worth fixing before Phase 1 commits)
+## Known debt
 
-- **`ClickEventTap.{h,mm}` duplicates `crates/snapforge-core/src/clicks.rs`** — pick one, delete the other.
+Resolved in Phase 2:
+- ~~`ClickEventTap.{h,mm}` duplicates `crates/snapforge-core/src/clicks.rs`~~ — deleted in Phase 2C; clicks live in the Rust capture layer with a thin Qt `ClickTap` wrapper.
+- ~~Primitive `snapforge_save_image` / `snapforge_copy_to_clipboard` / `snapforge_history_add` / recording-primitive FFI~~ — deleted in Phase 2D; every Qt callsite now uses the use-case surface.
+- ~~`snapforge-core` god-crate~~ — split into domain / capture / encode / storage / app in Phase 2A.
+
+Still outstanding (carry into Phase 3 prep):
 - **No tests on the Qt side.** Once controllers exist, they become testable (Qt has QTest). Don't write tests against `main.cpp` lambdas.
-- **`ffmpeg` is arm64-only.** Intel build needs second binary + universal dylibs.
-- **App is not notarized.** Users see Gatekeeper warning on first launch.
+- **`ffmpeg` is arm64-only.** Intel build needs a second binary + universal dylibs. Blocks shipping a universal `.dmg`.
+- **App is not notarized.** Users see Gatekeeper warning on first launch. Needs an Apple Developer ID + `notarytool` step in `packaging/macos/`.
+- **`snapforge-core` facade is still in the dep graph.** It re-exports everything from the leaf crates so older internal call sites keep compiling. Once nothing depends on it the facade can be deleted; until then it's a thin layer.
 
 ## What NOT to do
 

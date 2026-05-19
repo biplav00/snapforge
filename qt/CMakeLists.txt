@@ -54,13 +54,13 @@ set(SNAPFORGE_SOURCES
     src/ui/overlay/ClickIndicatorOverlay.cpp
     src/ui/tray/TrayIcon.cpp
     src/controllers/RecordingController.cpp
+    src/controllers/ClickTap.cpp
 )
 
 if(APPLE)
     list(APPEND SNAPFORGE_SOURCES
         src/platform/macos/WorkspaceSleepObserver.mm
         src/platform/macos/SpaceChangeObserver.mm
-        src/platform/macos/ClickEventTap.mm
         src/ui/overlay/ClickIndicatorOverlayMac.mm)
     # The .mm files use ARC's __bridge_retained / __bridge_transfer; enable ARC.
     set_source_files_properties(src/platform/macos/WorkspaceSleepObserver.mm

@@ -1,7 +1,12 @@
 [workspace]
 resolver = "2"
 members = [
+    "crates/snapforge-domain",
+    "crates/snapforge-capture",
+    "crates/snapforge-encode",
+    "crates/snapforge-storage",
     "crates/snapforge-core",
+    "crates/snapforge-app",
     "crates/snapforge-ffi",
 ]
 

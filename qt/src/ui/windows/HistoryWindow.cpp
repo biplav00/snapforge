@@ -473,9 +473,22 @@ void HistoryWindow::onCopyEntry(const QString &path) {
         }
         QImage rgba = watcher->result();
         if (!rgba.isNull()) {
-            snapforge_copy_to_clipboard(rgba.constBits(),
-                                        static_cast<uint32_t>(rgba.width()),
-                                        static_cast<uint32_t>(rgba.height()));
+            // Clipboard-only use case: omit output_path.
+            QJsonObject req;
+            req[QStringLiteral("copy_to_clipboard")] = true;
+            QByteArray reqBytes = QJsonDocument(req).toJson(QJsonDocument::Compact);
+            char *resJson = snapforge_save_prerendered(
+                rgba.constBits(),
+                static_cast<size_t>(rgba.sizeInBytes()),
+                static_cast<uint32_t>(rgba.width()),
+                static_cast<uint32_t>(rgba.height()),
+                reqBytes.constData());
+            if (resJson) {
+                snapforge_free_string(resJson);
+            } else if (char *err = snapforge_app_last_error()) {
+                qWarning("History clipboard copy failed: %s", err);
+                snapforge_free_string(err);
+            }
         }
         watcher->deleteLater();
     });

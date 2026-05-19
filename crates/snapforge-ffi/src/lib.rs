@@ -7,13 +7,9 @@
 
 use std::collections::{HashMap, HashSet};
 use std::ffi::{c_char, c_int, c_void, CStr, CString};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::ptr;
-use std::sync::{Mutex, MutexGuard, OnceLock};
-
-/// Last recording-related error, set whenever a recording FFI call fails.
-/// Read via `snapforge_last_recording_error`.
-static LAST_RECORDING_ERROR: Mutex<Option<String>> = Mutex::new(None);
+use std::sync::{Mutex, OnceLock};
 
 /// Tracks every live `(ptr, len)` returned by `snapforge_capture_*` so
 /// `snapforge_free_buffer` can detect a length mismatch (which would otherwise
@@ -70,12 +66,6 @@ fn is_registered_handle(ptr: *mut c_void) -> bool {
         .unwrap_or(false)
 }
 
-fn set_recording_error(msg: impl Into<String>) {
-    if let Ok(mut guard) = LAST_RECORDING_ERROR.lock() {
-        *guard = Some(msg.into());
-    }
-}
-
 /// Build a `CString` even when the input has embedded NUL bytes. The FFI
 /// contract is "null-terminated string" so we strip the NULs and log once
 /// so the silent corruption is at least visible in logs.
@@ -90,12 +80,8 @@ fn cstring_sanitized(s: &str) -> Result<CString, std::ffi::NulError> {
 }
 
 use snapforge_core::capture;
-use snapforge_core::clipboard;
 use snapforge_core::config::{AppConfig, RecordingFormat, RecordingQuality};
-use snapforge_core::format;
 use snapforge_core::history::ScreenshotHistory;
-use snapforge_core::record::ffmpeg::RecordingHandle;
-use snapforge_core::record::RecordConfig;
 use snapforge_core::types::{CaptureFormat, Rect};
 
 /// Captured image data returned to C callers.
@@ -239,93 +225,6 @@ pub unsafe extern "C" fn snapforge_free_buffer(data: *mut u8, len: usize) {
     let _ = Box::from_raw(std::ptr::slice_from_raw_parts_mut(data, real_len));
 }
 
-/// Save RGBA pixel data to a file.
-/// `path` is a null-terminated UTF-8 string.
-/// `fmt`: 0 = PNG, 1 = JPG, 2 = WebP.
-/// Returns 0 on success, -1 on error.
-///
-/// # Safety
-///
-/// - `data` must point to a valid buffer of at least `width * height * 4` bytes.
-/// - `path` must be a valid null-terminated UTF-8 string.
-#[no_mangle]
-pub unsafe extern "C" fn snapforge_save_image(
-    data: *const u8,
-    width: u32,
-    height: u32,
-    path: *const c_char,
-    fmt: u32,
-    quality: u8,
-) -> c_int {
-    if data.is_null() || path.is_null() {
-        return -1;
-    }
-
-    let path_str = CStr::from_ptr(path);
-    let Ok(path_s) = path_str.to_str() else {
-        return -1;
-    };
-    let path = Path::new(path_s);
-
-    let format = match fmt {
-        0 => CaptureFormat::Png,
-        1 => CaptureFormat::Jpg,
-        2 => CaptureFormat::WebP,
-        _ => return -1,
-    };
-
-    let Some(len) = (width as usize)
-        .checked_mul(height as usize)
-        .and_then(|n| n.checked_mul(4))
-    else {
-        return -1;
-    };
-    let slice = std::slice::from_raw_parts(data, len);
-
-    let Some(image) = image::RgbaImage::from_raw(width, height, slice.to_vec()) else {
-        return -1;
-    };
-
-    match format::save_image(&image, path, format, quality) {
-        Ok(()) => 0,
-        Err(_) => -1,
-    }
-}
-
-/// Copy RGBA pixel data to the system clipboard.
-/// Returns 0 on success, -1 on error.
-///
-/// # Safety
-///
-/// `data` must point to a valid buffer of at least `width * height * 4` bytes.
-#[no_mangle]
-pub unsafe extern "C" fn snapforge_copy_to_clipboard(
-    data: *const u8,
-    width: u32,
-    height: u32,
-) -> c_int {
-    if data.is_null() {
-        return -1;
-    }
-
-    let Some(len) = (width as usize)
-        .checked_mul(height as usize)
-        .and_then(|n| n.checked_mul(4))
-    else {
-        return -1;
-    };
-    let slice = std::slice::from_raw_parts(data, len);
-
-    let Some(image) = image::RgbaImage::from_raw(width, height, slice.to_vec()) else {
-        return -1;
-    };
-
-    match clipboard::copy_image_to_clipboard(&image) {
-        Ok(()) => 0,
-        Err(_) => -1,
-    }
-}
-
 /// Check if screen capture permission is granted.
 /// Returns 1 if granted, 0 if not.
 #[no_mangle]
@@ -384,389 +283,6 @@ pub unsafe extern "C" fn snapforge_free_string(s: *mut c_char) {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Recording FFI
-// ---------------------------------------------------------------------------
-
-/// Wrapper around `RecordingHandle` that allows stop-by-pointer (the inner
-/// handle's `stop` method consumes `self`, so we keep it in an `Option`).
-///
-/// Wrapped in a `Mutex` so concurrent FFI calls (intended usage is
-/// single-threaded, but callers can't prove it) don't invoke UB via
-/// aliased `&mut` / `&` references on the same pointer.
-///
-/// `magic` is an in-band tag the FFI checks on every entry. Free zeroes it so
-/// a stale (use-after-free) pointer can be detected with high probability.
-const HANDLE_MAGIC_ALIVE: u64 = 0x534E_4150_4652_4748; // "SNAPFRGH"
-const HANDLE_MAGIC_DEAD: u64 = 0xDEAD_DEAD_DEAD_DEAD;
-
-#[repr(C)]
-struct FfiRecordingHandle {
-    magic: u64,
-    inner: Mutex<Option<RecordingHandle>>,
-}
-
-impl FfiRecordingHandle {
-    /// Lock the inner mutex. If the recording thread panicked while holding
-    /// the lock, the inner state is in an unknown half-mutated condition;
-    /// touching it further could trigger UB (e.g. double-dropping a partially
-    /// initialised ffmpeg stdin pipe). Mark the handle dead so subsequent FFI
-    /// calls reject it and a later free leaks the allocation rather than
-    /// running Drop on broken state.
-    fn lock_recording(&self) -> Option<MutexGuard<'_, Option<RecordingHandle>>> {
-        match self.inner.lock() {
-            Ok(g) => Some(g),
-            Err(_) => {
-                set_recording_error("recording thread panicked");
-                // SAFETY: write_volatile of a u64 is a single-store on all
-                // supported platforms. Even if another FFI thread races, the
-                // worst outcome is two writers writing the same DEAD value.
-                unsafe {
-                    let p = self as *const Self as *mut Self;
-                    std::ptr::write_volatile(
-                        std::ptr::addr_of_mut!((*p).magic),
-                        HANDLE_MAGIC_DEAD,
-                    );
-                }
-                None
-            }
-        }
-    }
-}
-
-/// Validate a caller-supplied recording handle pointer.
-///
-/// Verification order:
-///   1. Reject NULL and obviously-bogus low-address pointers (null page).
-///   2. Reject pointers we never issued (via `HANDLE_REGISTRY`) — this is the
-///      only safe check for arbitrary attacker-supplied pointers, since the
-///      magic-word read would otherwise UB on freed/unmapped memory.
-///   3. Verify the in-band magic word, which catches use-after-free on a slot
-///      we issued and then freed (the registry would still hold the address
-///      if there's a UAF race; the dead magic catches that).
-///
-/// # Safety
-///
-/// The caller must not mutate `handle` concurrently. The returned reference
-/// borrows from `handle` for the FFI call's lifetime.
-unsafe fn check_recording_handle<'a>(handle: *mut c_void) -> Option<&'a FfiRecordingHandle> {
-    if handle.is_null() {
-        return None;
-    }
-    // Null page guard — any address below one page is definitely not a valid
-    // allocation. Cheap protection against C callers passing small integers
-    // (errno values, enum tags) by mistake.
-    if (handle as usize) < 4096 {
-        eprintln!(
-            "[snapforge] recording handle {:p} below null page; rejecting",
-            handle
-        );
-        return None;
-    }
-    if !is_registered_handle(handle) {
-        eprintln!(
-            "[snapforge] recording handle {:p} not in live-handle registry; rejecting",
-            handle
-        );
-        return None;
-    }
-    let p = handle.cast::<FfiRecordingHandle>();
-    // `read_volatile` so the compiler doesn't elide the magic read in release.
-    let magic = std::ptr::read_volatile(std::ptr::addr_of!((*p).magic));
-    if magic != HANDLE_MAGIC_ALIVE {
-        eprintln!(
-            "[snapforge] recording handle {:p} failed magic check (got 0x{:016x}); rejecting",
-            handle, magic
-        );
-        return None;
-    }
-    Some(&*p)
-}
-
-/// Start a screen recording.
-///
-/// `config_json` is a null-terminated UTF-8 JSON string with fields:
-///   display (u32), region (optional {x,y,width,height}), output_path (string),
-///   format ("mp4"/"gif"), fps (u32), quality ("low"/"medium"/"high"),
-///   ffmpeg_path (optional string).
-///
-/// Returns an opaque handle on success, NULL on error.
-/// The caller must eventually call `snapforge_stop_recording` and then
-/// `snapforge_free_recording_handle`.
-///
-/// # Safety
-///
-/// `config_json` must be a valid null-terminated UTF-8 string.
-#[no_mangle]
-pub unsafe extern "C" fn snapforge_start_recording(config_json: *const c_char) -> *mut c_void {
-    if config_json.is_null() {
-        set_recording_error("internal: null config_json");
-        return ptr::null_mut();
-    }
-
-    let c_str = CStr::from_ptr(config_json);
-    let Ok(json_str) = c_str.to_str() else {
-        set_recording_error("internal: config_json is not valid UTF-8");
-        return ptr::null_mut();
-    };
-
-    let v = match serde_json::from_str::<serde_json::Value>(json_str) {
-        Ok(v) => v,
-        Err(e) => {
-            set_recording_error(format!("invalid config JSON: {}", e));
-            return ptr::null_mut();
-        }
-    };
-
-    let display = v["display"].as_u64().unwrap_or(0) as usize;
-    let ndisplays = capture::display_count();
-    if display >= ndisplays {
-        set_recording_error(format!(
-            "display index {} out of range (have {})",
-            display, ndisplays
-        ));
-        return ptr::null_mut();
-    }
-
-    let region = if v["region"].is_object() {
-        let r = &v["region"];
-        let width = r["width"].as_u64().unwrap_or(0) as u32;
-        let height = r["height"].as_u64().unwrap_or(0) as u32;
-        if width == 0 || height == 0 {
-            set_recording_error("region has zero width or height");
-            return ptr::null_mut();
-        }
-        Some(Rect {
-            x: r["x"].as_i64().unwrap_or(0) as i32,
-            y: r["y"].as_i64().unwrap_or(0) as i32,
-            width,
-            height,
-        })
-    } else {
-        None
-    };
-
-    let output_path = match v["output_path"].as_str() {
-        Some(s) if !s.is_empty() => PathBuf::from(s),
-        _ => {
-            set_recording_error("output_path is missing or empty");
-            return ptr::null_mut();
-        }
-    };
-
-    let format = match v["format"].as_str() {
-        Some("gif") => RecordingFormat::Gif,
-        _ => RecordingFormat::Mp4,
-    };
-
-    let fps = v["fps"].as_u64().unwrap_or(30).clamp(1, 240) as u32;
-
-    let quality = match v["quality"].as_str() {
-        Some("low") => RecordingQuality::Low,
-        Some("high") => RecordingQuality::High,
-        _ => RecordingQuality::Medium,
-    };
-
-    let ffmpeg_path = v["ffmpeg_path"].as_str().map(PathBuf::from);
-
-    let config = RecordConfig {
-        display,
-        region,
-        output_path,
-        format,
-        fps,
-        quality,
-        ffmpeg_path,
-    };
-
-    match snapforge_core::record::ffmpeg::start_recording(config) {
-        Ok(handle) => {
-            // Clear any previous error so stale messages don't linger.
-            if let Ok(mut guard) = LAST_RECORDING_ERROR.lock() {
-                *guard = None;
-            }
-            let wrapper = Box::new(FfiRecordingHandle {
-                magic: HANDLE_MAGIC_ALIVE,
-                inner: Mutex::new(Some(handle)),
-            });
-            let raw = Box::into_raw(wrapper).cast::<c_void>();
-            register_handle(raw);
-            raw
-        }
-        Err(e) => {
-            set_recording_error(e.to_string());
-            ptr::null_mut()
-        }
-    }
-}
-
-/// Stop a recording and wait for it to finish.
-/// Returns 0 on success, -1 on error.
-///
-/// # Safety
-///
-/// `handle` must be a valid pointer returned by `snapforge_start_recording`
-/// and must not have been freed.
-#[no_mangle]
-pub unsafe extern "C" fn snapforge_stop_recording(handle: *mut c_void) -> c_int {
-    let Some(wrapper) = check_recording_handle(handle) else {
-        return -1;
-    };
-    let Some(mut guard) = wrapper.lock_recording() else {
-        return -1;
-    };
-    let taken = guard.take();
-    drop(guard);
-    match taken {
-        Some(h) => match h.stop() {
-            Ok(()) => 0,
-            Err(e) => {
-                set_recording_error(e.to_string());
-                -1
-            }
-        },
-        None => -1, // already stopped
-    }
-}
-
-/// Pause an active recording. The output file keeps running at constant fps
-/// with a frozen frame until resumed. Returns 0 on success, -1 on error.
-///
-/// # Safety
-///
-/// `handle` must be a valid pointer returned by `snapforge_start_recording`.
-#[no_mangle]
-pub unsafe extern "C" fn snapforge_pause_recording(handle: *mut c_void) -> c_int {
-    let Some(wrapper) = check_recording_handle(handle) else {
-        return -1;
-    };
-    let Some(guard) = wrapper.lock_recording() else {
-        return -1;
-    };
-    match guard.as_ref() {
-        Some(h) => {
-            h.pause();
-            0
-        }
-        None => -1,
-    }
-}
-
-/// Resume a paused recording. Returns 0 on success, -1 on error.
-///
-/// # Safety
-///
-/// `handle` must be a valid pointer returned by `snapforge_start_recording`.
-#[no_mangle]
-pub unsafe extern "C" fn snapforge_resume_recording(handle: *mut c_void) -> c_int {
-    let Some(wrapper) = check_recording_handle(handle) else {
-        return -1;
-    };
-    let Some(guard) = wrapper.lock_recording() else {
-        return -1;
-    };
-    match guard.as_ref() {
-        Some(h) => {
-            h.resume();
-            0
-        }
-        None => -1,
-    }
-}
-
-/// Retrieve the last recording-related error message, or NULL if none.
-/// Caller must free via `snapforge_free_string`.
-#[no_mangle]
-pub extern "C" fn snapforge_last_recording_error() -> *mut c_char {
-    let guard = match LAST_RECORDING_ERROR.lock() {
-        Ok(g) => g,
-        Err(_) => return ptr::null_mut(),
-    };
-    match guard.as_deref() {
-        Some(msg) => match cstring_sanitized(msg) {
-            Ok(cs) => cs.into_raw(),
-            Err(_) => ptr::null_mut(),
-        },
-        None => ptr::null_mut(),
-    }
-}
-
-/// Check if a recording is still active.
-/// Returns 1 if recording, 0 if not.
-///
-/// # Safety
-///
-/// `handle` must be a valid pointer returned by `snapforge_start_recording`
-/// and must not have been freed.
-#[no_mangle]
-pub unsafe extern "C" fn snapforge_is_recording(handle: *mut c_void) -> c_int {
-    let Some(wrapper) = check_recording_handle(handle) else {
-        return 0;
-    };
-    let Some(guard) = wrapper.lock_recording() else {
-        return 0;
-    };
-    match guard.as_ref() {
-        Some(h) => c_int::from(h.is_running()),
-        None => 0,
-    }
-}
-
-/// Free a recording handle. The recording must have been stopped first
-/// (or will be stopped by the drop implementation).
-///
-/// # Safety
-///
-/// `handle` must be a valid pointer returned by `snapforge_start_recording`
-/// and must not have been freed already.
-#[no_mangle]
-pub unsafe extern "C" fn snapforge_free_recording_handle(handle: *mut c_void) {
-    if handle.is_null() {
-        return;
-    }
-    if (handle as usize) < 4096 {
-        eprintln!(
-            "[snapforge] free_recording_handle: pointer {:p} below null page; ignoring",
-            handle
-        );
-        return;
-    }
-    // Authoritative liveness check — refuse to touch a pointer we never
-    // issued. Also removes it from the registry so a double-free is rejected.
-    if !unregister_handle(handle) {
-        eprintln!(
-            "[snapforge] free_recording_handle: pointer {:p} not in live-handle registry (double-free, foreign pointer, or post-poison free); ignoring",
-            handle
-        );
-        return;
-    }
-    let p = handle.cast::<FfiRecordingHandle>();
-    let magic = std::ptr::read_volatile(std::ptr::addr_of!((*p).magic));
-    if magic == HANDLE_MAGIC_DEAD {
-        // Marked dead by poisoned-mutex recovery in `lock_recording`. Inner
-        // state is in an unknown half-mutated condition — leak the allocation
-        // rather than run Drop and risk UB. The leak is bounded by the number
-        // of recordings whose worker thread panicked, which should be zero in
-        // practice.
-        eprintln!(
-            "[snapforge] free_recording_handle: pointer {:p} previously poisoned; leaking",
-            handle
-        );
-        return;
-    }
-    if magic != HANDLE_MAGIC_ALIVE {
-        eprintln!(
-            "[snapforge] free_recording_handle: pointer {:p} has corrupted magic 0x{:016x}; leaking",
-            handle, magic
-        );
-        return;
-    }
-    // Poison the magic before reclaiming so a subsequent stale call from
-    // C is detected by `check_recording_handle` instead of dereferencing
-    // the freed allocation.
-    std::ptr::write_volatile(std::ptr::addr_of_mut!((*p).magic), HANDLE_MAGIC_DEAD);
-    let _ = Box::from_raw(p);
-}
 
 // ---------------------------------------------------------------------------
 // History FFI
@@ -785,40 +301,6 @@ pub extern "C" fn snapforge_history_list() -> *mut c_char {
     match CString::new(json) {
         Ok(cs) => cs.into_raw(),
         Err(_) => ptr::null_mut(),
-    }
-}
-
-/// Add a file path to the screenshot history.
-/// Returns 0 on success, -1 on error, -2 if the file was skipped because it is
-/// an incomplete mp4 (non-fatal; caller may warn).
-///
-/// # Safety
-///
-/// `path` must be a valid null-terminated UTF-8 string.
-#[no_mangle]
-pub unsafe extern "C" fn snapforge_history_add(path: *const c_char) -> c_int {
-    if path.is_null() {
-        return -1;
-    }
-    let Ok(path_str) = CStr::from_ptr(path).to_str() else {
-        return -1;
-    };
-    // Refuse to index half-written recordings (e.g. after the app was SIGKILLed
-    // mid-record). Return -2 so the caller can distinguish this benign skip
-    // from a real error.
-    if snapforge_core::history::is_incomplete_mp4(path_str) {
-        eprintln!(
-            "[history] skipping incomplete mp4 (no moov atom): {}",
-            path_str
-        );
-        return -2;
-    }
-    let Ok(mut history) = ScreenshotHistory::load() else {
-        return -1;
-    };
-    match history.add_entry(path_str) {
-        Ok(()) => 0,
-        Err(_) => -1,
     }
 }
 
@@ -920,5 +402,719 @@ pub unsafe extern "C" fn snapforge_config_save(json: *const c_char) -> c_int {
     match config.save() {
         Ok(()) => 0,
         Err(_) => -1,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Use-case FFI (snapforge-app)
+//
+// These wrappers expose the high-level use cases (`snapforge-app`) and
+// coexist with the primitive `snapforge_capture_*` / `snapforge_*_recording`
+// fns above. The Qt frontend will migrate to the use-case surface in Phase
+// 2C; until then both surfaces ship side-by-side.
+// ---------------------------------------------------------------------------
+
+use snapforge_app::clicks as app_clicks;
+use snapforge_app::recording as app_recording;
+use snapforge_app::screenshot as app_screenshot;
+
+/// Last app-level error, populated by any `snapforge_*` use-case fn that
+/// fails. Reset on the next successful call. Read via
+/// `snapforge_app_last_error`.
+static LAST_APP_ERROR: Mutex<Option<String>> = Mutex::new(None);
+
+fn set_app_error(msg: impl Into<String>) {
+    if let Ok(mut guard) = LAST_APP_ERROR.lock() {
+        *guard = Some(msg.into());
+    }
+}
+
+fn clear_app_error() {
+    if let Ok(mut guard) = LAST_APP_ERROR.lock() {
+        *guard = None;
+    }
+}
+
+/// Get the last use-case error, or NULL if none.
+///
+/// Caller must free the returned string via `snapforge_free_string`.
+/// Coexists with `snapforge_last_recording_error` for now; once Qt migrates
+/// to the use-case surface, the per-domain error fns will be removed.
+#[no_mangle]
+pub extern "C" fn snapforge_app_last_error() -> *mut c_char {
+    let guard = match LAST_APP_ERROR.lock() {
+        Ok(g) => g,
+        Err(_) => return ptr::null_mut(),
+    };
+    match guard.as_deref() {
+        Some(msg) => match cstring_sanitized(msg) {
+            Ok(cs) => cs.into_raw(),
+            Err(_) => ptr::null_mut(),
+        },
+        None => ptr::null_mut(),
+    }
+}
+
+/// Parse a `Rect` from the `region` field of a JSON value. Returns `Ok(None)`
+/// when the field is absent / not an object, `Ok(Some(_))` when valid, and
+/// `Err(_)` when width or height is zero (which the underlying capture would
+/// reject anyway, but we want a clean error message at the FFI boundary).
+fn parse_optional_region(v: &serde_json::Value) -> Result<Option<Rect>, String> {
+    if !v.is_object() {
+        return Ok(None);
+    }
+    let width = v["width"].as_u64().unwrap_or(0) as u32;
+    let height = v["height"].as_u64().unwrap_or(0) as u32;
+    if width == 0 || height == 0 {
+        return Err("region has zero width or height".into());
+    }
+    Ok(Some(Rect {
+        x: v["x"].as_i64().unwrap_or(0) as i32,
+        y: v["y"].as_i64().unwrap_or(0) as i32,
+        width,
+        height,
+    }))
+}
+
+/// Take a screenshot.
+///
+/// `req_json` is a null-terminated UTF-8 JSON string with fields:
+///   display (u32), region (optional {x,y,width,height}), output_path (string),
+///   format ("png"/"jpg"/"webp"), quality (u8 1..=100),
+///   copy_to_clipboard (bool), add_to_history (bool).
+///
+/// Returns a heap-allocated JSON string `{"saved_path": "..."}` on success or
+/// NULL on error (call `snapforge_app_last_error` for details). Caller must
+/// free the returned string via `snapforge_free_string`.
+///
+/// # Safety
+///
+/// `req_json` must be a valid null-terminated UTF-8 string.
+#[no_mangle]
+pub unsafe extern "C" fn snapforge_screenshot(req_json: *const c_char) -> *mut c_char {
+    if req_json.is_null() {
+        set_app_error("internal: null req_json");
+        return ptr::null_mut();
+    }
+    let Ok(json_str) = CStr::from_ptr(req_json).to_str() else {
+        set_app_error("internal: req_json is not valid UTF-8");
+        return ptr::null_mut();
+    };
+    let v = match serde_json::from_str::<serde_json::Value>(json_str) {
+        Ok(v) => v,
+        Err(e) => {
+            set_app_error(format!("invalid request JSON: {}", e));
+            return ptr::null_mut();
+        }
+    };
+
+    let display = v["display"].as_u64().unwrap_or(0) as usize;
+    let region = match parse_optional_region(&v["region"]) {
+        Ok(r) => r,
+        Err(e) => {
+            set_app_error(e);
+            return ptr::null_mut();
+        }
+    };
+    let output_path = match v["output_path"].as_str() {
+        Some(s) if !s.is_empty() => PathBuf::from(s),
+        _ => {
+            set_app_error("output_path is missing or empty");
+            return ptr::null_mut();
+        }
+    };
+    let format = match v["format"].as_str().unwrap_or("png") {
+        "jpg" | "jpeg" => CaptureFormat::Jpg,
+        "webp" => CaptureFormat::WebP,
+        _ => CaptureFormat::Png,
+    };
+    let quality = v["quality"].as_u64().unwrap_or(90).clamp(1, 100) as u8;
+    let copy_to_clipboard = v["copy_to_clipboard"].as_bool().unwrap_or(false);
+    let add_to_history = v["add_to_history"].as_bool().unwrap_or(false);
+
+    let req = app_screenshot::ScreenshotRequest {
+        display,
+        region,
+        output_path,
+        format,
+        quality,
+        copy_to_clipboard,
+        add_to_history,
+    };
+
+    match app_screenshot::take_screenshot(req) {
+        Ok(result) => {
+            clear_app_error();
+            let body = serde_json::json!({
+                "saved_path": result.saved_path.to_string_lossy(),
+            });
+            let serialized = match serde_json::to_string(&body) {
+                Ok(s) => s,
+                Err(e) => {
+                    set_app_error(format!("failed to serialize result: {}", e));
+                    return ptr::null_mut();
+                }
+            };
+            match cstring_sanitized(&serialized) {
+                Ok(cs) => cs.into_raw(),
+                Err(_) => ptr::null_mut(),
+            }
+        }
+        Err(e) => {
+            set_app_error(e.to_string());
+            ptr::null_mut()
+        }
+    }
+}
+
+/// Save (and optionally clipboard / index) a caller-supplied RGBA bitmap.
+///
+/// `rgba` must point to `rgba_len` bytes of raw RGBA8 pixel data and
+/// `rgba_len` must equal `width * height * 4`. The buffer is read-only from
+/// Rust's perspective and the caller retains ownership — Rust copies the
+/// bytes internally before encoding.
+///
+/// `req_json` is a null-terminated UTF-8 JSON string with fields:
+///   output_path (optional string; omit for clipboard-only),
+///   format ("png" / "jpg" / "webp"; default "png"; ignored when no path),
+///   quality (u8 1..=100; default 90),
+///   copy_to_clipboard (bool; default false),
+///   add_to_history (bool; default false; ignored when no path).
+///
+/// Returns a heap-allocated JSON string `{"saved_path": "..." | null}` on
+/// success, NULL on error. Read details via `snapforge_app_last_error`.
+/// Caller must free the returned string via `snapforge_free_string`.
+///
+/// # Safety
+///
+/// `rgba` must be valid for reads of `rgba_len` bytes for the duration of
+/// the call. `req_json` must be a valid null-terminated UTF-8 string.
+#[no_mangle]
+pub unsafe extern "C" fn snapforge_save_prerendered(
+    rgba: *const u8,
+    rgba_len: usize,
+    width: u32,
+    height: u32,
+    req_json: *const c_char,
+) -> *mut c_char {
+    if rgba.is_null() || req_json.is_null() {
+        set_app_error("internal: null rgba or req_json");
+        return ptr::null_mut();
+    }
+    let Ok(json_str) = CStr::from_ptr(req_json).to_str() else {
+        set_app_error("internal: req_json is not valid UTF-8");
+        return ptr::null_mut();
+    };
+    let v = match serde_json::from_str::<serde_json::Value>(json_str) {
+        Ok(v) => v,
+        Err(e) => {
+            set_app_error(format!("invalid request JSON: {}", e));
+            return ptr::null_mut();
+        }
+    };
+
+    let expected = match (width as usize)
+        .checked_mul(height as usize)
+        .and_then(|n| n.checked_mul(4))
+    {
+        Some(n) => n,
+        None => {
+            set_app_error("width*height*4 overflows");
+            return ptr::null_mut();
+        }
+    };
+    if rgba_len != expected {
+        set_app_error(format!(
+            "rgba_len {} does not match width*height*4 ({})",
+            rgba_len, expected
+        ));
+        return ptr::null_mut();
+    }
+    // Copy the caller's bytes into an owned Vec so the use-case can hand the
+    // buffer to the `image` crate. The caller keeps ownership of `rgba`.
+    let bytes = std::slice::from_raw_parts(rgba, rgba_len).to_vec();
+
+    let output_path = v["output_path"].as_str().and_then(|s| {
+        if s.is_empty() {
+            None
+        } else {
+            Some(PathBuf::from(s))
+        }
+    });
+    let format = match v["format"].as_str().unwrap_or("png") {
+        "jpg" | "jpeg" => CaptureFormat::Jpg,
+        "webp" => CaptureFormat::WebP,
+        _ => CaptureFormat::Png,
+    };
+    let quality = v["quality"].as_u64().unwrap_or(90).clamp(1, 100) as u8;
+    let copy_to_clipboard = v["copy_to_clipboard"].as_bool().unwrap_or(false);
+    let add_to_history = v["add_to_history"].as_bool().unwrap_or(false);
+
+    let req = app_screenshot::SavePrerenderedRequest {
+        rgba: bytes,
+        width,
+        height,
+        output_path,
+        format,
+        quality,
+        copy_to_clipboard,
+        add_to_history,
+    };
+    match app_screenshot::save_prerendered(req) {
+        Ok(result) => {
+            clear_app_error();
+            let body = serde_json::json!({
+                "saved_path": result
+                    .saved_path
+                    .as_ref()
+                    .map(|p| p.to_string_lossy().into_owned()),
+            });
+            let serialized = match serde_json::to_string(&body) {
+                Ok(s) => s,
+                Err(e) => {
+                    set_app_error(format!("failed to serialize result: {}", e));
+                    return ptr::null_mut();
+                }
+            };
+            match cstring_sanitized(&serialized) {
+                Ok(cs) => cs.into_raw(),
+                Err(_) => ptr::null_mut(),
+            }
+        }
+        Err(e) => {
+            set_app_error(e.to_string());
+            ptr::null_mut()
+        }
+    }
+}
+
+// --- Recording (use-case) ---------------------------------------------------
+
+const APP_RECORDING_MAGIC_ALIVE: u64 = 0x534E_4150_5245_4348; // "SNAPRECH"
+const APP_RECORDING_MAGIC_DEAD: u64 = 0xDEAD_BEEF_DEAD_BEEF;
+
+#[repr(C)]
+struct FfiAppRecordingHandle {
+    magic: u64,
+    inner: Mutex<Option<app_recording::RecordingHandle>>,
+}
+
+unsafe fn check_app_recording_handle<'a>(
+    handle: *mut c_void,
+) -> Option<&'a FfiAppRecordingHandle> {
+    if handle.is_null() || (handle as usize) < 4096 {
+        return None;
+    }
+    if !is_registered_handle(handle) {
+        eprintln!(
+            "[snapforge] app recording handle {:p} not in registry; rejecting",
+            handle
+        );
+        return None;
+    }
+    let p = handle.cast::<FfiAppRecordingHandle>();
+    let magic = std::ptr::read_volatile(std::ptr::addr_of!((*p).magic));
+    if magic != APP_RECORDING_MAGIC_ALIVE {
+        eprintln!(
+            "[snapforge] app recording handle {:p} bad magic 0x{:016x}; rejecting",
+            handle, magic
+        );
+        return None;
+    }
+    Some(&*p)
+}
+
+/// Start a recording via the use-case surface.
+///
+/// `req_json` mirrors `snapforge_start_recording`'s JSON plus an
+/// `add_to_history_on_stop` boolean. Returns an opaque handle, or NULL on
+/// failure (read `snapforge_app_last_error` for details). The handle must be
+/// stopped (`snapforge_record_stop`) and freed
+/// (`snapforge_record_free_handle`).
+///
+/// # Safety
+///
+/// `req_json` must be a valid null-terminated UTF-8 string.
+#[no_mangle]
+pub unsafe extern "C" fn snapforge_record_start(req_json: *const c_char) -> *mut c_void {
+    if req_json.is_null() {
+        set_app_error("internal: null req_json");
+        return ptr::null_mut();
+    }
+    let Ok(json_str) = CStr::from_ptr(req_json).to_str() else {
+        set_app_error("internal: req_json is not valid UTF-8");
+        return ptr::null_mut();
+    };
+    let v = match serde_json::from_str::<serde_json::Value>(json_str) {
+        Ok(v) => v,
+        Err(e) => {
+            set_app_error(format!("invalid request JSON: {}", e));
+            return ptr::null_mut();
+        }
+    };
+
+    let display = v["display"].as_u64().unwrap_or(0) as usize;
+    let region = match parse_optional_region(&v["region"]) {
+        Ok(r) => r,
+        Err(e) => {
+            set_app_error(e);
+            return ptr::null_mut();
+        }
+    };
+    let output_path = match v["output_path"].as_str() {
+        Some(s) if !s.is_empty() => PathBuf::from(s),
+        _ => {
+            set_app_error("output_path is missing or empty");
+            return ptr::null_mut();
+        }
+    };
+    let format = match v["format"].as_str() {
+        Some("gif") => RecordingFormat::Gif,
+        _ => RecordingFormat::Mp4,
+    };
+    let fps = v["fps"].as_u64().unwrap_or(30).clamp(1, 240) as u32;
+    let quality = match v["quality"].as_str() {
+        Some("low") => RecordingQuality::Low,
+        Some("high") => RecordingQuality::High,
+        _ => RecordingQuality::Medium,
+    };
+    let ffmpeg_path = v["ffmpeg_path"].as_str().map(PathBuf::from);
+    let add_to_history_on_stop = v["add_to_history_on_stop"].as_bool().unwrap_or(false);
+
+    let req = app_recording::RecordingRequest {
+        display,
+        region,
+        output_path,
+        format,
+        fps,
+        quality,
+        ffmpeg_path,
+        add_to_history_on_stop,
+    };
+
+    match app_recording::start_recording(req) {
+        Ok(handle) => {
+            clear_app_error();
+            let wrapper = Box::new(FfiAppRecordingHandle {
+                magic: APP_RECORDING_MAGIC_ALIVE,
+                inner: Mutex::new(Some(handle)),
+            });
+            let raw = Box::into_raw(wrapper).cast::<c_void>();
+            register_handle(raw);
+            raw
+        }
+        Err(e) => {
+            set_app_error(e.to_string());
+            ptr::null_mut()
+        }
+    }
+}
+
+/// Stop a use-case recording. Returns 0 on success, -1 on error.
+///
+/// # Safety
+///
+/// `handle` must be a valid pointer returned by `snapforge_record_start`.
+#[no_mangle]
+pub unsafe extern "C" fn snapforge_record_stop(handle: *mut c_void) -> c_int {
+    let Some(wrapper) = check_app_recording_handle(handle) else {
+        return -1;
+    };
+    let mut guard = match wrapper.inner.lock() {
+        Ok(g) => g,
+        Err(_) => {
+            set_app_error("recording mutex poisoned");
+            return -1;
+        }
+    };
+    let taken = guard.take();
+    drop(guard);
+    match taken {
+        Some(h) => match app_recording::stop_recording(h) {
+            Ok(()) => {
+                clear_app_error();
+                0
+            }
+            Err(e) => {
+                set_app_error(e.to_string());
+                -1
+            }
+        },
+        None => -1,
+    }
+}
+
+/// Pause a use-case recording. Returns 0 on success, -1 on error.
+///
+/// # Safety
+///
+/// `handle` must be a valid pointer returned by `snapforge_record_start`.
+#[no_mangle]
+pub unsafe extern "C" fn snapforge_record_pause(handle: *mut c_void) -> c_int {
+    let Some(wrapper) = check_app_recording_handle(handle) else {
+        return -1;
+    };
+    let guard = match wrapper.inner.lock() {
+        Ok(g) => g,
+        Err(_) => return -1,
+    };
+    match guard.as_ref() {
+        Some(h) => match app_recording::pause_recording(h) {
+            Ok(()) => 0,
+            Err(e) => {
+                set_app_error(e.to_string());
+                -1
+            }
+        },
+        None => -1,
+    }
+}
+
+/// Resume a use-case recording. Returns 0 on success, -1 on error.
+///
+/// # Safety
+///
+/// `handle` must be a valid pointer returned by `snapforge_record_start`.
+#[no_mangle]
+pub unsafe extern "C" fn snapforge_record_resume(handle: *mut c_void) -> c_int {
+    let Some(wrapper) = check_app_recording_handle(handle) else {
+        return -1;
+    };
+    let guard = match wrapper.inner.lock() {
+        Ok(g) => g,
+        Err(_) => return -1,
+    };
+    match guard.as_ref() {
+        Some(h) => match app_recording::resume_recording(h) {
+            Ok(()) => 0,
+            Err(e) => {
+                set_app_error(e.to_string());
+                -1
+            }
+        },
+        None => -1,
+    }
+}
+
+/// Free a use-case recording handle. If the recording is still active it is
+/// stopped first via Drop.
+///
+/// # Safety
+///
+/// `handle` must be a valid pointer returned by `snapforge_record_start` and
+/// must not have been freed already.
+#[no_mangle]
+pub unsafe extern "C" fn snapforge_record_free_handle(handle: *mut c_void) {
+    if handle.is_null() || (handle as usize) < 4096 {
+        return;
+    }
+    if !unregister_handle(handle) {
+        eprintln!(
+            "[snapforge] record_free_handle: {:p} not in registry; ignoring",
+            handle
+        );
+        return;
+    }
+    let p = handle.cast::<FfiAppRecordingHandle>();
+    let magic = std::ptr::read_volatile(std::ptr::addr_of!((*p).magic));
+    if magic != APP_RECORDING_MAGIC_ALIVE {
+        eprintln!(
+            "[snapforge] record_free_handle: {:p} bad magic 0x{:016x}; leaking",
+            handle, magic
+        );
+        return;
+    }
+    std::ptr::write_volatile(std::ptr::addr_of_mut!((*p).magic), APP_RECORDING_MAGIC_DEAD);
+    let _ = Box::from_raw(p);
+}
+
+// --- Click tracking (use-case) ---------------------------------------------
+
+const APP_CLICKS_MAGIC_ALIVE: u64 = 0x534E_4150_434C_4B48; // "SNAPCLKH"
+const APP_CLICKS_MAGIC_DEAD: u64 = 0xDEAD_C1ED_DEAD_C1ED;
+
+/// C-ABI callback delivered for every click. `right_click` is 1 for
+/// right-mouse-down, 0 for left-mouse-down. `user_data` is the opaque pointer
+/// supplied to `snapforge_clicks_start` — Rust never dereferences it.
+pub type SnapforgeClickCallback =
+    extern "C" fn(x: f64, y: f64, right_click: c_int, user_data: *mut c_void);
+
+#[repr(C)]
+struct FfiClickHandle {
+    magic: u64,
+    inner: Mutex<Option<app_clicks::ClickHandle>>,
+}
+
+unsafe fn check_click_handle<'a>(handle: *mut c_void) -> Option<&'a FfiClickHandle> {
+    if handle.is_null() || (handle as usize) < 4096 {
+        return None;
+    }
+    if !is_registered_handle(handle) {
+        eprintln!(
+            "[snapforge] click handle {:p} not in registry; rejecting",
+            handle
+        );
+        return None;
+    }
+    let p = handle.cast::<FfiClickHandle>();
+    let magic = std::ptr::read_volatile(std::ptr::addr_of!((*p).magic));
+    if magic != APP_CLICKS_MAGIC_ALIVE {
+        eprintln!(
+            "[snapforge] click handle {:p} bad magic 0x{:016x}; rejecting",
+            handle, magic
+        );
+        return None;
+    }
+    Some(&*p)
+}
+
+/// Begin streaming global click events to `callback`.
+///
+/// The callback fires on a thread owned by the use-case (NOT the main
+/// thread). Qt callers must dispatch back to the main thread themselves
+/// (e.g. via `QMetaObject::invokeMethod` with `Qt::QueuedConnection`).
+/// `user_data` is opaque — Rust passes it back verbatim and never reads
+/// through it.
+///
+/// Returns an opaque handle, or NULL on failure (typically missing
+/// Accessibility permission; read `snapforge_app_last_error` for details).
+/// The handle must be stopped (`snapforge_clicks_stop`) and freed
+/// (`snapforge_clicks_free_handle`).
+///
+/// # Safety
+///
+/// `callback` must remain valid for the lifetime of the returned handle.
+/// `user_data` must remain valid for the same lifetime if the callback
+/// dereferences it.
+#[no_mangle]
+pub unsafe extern "C" fn snapforge_clicks_start(
+    callback: SnapforgeClickCallback,
+    user_data: *mut c_void,
+) -> *mut c_void {
+    // Cast the user pointer to usize for transport across the thread
+    // boundary — `*mut c_void` is `!Send` even when wrapped in a newtype
+    // because the rustc auto-trait check looks through the closure capture.
+    // We never dereference it; the callback gets the bit pattern back as a
+    // pointer. Raw `extern "C" fn` is Send already.
+    let ud_bits = user_data as usize;
+    let cb = callback;
+    let inner = match app_clicks::start_click_tracking(move |ev| {
+        let p = ud_bits as *mut c_void;
+        cb(ev.x, ev.y, c_int::from(ev.right_click), p);
+    }) {
+        Ok(h) => h,
+        Err(e) => {
+            set_app_error(e.to_string());
+            return ptr::null_mut();
+        }
+    };
+    clear_app_error();
+    let wrapper = Box::new(FfiClickHandle {
+        magic: APP_CLICKS_MAGIC_ALIVE,
+        inner: Mutex::new(Some(inner)),
+    });
+    let raw = Box::into_raw(wrapper).cast::<c_void>();
+    register_handle(raw);
+    raw
+}
+
+/// Stop click tracking but keep the handle allocation alive (must still be
+/// freed with `snapforge_clicks_free_handle`). Returns 0 on success, -1 on
+/// error.
+///
+/// # Safety
+///
+/// `handle` must be a valid pointer returned by `snapforge_clicks_start`.
+#[no_mangle]
+pub unsafe extern "C" fn snapforge_clicks_stop(handle: *mut c_void) -> c_int {
+    let Some(wrapper) = check_click_handle(handle) else {
+        return -1;
+    };
+    let mut guard = match wrapper.inner.lock() {
+        Ok(g) => g,
+        Err(_) => return -1,
+    };
+    // Dropping the ClickHandle stops the tap + joins the forwarder thread.
+    let _ = guard.take();
+    0
+}
+
+/// Free a click handle. Stops the tap first if still active.
+///
+/// # Safety
+///
+/// `handle` must be a valid pointer returned by `snapforge_clicks_start` and
+/// must not have been freed already.
+#[no_mangle]
+pub unsafe extern "C" fn snapforge_clicks_free_handle(handle: *mut c_void) {
+    if handle.is_null() || (handle as usize) < 4096 {
+        return;
+    }
+    if !unregister_handle(handle) {
+        eprintln!(
+            "[snapforge] clicks_free_handle: {:p} not in registry; ignoring",
+            handle
+        );
+        return;
+    }
+    let p = handle.cast::<FfiClickHandle>();
+    let magic = std::ptr::read_volatile(std::ptr::addr_of!((*p).magic));
+    if magic != APP_CLICKS_MAGIC_ALIVE {
+        eprintln!(
+            "[snapforge] clicks_free_handle: {:p} bad magic 0x{:016x}; leaking",
+            handle, magic
+        );
+        return;
+    }
+    std::ptr::write_volatile(std::ptr::addr_of_mut!((*p).magic), APP_CLICKS_MAGIC_DEAD);
+    let _ = Box::from_raw(p);
+}
+
+#[cfg(test)]
+mod app_ffi_tests {
+    use super::*;
+    use std::ffi::CString;
+
+    #[test]
+    fn screenshot_rejects_null() {
+        let res = unsafe { snapforge_screenshot(ptr::null()) };
+        assert!(res.is_null());
+        let err = snapforge_app_last_error();
+        assert!(!err.is_null());
+        unsafe {
+            let _ = CString::from_raw(err);
+        }
+    }
+
+    #[test]
+    fn screenshot_rejects_bad_json() {
+        let bad = CString::new("not json").unwrap();
+        let res = unsafe { snapforge_screenshot(bad.as_ptr()) };
+        assert!(res.is_null());
+    }
+
+    #[test]
+    fn screenshot_rejects_missing_output_path() {
+        let req = CString::new(r#"{"display":0}"#).unwrap();
+        let res = unsafe { snapforge_screenshot(req.as_ptr()) };
+        assert!(res.is_null());
+    }
+
+    #[test]
+    fn record_start_rejects_null() {
+        let res = unsafe { snapforge_record_start(ptr::null()) };
+        assert!(res.is_null());
+    }
+
+    #[test]
+    fn record_stop_rejects_null_handle() {
+        let rc = unsafe { snapforge_record_stop(ptr::null_mut()) };
+        assert_eq!(rc, -1);
+    }
+
+    #[test]
+    fn clicks_stop_rejects_null_handle() {
+        let rc = unsafe { snapforge_clicks_stop(ptr::null_mut()) };
+        assert_eq!(rc, -1);
     }
 }

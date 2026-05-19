@@ -13,7 +13,7 @@ User                Qt main thread          RecordingManager       FFI          
  │── drag region ────────►│                       │                  │                       │                      │
  │                       │── startRecording(disp, rect, dir) ──────►│                       │                      │
  │                       │                       │  build JSON      │                       │                      │
- │                       │                       │──────────────────►snapforge_start_recording                     │
+ │                       │                       │──────────────────►snapforge_record_start                          │
  │                       │                       │                  │── parse JSON ─────────►record::ffmpeg::start  │
  │                       │                       │                  │                       │── find_ffmpeg() ────► │
  │                       │                       │                  │                       │── spawn(child) ─────►│
@@ -26,7 +26,7 @@ User                Qt main thread          RecordingManager       FFI          
  │                       │                       │                  │                       │  ┌──── frames ─────► │
  │                       │                       │                  │                       │  │  via stdin        │
  │                       │                       │                  │                       │  │                   │
- │── Stop (Cmd+Shift+R)─►│── stopRecording ─────►│── snapforge_stop_recording ─────────────► RecordingHandle::stop │
+ │── Stop (Cmd+Shift+R)─►│── stopRecording ─────►│── snapforge_record_stop ────────────────► RecordingHandle::stop │
  │                       │                       │                  │                       │── close stdin ─────► │
  │                       │                       │                  │                       │── wait for child ──► │
  │                       │                       │                  │                       │                      │
@@ -68,7 +68,7 @@ Frames are read from ScreenCaptureKit in the capture worker thread and written t
 
 ## Pause / resume
 
-`snapforge_pause_recording` / `_resume_recording` flip a flag on the `RecordingHandle`. The capture worker skips frame-writes while paused (timer continues; no frames sent → ffmpeg sees a gap). Tray pill swaps dot → two short bars.
+`snapforge_record_pause` / `snapforge_record_resume` flip a flag on the `RecordingHandle`. The capture worker skips frame-writes while paused (timer continues; no frames sent → ffmpeg sees a gap). Tray pill swaps dot → two short bars.
 
 ## Failure modes
 
@@ -78,20 +78,20 @@ Frames are read from ScreenCaptureKit in the capture worker thread and written t
 | ffmpeg spawn fails (permission, corruption) | `RecordError::FfmpegSpawnFailed` | Same |
 | Stdin pipe write fails mid-recording | `RecordError::WriteFailed` | Same |
 | SCK capture fails | `RecordError::CaptureFailed` | Same |
-| Bad config JSON | `LAST_RECORDING_ERROR` set, NULL handle | Modal via `recordingError` signal |
+| Bad config JSON | `LAST_APP_ERROR` set, NULL handle | Modal via `recordingError` signal (read via `snapforge_app_last_error`) |
 
 All paths go through the `recordingError` signal in `RecordingManager`, handled by `main.cpp` which resets tray + pops modal.
 
 ## File output
 
 - **Path**: `~/Pictures/Snapforge/{filename_pattern}.{mp4|gif}` by default. `filename_pattern` is templated by prefs (timestamps, sequence numbers).
-- **History**: on `recordingStopped`, `main.cpp` calls `snapforge_history_add(path)` so it appears in History window.
+- **History**: indexing is now handled inside `snapforge_record_start` via `add_to_history_on_stop:true`. The use-case layer adds the finished file to the index after a successful stop (skipping incomplete mp4s automatically).
 - **Clipboard**: file URL + plain path are copied so the user can paste into Finder/Slack/Messages.
 - **Incomplete MP4 detection**: `snapforge_is_incomplete_mp4(path)` checks for missing moov atom (happens if app crashed mid-recording). History view flags these.
 
 ## Click visualizer integration (when "Show clicks while recording" is enabled)
 
-- `recordingStarted` → `ClickIndicatorOverlay::showOverlay()` + `ClickEventTap::start()`
+- `recordingStarted` → `ClickIndicatorOverlay::showOverlay()` + `ClickTap::start()` (which wraps `snapforge_clicks_start`)
 - Each click → ripple drawn into the overlay window
 - The overlay window is rendered by the compositor on top of everything → captured by SCK → baked into the recording
 - `recordingStopped/Error` → tear down overlay + tap
