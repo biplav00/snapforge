@@ -12,6 +12,8 @@ pub struct ClickEvent {
     pub x: f64,
     /// Screen y coordinate in physical pixels
     pub y: f64,
+    /// True for a right-mouse-down event, false for left-mouse-down.
+    pub right_click: bool,
     /// When the click occurred
     pub timestamp: Instant,
 }
@@ -30,11 +32,12 @@ impl ClickTracker {
     }
 
     /// Add a click to the queue.
-    pub fn add(&self, x: f64, y: f64) {
+    pub fn add(&self, x: f64, y: f64, right_click: bool) {
         if let Ok(mut clicks) = self.clicks.lock() {
             clicks.push(ClickEvent {
                 x,
                 y,
+                right_click,
                 timestamp: Instant::now(),
             });
             // Keep only the last 64 clicks to bound memory
@@ -93,10 +96,20 @@ mod tests {
     #[test]
     fn test_tracker_add_and_recent() {
         let t = ClickTracker::new();
-        t.add(10.0, 20.0);
+        t.add(10.0, 20.0, false);
         let r = t.recent(10_000);
         assert_eq!(r.len(), 1);
         assert_eq!(r[0].x, 10.0);
+        assert!(!r[0].right_click);
+    }
+
+    #[test]
+    fn test_tracker_add_right_click() {
+        let t = ClickTracker::new();
+        t.add(5.0, 6.0, true);
+        let r = t.recent(10_000);
+        assert_eq!(r.len(), 1);
+        assert!(r[0].right_click);
     }
 
     // Tap creation requires Accessibility permission and a live CGSession;
@@ -269,7 +282,8 @@ mod macos_tap {
         // again). After MAX_REENABLE_ATTEMPTS permanent failures we log once
         // and stop retrying; the tap stays disabled and the tracker goes quiet.
         let loc = CGEventGetLocation(event);
-        data.tracker.add(loc.x, loc.y);
+        let right_click = event_type == KCG_EVENT_RIGHT_MOUSE_DOWN;
+        data.tracker.add(loc.x, loc.y, right_click);
         event
     }
 

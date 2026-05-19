@@ -6,6 +6,7 @@ members = [
     "crates/snapforge-encode",
     "crates/snapforge-storage",
     "crates/snapforge-core",
+    "crates/snapforge-app",
     "crates/snapforge-ffi",
 ]
 
