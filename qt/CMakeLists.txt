@@ -52,6 +52,7 @@ set(SNAPFORGE_SOURCES
     src/ui/windows/HistoryWindow.cpp
     src/ui/windows/PreferencesWindow.cpp
     src/ui/overlay/ClickIndicatorOverlay.cpp
+    src/ui/tray/TrayIcon.cpp
 )
 
 if(APPLE)
@@ -84,6 +85,8 @@ target_include_directories(snapforge-qt PRIVATE
     src/ui/windows
     src/ui/overlay
     src/ui/annotation
+    src/ui/tray
+    src/controllers
     src/capture
     src/infra
     src/platform/macos

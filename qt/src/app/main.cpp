@@ -1,16 +1,10 @@
 #include <QApplication>
 #include <QSystemTrayIcon>
-#include <cmath>
-#include <QMenu>
 #include <QDir>
 #include <QDateTime>
 #include <QShortcut>
 #include <QTimer>
 #include <QIcon>
-#include <QPixmap>
-#include <QPainter>
-#include <QPainterPath>
-#include <QPen>
 #include <QClipboard>
 #include <QMimeData>
 #include <QUrl>
@@ -24,6 +18,7 @@
 #include "HistoryWindow.h"
 #include "PreferencesWindow.h"
 #include "ClickIndicatorOverlay.h"
+#include "TrayIcon.h"
 #ifdef Q_OS_MACOS
 #include "ClickEventTap.h"
 #endif
@@ -442,161 +437,44 @@ int main(int argc, char *argv[]) {
     // Initial sync after prefs load (deferred so loadConfig runs first)
     QTimer::singleShot(0, syncPrefsToOverlay);
 
-    // Idle tray icon — brand mark in white on a transparent background:
-    // two opposing corner brackets (top-left + bottom-right) with a diagonal
-    // slash, matching the original Snapforge logo glyph.
-    // Unique idle mark: a six-blade camera aperture inscribed in a thin
-    // rounded square with a tiny shutter notch in the top-right corner.
-    // Distinct from generic crosshair / camera glyphs and reads as a
-    // capture/record motif at menu-bar size.
-    auto makeIdleIcon = []() -> QIcon {
-        const qreal logicalSz = 18.0;
-        const qreal dpr = 2.0;
-        const int sz = static_cast<int>(logicalSz * dpr);
-        QPixmap pm(sz, sz);
-        pm.setDevicePixelRatio(dpr);
-        pm.fill(Qt::transparent);
+    // Tray icon (idle/pill rendering, menu builders, pulse timer) lives in
+    // its own class. We connect its action* signals to the same callers the
+    // inline menu lambdas used to invoke directly.
+    TrayIcon tray;
+    tray.initialize();
 
-        QPainter p(&pm);
-        p.setRenderHint(QPainter::Antialiasing);
-
-        const QColor ink(255, 255, 255, 255);
-        QPen pen(ink, 1.2);
-        pen.setCapStyle(Qt::RoundCap);
-        pen.setJoinStyle(Qt::RoundJoin);
-        p.setPen(pen);
-        p.setBrush(Qt::NoBrush);
-
-        // Outer rounded frame.
-        const qreal frameMargin = 1.5;
-        QRectF frame(frameMargin, frameMargin,
-                     logicalSz - 2 * frameMargin, logicalSz - 2 * frameMargin);
-        p.drawRoundedRect(frame, 3.5, 3.5);
-
-        // Aperture: a hexagonal ring with three short blade lines that
-        // converge toward the center, evoking a six-blade iris.
-        const qreal cx = logicalSz / 2.0;
-        const qreal cy = logicalSz / 2.0;
-        const qreal r = 4.6;
-        QPolygonF hex;
-        for (int i = 0; i < 6; ++i) {
-            // Tilt the hexagon 30° so a flat edge sits at the top — reads
-            // as an aperture rather than a hex nut.
-            qreal a = (M_PI / 3.0) * i + (M_PI / 6.0);
-            hex << QPointF(cx + r * std::cos(a), cy + r * std::sin(a));
-        }
-        p.drawPolygon(hex);
-
-        // Three blade ticks: from alternating hex vertices toward center,
-        // stopping short to leave a clear pupil.
-        const qreal pupil = 1.4;
-        for (int i = 0; i < 6; i += 2) {
-            QPointF v = hex[i];
-            QPointF dir(cx - v.x(), cy - v.y());
-            qreal len = std::hypot(dir.x(), dir.y());
-            if (len <= pupil) continue;
-            qreal t = (len - pupil) / len;
-            QPointF endP(v.x() + dir.x() * t, v.y() + dir.y() * t);
-            p.drawLine(v, endP);
-        }
-
-        // Shutter notch: small filled square in the top-right corner of
-        // the frame, signaling "press to capture" — the unique flourish.
-        p.setPen(Qt::NoPen);
-        p.setBrush(ink);
-        p.drawRoundedRect(QRectF(logicalSz - 4.6, frameMargin - 0.2, 2.4, 2.4),
-                          0.6, 0.6);
-
-        p.end();
-        return QIcon(pm);
-    };
-
-    // Minimal recording indicator (mock D2): pulsing red dot + white "mm:ss"
-    // timer, no background pill, no REC label, no inline controls. All
-    // pause/stop actions live in the tray's context menu.
-    auto makeRecordingPillIcon = [](double alpha, bool paused, int seconds) -> QIcon {
-        QString timeStr;
-        if (seconds >= 3600) {
-            timeStr = QStringLiteral("%1:%2:%3")
-                .arg(seconds / 3600, 1, 10, QLatin1Char('0'))
-                .arg((seconds / 60) % 60, 2, 10, QLatin1Char('0'))
-                .arg(seconds % 60, 2, 10, QLatin1Char('0'));
+    QObject::connect(&tray, &TrayIcon::actionScreenshot,
+                     &overlay, &OverlayWindow::activate);
+    QObject::connect(&tray, &TrayIcon::actionFullscreen,
+                     &overlay, &OverlayWindow::activateFullscreen);
+    QObject::connect(&tray, &TrayIcon::actionRecordToggle, [&]() {
+        if (recording.isRecording()) {
+            recording.stopRecording();
         } else {
-            timeStr = QStringLiteral("%1:%2")
-                .arg(seconds / 60, 2, 10, QLatin1Char('0'))
-                .arg(seconds % 60, 2, 10, QLatin1Char('0'));
+            overlay.activateForRecording();
         }
-
-        QFont timeFont(QStringLiteral("Menlo"));
-        timeFont.setPixelSize(14);
-        timeFont.setWeight(QFont::Bold);
-        QFontMetrics tfm(timeFont);
-        const qreal timeW = tfm.horizontalAdvance(timeStr);
-
-        const qreal padX = 4.0;
-        const qreal dotR = 4.0;
-        const qreal gap = 6.0;
-        const int logicalH = 18;
-        const int logicalW = static_cast<int>(std::ceil(
-            padX + dotR * 2.0 + gap + timeW + padX));
-
-        const qreal dpr = 3.0;
-        QPixmap pm(static_cast<int>(logicalW * dpr),
-                   static_cast<int>(logicalH * dpr));
-        pm.setDevicePixelRatio(dpr);
-        pm.fill(Qt::transparent);
-        QPainter p(&pm);
-        p.setRenderHint(QPainter::Antialiasing);
-        p.setRenderHint(QPainter::TextAntialiasing);
-
-        const qreal cy = logicalH / 2.0;
-        const qreal dotCx = padX + dotR;
-
-        p.setPen(Qt::NoPen);
-        if (paused) {
-            // Two short bars in place of the dot — same footprint so the
-            // overall layout doesn't shift when toggling pause.
-            p.setBrush(QColor(255, 150, 150, 230));
-            const qreal barW = 2.6;
-            const qreal barH = 8.0;
-            p.drawRoundedRect(QRectF(dotCx - dotR, cy - barH / 2.0, barW, barH),
-                              0.8, 0.8);
-            p.drawRoundedRect(QRectF(dotCx + dotR - barW, cy - barH / 2.0,
-                                     barW, barH), 0.8, 0.8);
-        } else {
-            int halo = qBound(0, static_cast<int>(90 * alpha), 90);
-            p.setBrush(QColor(255, 70, 70, halo));
-            p.drawEllipse(QPointF(dotCx, cy), dotR + 2.0, dotR + 2.0);
-            int dotAlpha = qBound(200, static_cast<int>(255 * alpha), 255);
-            p.setBrush(QColor(255, 70, 70, dotAlpha));
-            p.drawEllipse(QPointF(dotCx, cy), dotR, dotR);
-        }
-
-        p.setFont(timeFont);
-        p.setPen(paused ? QColor(220, 220, 220, 240)
-                        : QColor(255, 255, 255, 255));
-        const qreal textX = padX + dotR * 2.0 + gap;
-        p.drawText(QRectF(textX, 0, timeW + 2, logicalH),
-                   Qt::AlignVCenter | Qt::AlignLeft, timeStr);
-
-        p.end();
-        // Multi-color (red dot + white text), so render as a regular icon —
-        // template mode would collapse the dot's red into the menu-bar tint.
-        QIcon icon(pm);
-        icon.setIsMask(false);
-        return icon;
-    };
-
-    qDebug("System tray available: %d", QSystemTrayIcon::isSystemTrayAvailable());
-    QSystemTrayIcon tray;
-    const QIcon idleIcon = makeIdleIcon();
-    tray.setIcon(idleIcon);
-    tray.setToolTip("Snapforge");
-    app.setProperty("systemTray", QVariant::fromValue(static_cast<QObject *>(&tray)));
+    });
+    QObject::connect(&tray, &TrayIcon::actionHistory, [&]() {
+        history.refreshHistory();
+        history.show();
+        history.raise();
+        history.activateWindow();
+    });
+    QObject::connect(&tray, &TrayIcon::actionPreferences, [&]() {
+        prefs.show();
+        prefs.raise();
+        prefs.activateWindow();
+    });
+    QObject::connect(&tray, &TrayIcon::actionQuit, &app, &QApplication::quit);
+    QObject::connect(&tray, &TrayIcon::actionPauseRecording,
+                     &recording, &RecordingManager::pauseRecording);
+    QObject::connect(&tray, &TrayIcon::actionResumeRecording,
+                     &recording, &RecordingManager::resumeRecording);
+    QObject::connect(&tray, &TrayIcon::actionStopRecording,
+                     &recording, &RecordingManager::stopRecording);
 
     // Q2: surface invalid-selection feedback (too small, multi-display) via
-    // the tray instead of silently dropping. Wired here because `tray` needs
-    // to exist first.
+    // the tray instead of silently dropping.
     QObject::connect(&overlay, &OverlayWindow::regionInvalid,
                      [&tray](const QString &reason) {
         tray.showMessage("Snapforge — Selection invalid",
@@ -604,137 +482,26 @@ int main(int argc, char *argv[]) {
                          QSystemTrayIcon::Information, 3000);
     });
 
-    // Stack-allocated so the menu is destroyed deterministically when main returns.
-    // QMenu requires a QWidget parent and QSystemTrayIcon is a QObject, so we can't
-    // hand off parent-ownership to the tray; manage the lifetime here instead.
-    QMenu menuObj;
-    QMenu *menu = &menuObj;
-
-    auto buildNormalMenu = [&]() {
-        menu->clear();
-
-        menu->addAction("Screenshot (Cmd+Shift+S)", &overlay, &OverlayWindow::activate);
-        menu->addAction("Capture Fullscreen (Cmd+Shift+F)", &overlay, &OverlayWindow::activateFullscreen);
-
-        menu->addAction("Record (Cmd+Shift+R)", [&]() {
-            if (recording.isRecording()) {
-                recording.stopRecording();
-            } else {
-                overlay.activateForRecording();
-            }
-        });
-
-        menu->addSeparator();
-
-        menu->addAction("History (Cmd+Shift+H)", [&]() {
-            history.refreshHistory();
-            history.show();
-            history.raise();
-            history.activateWindow();
-        });
-
-        menu->addAction("Preferences", [&]() {
-            prefs.show();
-            prefs.raise();
-            prefs.activateWindow();
-        });
-
-        menu->addSeparator();
-
-        menu->addAction("Quit", &app, &QApplication::quit);
-    };
-
-    auto buildRecordingMenu = [&]() {
-        menu->clear();
-
-        QAction *recordingLabel = menu->addAction(
-            recording.isPaused() ? "⏸ Paused" : "● Recording...");
-        recordingLabel->setEnabled(false);
-
-        if (recording.isPaused()) {
-            menu->addAction("▶ Resume Recording", [&]() {
-                recording.resumeRecording();
-            });
-        } else {
-            menu->addAction("⏸ Pause Recording", [&]() {
-                recording.pauseRecording();
-            });
-        }
-
-        menu->addAction("■ Stop Recording (Cmd+Shift+R)", [&]() {
-            recording.stopRecording();
-        });
-
-        menu->addSeparator();
-
-        menu->addAction("History (Cmd+Shift+H)", [&]() {
-            history.refreshHistory();
-            history.show();
-            history.raise();
-            history.activateWindow();
-        });
-
-        menu->addAction("Preferences", [&]() {
-            prefs.show();
-            prefs.raise();
-            prefs.activateWindow();
-        });
-
-        menu->addSeparator();
-
-        menu->addAction("Quit", &app, &QApplication::quit);
-    };
-
-    buildNormalMenu();
-    tray.setContextMenu(menu);
-    tray.show();
-    qDebug("Tray shown; visible=%d", tray.isVisible());
-
-    // Pulse the recording pill icon twice per second (matches mockup recPulse).
-    // Also re-renders on every tick so the elapsed timer stays current.
-    auto *pulseTimer = new QTimer(&app);
-    pulseTimer->setInterval(500);
-    bool pulseHigh = true;
-    auto refreshPill = [&, makeRecordingPillIcon](double alpha) {
-        tray.setIcon(makeRecordingPillIcon(alpha, recording.isPaused(),
-                                           recording.elapsedSeconds()));
-    };
-    QObject::connect(pulseTimer, &QTimer::timeout, [&, refreshPill]() mutable {
-        pulseHigh = !pulseHigh;
-        refreshPill(pulseHigh ? 1.0 : 0.35);
-    });
-
     // Update the timer text every second when elapsedChanged fires.
     QObject::connect(&recording, &RecordingManager::elapsedChanged,
-                     [refreshPill, &recording](int /*secs*/) {
+                     [&tray, &recording](int secs) {
         if (recording.isRecording() || recording.isPaused()) {
-            refreshPill(1.0);
+            tray.updateElapsed(secs);
         }
     });
 
-    // Pause: stop the pulse animation, re-render the pill with "PAUSED" state.
-    QObject::connect(&recording, &RecordingManager::recordingPaused,
-                     [&, refreshPill]() {
-        pulseTimer->stop();
-        refreshPill(1.0);
-        tray.setToolTip("Snapforge — Paused");
-        buildRecordingMenu();
+    // Pause/Resume: ask the tray to swap pill animation + menu layout.
+    QObject::connect(&recording, &RecordingManager::recordingPaused, [&tray]() {
+        tray.setPaused(true);
     });
-    QObject::connect(&recording, &RecordingManager::recordingResumed,
-                     [&, refreshPill]() {
-        pulseTimer->start();
-        refreshPill(1.0);
-        tray.setToolTip("Snapforge — Recording");
-        buildRecordingMenu();
+    QObject::connect(&recording, &RecordingManager::recordingResumed, [&tray]() {
+        tray.setPaused(false);
     });
 
     // On start: swap the tray icon to the recording pill and kick off the pulse.
     QObject::connect(&recording, &RecordingManager::recordingStarted,
-                     [&, refreshPill](const QString &/*path*/) {
-        buildRecordingMenu();
-        tray.setToolTip("Snapforge — Recording");
-        refreshPill(1.0);
-        pulseTimer->start();
+                     [&](const QString &/*path*/) {
+        tray.enterRecordingState(/*paused=*/false);
 
         if (prefs.showClicksEnabled()) {
             clickOverlay.showOverlay();
@@ -753,10 +520,7 @@ int main(int argc, char *argv[]) {
 
     QObject::connect(&recording, &RecordingManager::recordingStopped,
                      [&](const QString &path) {
-        pulseTimer->stop();
-        tray.setIcon(idleIcon);
-        tray.setToolTip("Snapforge");
-        buildNormalMenu();
+        tray.leaveRecordingState();
 
 #ifdef Q_OS_MACOS
         clickTap.stop();
@@ -784,13 +548,10 @@ int main(int argc, char *argv[]) {
     QObject::connect(&recording, &RecordingManager::recordingError,
                      [&](const QString &message) {
         qWarning("Recording error: %s", qPrintable(message));
-        pulseTimer->stop();
-        tray.setIcon(idleIcon);
-        tray.setToolTip("Snapforge");
-        // Reset the tray menu back to the idle layout — leaving the recording
-        // menu visible after a start-failure makes Stop/Pause clickable for a
-        // recording that never began, which then no-ops confusingly.
-        buildNormalMenu();
+        // Reset the tray back to idle — leaving the recording menu visible
+        // after a start-failure makes Stop/Pause clickable for a recording
+        // that never began, which then no-ops confusingly.
+        tray.leaveRecordingState();
 #ifdef Q_OS_MACOS
         clickTap.stop();
 #endif
