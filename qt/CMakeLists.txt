@@ -41,29 +41,29 @@ qt_add_resources(SNAPFORGE_QRC_FILES
 )
 
 set(SNAPFORGE_SOURCES
-    src/main.cpp
-    src/Logger.cpp
-    src/OverlayWindow.cpp
-    src/AnnotationState.cpp
-    src/AnnotationRenderer.cpp
-    src/AnnotationCanvas.cpp
-    src/AnnotationToolbar.cpp
-    src/RecordingManager.cpp
-    src/HistoryWindow.cpp
-    src/PreferencesWindow.cpp
-    src/ClickIndicatorOverlay.cpp
+    src/app/main.cpp
+    src/infra/Logger.cpp
+    src/ui/overlay/OverlayWindow.cpp
+    src/ui/annotation/AnnotationState.cpp
+    src/ui/annotation/AnnotationRenderer.cpp
+    src/ui/annotation/AnnotationCanvas.cpp
+    src/ui/annotation/AnnotationToolbar.cpp
+    src/capture/RecordingManager.cpp
+    src/ui/windows/HistoryWindow.cpp
+    src/ui/windows/PreferencesWindow.cpp
+    src/ui/overlay/ClickIndicatorOverlay.cpp
 )
 
 if(APPLE)
     list(APPEND SNAPFORGE_SOURCES
-        src/WorkspaceSleepObserver.mm
-        src/SpaceChangeObserver.mm
-        src/ClickEventTap.mm
-        src/ClickIndicatorOverlayMac.mm)
+        src/platform/macos/WorkspaceSleepObserver.mm
+        src/platform/macos/SpaceChangeObserver.mm
+        src/platform/macos/ClickEventTap.mm
+        src/ui/overlay/ClickIndicatorOverlayMac.mm)
     # The .mm files use ARC's __bridge_retained / __bridge_transfer; enable ARC.
-    set_source_files_properties(src/WorkspaceSleepObserver.mm
+    set_source_files_properties(src/platform/macos/WorkspaceSleepObserver.mm
         PROPERTIES COMPILE_FLAGS "-fobjc-arc")
-    set_source_files_properties(src/SpaceChangeObserver.mm
+    set_source_files_properties(src/platform/macos/SpaceChangeObserver.mm
         PROPERTIES COMPILE_FLAGS "-fobjc-arc")
 endif()
 
@@ -80,6 +80,13 @@ set_target_properties(snapforge-qt PROPERTIES OUTPUT_NAME "Snapforge")
 
 target_include_directories(snapforge-qt PRIVATE
     ${FFI_HEADER_DIR}
+    src/app
+    src/ui/windows
+    src/ui/overlay
+    src/ui/annotation
+    src/capture
+    src/infra
+    src/platform/macos
 )
 
 target_link_libraries(snapforge-qt PRIVATE
@@ -128,7 +135,7 @@ if(APPLE AND MACDEPLOYQT)
     # on machines without Homebrew. Runs after macdeployqt (it walks
     # Contents/MacOS/) and before codesign (signature must cover ffmpeg).
     add_custom_command(TARGET snapforge-qt POST_BUILD
-        COMMAND "${CMAKE_SOURCE_DIR}/scripts/bundle-ffmpeg.sh"
+        COMMAND "${CMAKE_SOURCE_DIR}/../packaging/macos/bundle-ffmpeg.sh"
                 "$<TARGET_BUNDLE_DIR:snapforge-qt>"
         COMMENT "Bundling ffmpeg and dylibs..."
         VERBATIM

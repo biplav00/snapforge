@@ -2,14 +2,15 @@
 # Build a distributable .dmg for Snapforge.
 #
 # Usage:
-#   qt/scripts/build_dmg.sh                # build release + package
-#   SKIP_BUILD=1 qt/scripts/build_dmg.sh   # skip build, repackage existing app
+#   packaging/macos/build_dmg.sh                # build release + package
+#   SKIP_BUILD=1 packaging/macos/build_dmg.sh   # skip build, repackage existing app
 #
 # Output: qt/build/dist/Snapforge-<version>.dmg
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-QT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+QT_DIR="$REPO_ROOT/qt"
 BUILD_DIR="$QT_DIR/build"
 APP_PATH="$BUILD_DIR/Snapforge.app"
 DIST_DIR="$BUILD_DIR/dist"
