@@ -1,7 +1,7 @@
 use super::{RecordConfig, RecordError};
-use crate::capture;
-use crate::clicks::ClickTracker;
-use crate::config::{RecordingFormat, RecordingQuality};
+use snapforge_capture::capture;
+use snapforge_capture::clicks::ClickTracker;
+use snapforge_storage::config::{RecordingFormat, RecordingQuality};
 use std::io::{Read as _, Write};
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
@@ -340,7 +340,7 @@ fn start_recording_macos_bgra(
         (
             rw,
             rh,
-            Some(crate::types::Rect {
+            Some(snapforge_domain::Rect {
                 x: rx as i32,
                 y: ry as i32,
                 width: rw,
@@ -399,7 +399,7 @@ fn start_recording_macos_bgra(
         let mut last_frame_bytes: Vec<u8> = vec![0u8; frame_bytes];
         let mut composed: Vec<u8> = vec![0u8; frame_bytes];
         // Reused click snapshot — refreshed once per captured frame.
-        let mut click_snapshot: Vec<crate::clicks::ClickEvent> = Vec::with_capacity(32);
+        let mut click_snapshot: Vec<snapforge_capture::clicks::ClickEvent> = Vec::with_capacity(32);
 
         // Capture the initial frame into last_frame_bytes.
         if let Ok(f) = ctx.capture_frame_raw_bgra() {
@@ -560,7 +560,7 @@ fn crop_bgra_to_region_into(
     src: &[u8],
     src_w: u32,
     src_h: u32,
-    region: Option<&crate::types::Rect>,
+    region: Option<&snapforge_domain::Rect>,
     dst_w: u32,
     dst_h: u32,
     dst: &mut [u8],
@@ -619,8 +619,8 @@ fn draw_clicks_bgra(
     buf: &mut [u8],
     width: u32,
     height: u32,
-    clicks: &[crate::clicks::ClickEvent],
-    region: Option<&crate::types::Rect>,
+    clicks: &[snapforge_capture::clicks::ClickEvent],
+    region: Option<&snapforge_domain::Rect>,
     scale_x: f64,
     scale_y: f64,
 ) {
@@ -841,7 +841,7 @@ fn draw_ring_bgra(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{RecordingFormat, RecordingQuality};
+    use snapforge_storage::config::{RecordingFormat, RecordingQuality};
     use std::path::PathBuf;
 
     fn test_config(path: &Path) -> super::super::RecordConfig {

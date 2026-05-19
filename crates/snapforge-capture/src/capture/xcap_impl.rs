@@ -1,4 +1,4 @@
-use crate::types::Rect;
+use snapforge_domain::Rect;
 use image::RgbaImage;
 
 use super::CaptureError;

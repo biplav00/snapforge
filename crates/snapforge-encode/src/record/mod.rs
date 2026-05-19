@@ -1,7 +1,7 @@
 pub mod ffmpeg;
 
-use crate::config::{RecordingFormat, RecordingQuality};
-use crate::types::Rect;
+use snapforge_domain::Rect;
+use snapforge_storage::config::{RecordingFormat, RecordingQuality};
 use std::path::{Path, PathBuf};
 use thiserror::Error;
 
@@ -165,9 +165,9 @@ mod tests {
             display: 0,
             region: None,
             output_path: std::path::PathBuf::from("/tmp/test.mp4"),
-            format: crate::config::RecordingFormat::Mp4,
+            format: snapforge_storage::config::RecordingFormat::Mp4,
             fps: 30,
-            quality: crate::config::RecordingQuality::Medium,
+            quality: snapforge_storage::config::RecordingQuality::Medium,
             ffmpeg_path: None,
         };
         assert_eq!(config.fps, 30);
@@ -185,9 +185,9 @@ mod tests {
                 height: 600,
             }),
             output_path: std::path::PathBuf::from("/tmp/test.mp4"),
-            format: crate::config::RecordingFormat::Mp4,
+            format: snapforge_storage::config::RecordingFormat::Mp4,
             fps: 30,
-            quality: crate::config::RecordingQuality::High,
+            quality: snapforge_storage::config::RecordingQuality::High,
             ffmpeg_path: None,
         };
         assert!(config.region.is_some());

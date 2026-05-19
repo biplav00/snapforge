@@ -1,15 +1,30 @@
-pub mod capture;
-pub mod clicks;
-pub mod clipboard;
-pub mod config;
-pub mod format;
-pub mod history;
-pub mod record;
-pub mod types;
+//! Backward-compatible facade over the split snapforge crates.
+//!
+//! Phase 2A of the architecture migration relocated the source modules into
+//! four focused crates (`snapforge-domain`, `snapforge-capture`,
+//! `snapforge-encode`, `snapforge-storage`). This crate keeps the old
+//! `snapforge_core::*` import paths working so the FFI and any external
+//! callers don't need to change. The thin convenience orchestrators
+//! (`screenshot_fullscreen`, `screenshot_region`) still live here because
+//! they glue capture + encode + clipboard together.
 
+// Re-export the sub-crates' top-level modules under their original paths.
+// `snapforge_core::capture::foo` → `snapforge_capture::capture::foo`, etc.
+pub use snapforge_capture::capture;
+pub use snapforge_capture::clicks;
+pub use snapforge_encode::format;
+pub use snapforge_encode::record;
+pub use snapforge_storage::clipboard;
+pub use snapforge_storage::config;
+pub use snapforge_storage::history;
+
+// Domain types were previously `snapforge_core::types::*`. Keep a `types`
+// module alias so any `snapforge_core::types::Rect` import resolves.
+pub use snapforge_domain as types;
+
+use snapforge_domain::{CaptureFormat, Rect};
 use std::path::{Path, PathBuf};
 use thiserror::Error;
-use types::{CaptureFormat, Rect};
 
 #[derive(Debug, Error)]
 pub enum ScreenError {
@@ -39,7 +54,7 @@ pub fn screenshot_fullscreen(
         clipboard::copy_image_to_clipboard(&image)?;
     }
 
-    format::save_image(&image, save_path, format, quality)?;
+    self::format::save_image(&image, save_path, format, quality)?;
     Ok(save_path.to_path_buf())
 }
 
@@ -58,6 +73,6 @@ pub fn screenshot_region(
         clipboard::copy_image_to_clipboard(&image)?;
     }
 
-    format::save_image(&image, save_path, format, quality)?;
+    self::format::save_image(&image, save_path, format, quality)?;
     Ok(save_path.to_path_buf())
 }

@@ -4,7 +4,7 @@ pub mod macos;
 #[cfg(not(target_os = "macos"))]
 pub mod xcap_impl;
 
-use crate::types::Rect;
+use snapforge_domain::Rect;
 use image::RgbaImage;
 use thiserror::Error;
 
@@ -127,7 +127,7 @@ mod tests {
 
     #[test]
     fn test_capture_region_valid() {
-        let region = crate::types::Rect {
+        let region = snapforge_domain::Rect {
             x: 0,
             y: 0,
             width: 100,
@@ -142,7 +142,7 @@ mod tests {
 
     #[test]
     fn test_capture_region_zero_size() {
-        let region = crate::types::Rect {
+        let region = snapforge_domain::Rect {
             x: 0,
             y: 0,
             width: 0,

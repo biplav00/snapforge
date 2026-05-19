@@ -1,4 +1,4 @@
-use crate::types::{CaptureFormat, LastRegion};
+use snapforge_domain::{CaptureFormat, LastRegion};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::PathBuf;

@@ -1,4 +1,4 @@
-use crate::types::CaptureFormat;
+use snapforge_domain::CaptureFormat;
 use image::RgbaImage;
 use std::io::Cursor;
 use std::path::Path;
