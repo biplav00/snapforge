@@ -25,7 +25,7 @@ RecordingManager::RecordingManager(QObject *parent)
 
 RecordingManager::~RecordingManager()
 {
-    // snapforge_stop_recording blocks until ffmpeg finalizes the file which can
+    // snapforge_record_stop blocks until ffmpeg finalizes the file which can
     // be slow (writing the moov atom for a long recording). Run it on a worker
     // thread so we can apply a deadline. Atomically grab ownership of the
     // handle: if stopRecording() races us, the exchange leaves us with nullptr

@@ -6,6 +6,8 @@
 #include <QTimer>
 #include <QIcon>
 #include <QEvent>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include "OverlayWindow.h"
 #include "RecordingManager.h"
 #include "HistoryWindow.h"
@@ -241,8 +243,8 @@ static void saveImage(const QImage &img) {
     // Fix #16: if the directory doesn't exist, try to create it. We skip the
     // QFileInfo::isWritable pre-check — it's unreliable on macOS under
     // sandboxing / TCC and can return false for paths that are in fact
-    // writable. Let snapforge_save_image attempt the write and surface the
-    // real errno via the tray if it fails.
+    // writable. Let snapforge_save_prerendered attempt the write and surface
+    // the real errno via the tray if it fails.
     QDir d(dir);
     if (!d.exists()) {
         if (!QDir().mkpath(dir)) {
@@ -260,11 +262,26 @@ static void saveImage(const QImage &img) {
     QString filename = buildFilename(pattern, fmt);
     QString path = dir + "/" + filename;
 
-    int result = snapforge_save_image(rgba.constBits(), rgba.width(), rgba.height(),
-                                      path.toUtf8().constData(), fmt, static_cast<uint8_t>(quality));
-    if (result == 0) {
+    // Use-case FFI: snapforge_save_prerendered handles encode+write,
+    // (optional) clipboard, and (optional) history indexing in one call.
+    // We pass the Qt-composited RGBA bytes verbatim — same input the
+    // deprecated snapforge_save_image used to take.
+    static const char *kFmtNames[] = { "png", "jpg", "webp" };
+    QJsonObject req;
+    req[QStringLiteral("output_path")] = path;
+    req[QStringLiteral("format")] = QString::fromLatin1(kFmtNames[qBound(0, fmt, 2)]);
+    req[QStringLiteral("quality")] = quality;
+    req[QStringLiteral("copy_to_clipboard")] = false; // copyImage handles that separately
+    req[QStringLiteral("add_to_history")] = true;
+    QByteArray reqBytes = QJsonDocument(req).toJson(QJsonDocument::Compact);
+
+    char *resJson = snapforge_save_prerendered(rgba.constBits(),
+                                               static_cast<size_t>(rgba.sizeInBytes()),
+                                               rgba.width(), rgba.height(),
+                                               reqBytes.constData());
+    if (resJson) {
+        snapforge_free_string(resJson);
         qDebug("Saved: %s", qPrintable(path));
-        snapforge_history_add(path.toUtf8().constData());
 
         // Show notification if enabled
         if (g_prefsRef && g_prefsRef->showNotifEnabled()) {
@@ -276,6 +293,11 @@ static void saveImage(const QImage &img) {
             }
         }
     } else {
+        QString errDetail;
+        if (char *err = snapforge_app_last_error()) {
+            errDetail = QString::fromUtf8(err);
+            snapforge_free_string(err);
+        }
         auto *tray = qobject_cast<QSystemTrayIcon *>(
             qApp->property("systemTray").value<QObject *>());
         if (tray) {
@@ -283,15 +305,35 @@ static void saveImage(const QImage &img) {
                               "Could not write " + filename + " (disk full or permission denied?)",
                               QSystemTrayIcon::Warning, 5000);
         }
-        qWarning("Save failed: snapforge_save_image returned %d for %s", result, qPrintable(path));
+        qWarning("Save failed: snapforge_save_prerendered returned NULL for %s: %s",
+                 qPrintable(path), qPrintable(errDetail));
     }
 }
 
 static void copyImage(const QImage &img) {
     if (img.isNull()) return;
     QImage rgba = img.convertToFormat(QImage::Format_RGBA8888);
-    snapforge_copy_to_clipboard(rgba.constBits(), rgba.width(), rgba.height());
-    qDebug("Copied to clipboard");
+
+    // Clipboard-only: omit output_path so the use case skips encode + write
+    // + history and only touches NSPasteboard.
+    QJsonObject req;
+    req[QStringLiteral("copy_to_clipboard")] = true;
+    QByteArray reqBytes = QJsonDocument(req).toJson(QJsonDocument::Compact);
+    char *resJson = snapforge_save_prerendered(rgba.constBits(),
+                                               static_cast<size_t>(rgba.sizeInBytes()),
+                                               rgba.width(), rgba.height(),
+                                               reqBytes.constData());
+    if (resJson) {
+        snapforge_free_string(resJson);
+        qDebug("Copied to clipboard");
+    } else {
+        if (char *err = snapforge_app_last_error()) {
+            qWarning("Clipboard copy failed: %s", err);
+            snapforge_free_string(err);
+        } else {
+            qWarning("Clipboard copy failed");
+        }
+    }
 }
 
 int main(int argc, char *argv[]) {
