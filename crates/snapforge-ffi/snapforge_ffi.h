@@ -111,6 +111,74 @@ char *snapforge_config_load(void);
 /* Save config from JSON. Returns 0 on success, -1 on error. */
 int snapforge_config_save(const char *json);
 
+/* --- Use-case FFI (snapforge-app)
+ *
+ * The wrappers below expose the high-level use cases (snapforge-app) and the
+ * Qt frontend has migrated to them in Phase 2C. The primitive
+ * snapforge_capture_*, snapforge_*_recording, snapforge_save_image,
+ * snapforge_copy_to_clipboard, snapforge_history_add, and
+ * snapforge_last_recording_error fns above are deprecated and slated for
+ * removal in Phase 2D once all callers are gone. */
+
+/* Last use-case error, or NULL if none. Caller frees via snapforge_free_string.
+ * Covers screenshot, recording, and click tracking use cases. */
+char *snapforge_app_last_error(void);
+
+/* Take a screenshot end-to-end (capture + save + optional clipboard + optional
+ * history). req_json fields:
+ *   display (u32), region (optional {x,y,width,height}),
+ *   output_path (string), format ("png"/"jpg"/"webp"),
+ *   quality (u8 1..=100), copy_to_clipboard (bool), add_to_history (bool).
+ * Returns a JSON string {"saved_path": "..."} on success, NULL on error
+ * (call snapforge_app_last_error for details). Caller frees via
+ * snapforge_free_string. */
+char *snapforge_screenshot(const char *req_json);
+
+/* Start recording via the use-case surface. Same JSON as
+ * snapforge_start_recording plus add_to_history_on_stop (bool). Returns an
+ * opaque handle, or NULL on error (call snapforge_app_last_error). The handle
+ * must be stopped via snapforge_record_stop and freed via
+ * snapforge_record_free_handle. */
+void *snapforge_record_start(const char *req_json);
+
+/* Stop a use-case recording. Returns 0 on success, -1 on error
+ * (call snapforge_app_last_error for details). */
+int snapforge_record_stop(void *handle);
+
+/* Pause a use-case recording. Returns 0 on success, -1 on error. */
+int snapforge_record_pause(void *handle);
+
+/* Resume a use-case recording. Returns 0 on success, -1 on error. */
+int snapforge_record_resume(void *handle);
+
+/* Free a use-case recording handle. Drops the inner handle if still active. */
+void snapforge_record_free_handle(void *handle);
+
+/* Callback invoked for every global click event by snapforge_clicks_start.
+ * Fires on a Rust-owned thread (NOT the caller's main thread); callers must
+ * dispatch back to their UI thread themselves. right_click is 1 for
+ * right-mouse-down, 0 for left-mouse-down. user_data is the opaque pointer
+ * supplied to snapforge_clicks_start; Rust never dereferences it. */
+typedef void (*SnapforgeClickCallback)(double x, double y, int right_click,
+                                       void *user_data);
+
+/* Begin streaming global click events to `callback`. Returns an opaque handle
+ * or NULL on failure (typically missing Accessibility / Input Monitoring
+ * permission; call snapforge_app_last_error for details). The handle must be
+ * stopped via snapforge_clicks_stop and freed via snapforge_clicks_free_handle.
+ *
+ * `callback` must remain valid for the lifetime of the returned handle.
+ * `user_data` must remain valid for the same lifetime if the callback
+ * dereferences it. */
+void *snapforge_clicks_start(SnapforgeClickCallback callback, void *user_data);
+
+/* Stop streaming click events. The handle allocation stays valid until
+ * snapforge_clicks_free_handle. Returns 0 on success, -1 on error. */
+int snapforge_clicks_stop(void *handle);
+
+/* Free a click handle. Stops the tap if still active. */
+void snapforge_clicks_free_handle(void *handle);
+
 #ifdef __cplusplus
 }
 #endif
