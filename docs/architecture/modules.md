@@ -39,61 +39,70 @@ C ABI wrapper. Translates Rust types ↔ C types. Owns lifetime registries.
 
 ## Qt frontend (`qt/src/`)
 
-Flat directory today (28+ files). Restructure deferred — see [future-direction.md](future-direction.md).
+Grouped subfolders. Restructure Phase 1 + Phase 1 part 2 (tray + recording controller extraction) complete.
 
-### App entry / lifecycle
-
-| File | Purpose |
-|------|---------|
-| `main.cpp` | App entry. Holds tray icon, hotkeys, all signal wiring. **God-file** — first target for extraction in Phase 1 of restructure. |
-| `Logger.{h,cpp}` | App-wide log buffer surfaced in Preferences → Logs tab |
-
-### Capture surface
+### App entry / lifecycle (`src/app/`, `src/infra/`)
 
 | File | Purpose |
 |------|---------|
-| `OverlayWindow.{h,cpp}` | Region picker — full-screen translucent window with drag-to-select. Also entry for fullscreen capture and recording start. |
-| `RecordingManager.{h,cpp}` | Wraps `snapforge_start/stop/pause/resume_recording` FFI. Emits Qt signals (`recordingStarted/Stopped/Paused/Resumed/Error/elapsedChanged`). Reads prefs via `reloadPrefs()`. |
+| `app/main.cpp` | App entry, DI, hotkey registration, top-level object lifetimes. ~520 LOC — no more icon drawing, menu builders, or recording-signal slot bodies inline. |
+| `infra/Logger.{h,cpp}` | App-wide log buffer surfaced in Preferences → Logs tab |
 
-### Windows
+### Capture surface (`src/capture/`, `src/ui/overlay/`)
 
 | File | Purpose |
 |------|---------|
-| `PreferencesWindow.{h,cpp}` | Tabbed settings: General, Screenshots, Recording, Hotkeys, Permissions, Logs. Persists via `snapforge_config_load/save`. Emits `configSaved` signal. |
-| `HistoryWindow.{h,cpp}` | Browses recent captures via `snapforge_history_list`. |
+| `ui/overlay/OverlayWindow.{h,cpp}` | Region picker — full-screen translucent window with drag-to-select. Also entry for fullscreen capture and recording start. |
+| `capture/RecordingManager.{h,cpp}` | Wraps `snapforge_start/stop/pause/resume_recording` FFI. Emits Qt signals (`recordingStarted/Stopped/Paused/Resumed/Error/elapsedChanged`). Reads prefs via `reloadPrefs()`. |
 
-### Annotation subsystem
+### Windows (`src/ui/windows/`)
+
+| File | Purpose |
+|------|---------|
+| `ui/windows/PreferencesWindow.{h,cpp}` | Tabbed settings: General, Screenshots, Recording, Hotkeys, Permissions, Logs. Persists via `snapforge_config_load/save`. Emits `configSaved` signal. |
+| `ui/windows/HistoryWindow.{h,cpp}` | Browses recent captures via `snapforge_history_list`. |
+
+### Annotation subsystem (`src/ui/annotation/`)
 
 Self-contained. Used after a screenshot before save.
 
 | File | Purpose |
 |------|---------|
-| `Annotation.h` | Shared annotation data types |
-| `AnnotationState.{h,cpp}` | Undo/redo stack + selected tool state |
-| `AnnotationCanvas.{h,cpp}` | QWidget surface for drawing tools |
-| `AnnotationRenderer.{h,cpp}` | Composites annotations onto the source pixmap |
-| `AnnotationToolbar.{h,cpp}` | Tool picker + colour/stroke controls |
+| `ui/annotation/Annotation.h` | Shared annotation data types |
+| `ui/annotation/AnnotationState.{h,cpp}` | Undo/redo stack + selected tool state |
+| `ui/annotation/AnnotationCanvas.{h,cpp}` | QWidget surface for drawing tools |
+| `ui/annotation/AnnotationRenderer.{h,cpp}` | Composites annotations onto the source pixmap |
+| `ui/annotation/AnnotationToolbar.{h,cpp}` | Tool picker + colour/stroke controls |
 
-### Tray icon (in `main.cpp` today)
+### Tray icon (`src/ui/tray/`)
+
+| File | Purpose |
+|------|---------|
+| `ui/tray/TrayIcon.{h,cpp}` | Owns `QSystemTrayIcon`, idle + recording-pill icon factories, pulse `QTimer`, context menu and its idle/recording layouts. Public slots: `enterRecordingState`, `leaveRecordingState`, `updateElapsed`, `setPaused`, `showMessage`. Emits `actionScreenshot/Fullscreen/RecordToggle/History/Preferences/Quit/PauseRecording/ResumeRecording/StopRecording` so main can wire menu items to callers without TrayIcon knowing about them. |
 
 - Idle icon = 18pt aperture+shutter glyph (rendered procedurally).
-- Recording icon = pulsing red dot + `MM:SS` timer. Rebuilt every second by a `QTimer`.
-- Context menu rebuilt on state change (`buildNormalMenu` / `buildRecordingMenu`).
+- Recording icon = pulsing red dot + `MM:SS` timer. Rebuilt every second by the internal `QTimer`.
 
-### Click visualizer
-
-| File | Purpose |
-|------|---------|
-| `ClickIndicatorOverlay.{h,cpp}` | Transparent click-through Qt window spanning virtual desktop. Draws ~500ms expanding ring per click (red=left, blue=right). |
-| `ClickIndicatorOverlayMac.mm` | macOS-only window-level + Space behaviour (`NSScreenSaverWindowLevel`, ignores mouse, joins all Spaces). |
-| `ClickEventTap.{h,mm}` | macOS `CGEventTap` listening for left/right mouse-down globally. **Duplicates `clicks.rs` in core** — see [future-direction.md](future-direction.md). |
-
-### Platform observers (macOS)
+### Controllers (`src/controllers/`)
 
 | File | Purpose |
 |------|---------|
-| `SpaceChangeObserver.{h,mm}` | Notifies when active macOS Space changes — used to re-show overlays on the current Space |
-| `WorkspaceSleepObserver.{h,mm}` | Notifies on system sleep/wake — used to pause/resume recording cleanly |
+| `controllers/RecordingController.{h,cpp}` | Wires `RecordingManager`'s `recordingStarted/Stopped/Paused/Resumed/Error/elapsedChanged` signals to tray state, click overlay + macOS click-tap toggling, clipboard-copy-on-stop of the finished file URL, and the deferred `QMessageBox` error modal. Constructed in main with refs to `RecordingManager`, `TrayIcon`, `ClickIndicatorOverlay`, `ClickEventTap` (mac-only), and `PreferencesWindow`. |
+
+### Click visualizer (`src/ui/overlay/`, `src/platform/macos/`)
+
+| File | Purpose |
+|------|---------|
+| `ui/overlay/ClickIndicatorOverlay.{h,cpp}` | Transparent click-through Qt window spanning virtual desktop. Draws ~500ms expanding ring per click (red=left, blue=right). |
+| `ui/overlay/ClickIndicatorOverlayMac.mm` | macOS-only window-level + Space behaviour (`NSScreenSaverWindowLevel`, ignores mouse, joins all Spaces). |
+| `platform/macos/ClickEventTap.{h,mm}` | macOS `CGEventTap` listening for left/right mouse-down globally. **Duplicates `clicks.rs` in core** — see [future-direction.md](future-direction.md). |
+
+### Platform observers (`src/platform/macos/`)
+
+| File | Purpose |
+|------|---------|
+| `platform/macos/SpaceChangeObserver.{h,mm}` | Notifies when active macOS Space changes — used to re-show overlays on the current Space |
+| `platform/macos/WorkspaceSleepObserver.{h,mm}` | Notifies on system sleep/wake — used to pause/resume recording cleanly |
 
 ## Resources / packaging
 
@@ -104,9 +113,9 @@ Self-contained. Used after a screenshot before save.
 | `qt/resources/icons/` | Tray/menu PNGs |
 | `qt/resources/snapforge.qrc` | Qt resource manifest |
 | `qt/Info.plist.in` | CMake-templated Info.plist. Holds `LSUIElement` (accessory app), `NSScreenCaptureUsageDescription`, `NSInputMonitoringUsageDescription` |
-| `qt/scripts/build_dmg.sh` | DMG packaging |
-| `qt/scripts/bundle-ffmpeg.sh` | Copies ffmpeg binary + Homebrew dylibs into bundle, rewrites install names, ad-hoc signs |
-| `qt/scripts/build_iconset.py` | Generates `.iconset/*.png` from source SVG/PNG |
+| `packaging/macos/build_dmg.sh` | DMG packaging |
+| `packaging/macos/bundle-ffmpeg.sh` | Copies ffmpeg binary + Homebrew dylibs into bundle, rewrites install names, ad-hoc signs |
+| `packaging/macos/build_iconset.py` | Generates `.iconset/*.png` from source SVG/PNG |
 
 ## Top-level
 
