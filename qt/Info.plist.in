@@ -28,5 +28,7 @@
     <true/>
     <key>NSScreenCaptureUsageDescription</key>
     <string>Snapforge needs screen recording permission to capture screenshots and record your screen.</string>
+    <key>NSInputMonitoringUsageDescription</key>
+    <string>Snapforge listens for mouse clicks while recording so it can draw a brief ring at each click location, making clicks visible in the recorded video. This is only active while a recording is in progress and only when the "Show clicks while recording" preference is enabled.</string>
 </dict>
 </plist>

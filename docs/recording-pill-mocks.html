@@ -1,0 +1,541 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Snapforge — Recording-state pill mocks</title>
+<style>
+  :root {
+    --bg: #0e0e10;
+    --card: #1a1a1d;
+    --line: #2a2a2f;
+    --text: #e8e8ea;
+    --muted: #8a8a90;
+    --red: #ff4d4d;
+    --red-dim: #c44a4a;
+  }
+  * { box-sizing: border-box; }
+  html, body { background: var(--bg); color: var(--text); margin: 0; padding: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", sans-serif; }
+  header { padding: 36px 48px 8px; border-bottom: 1px solid var(--line); }
+  header h1 { margin: 0; font-size: 22px; font-weight: 600; letter-spacing: -0.02em; }
+  header p  { margin: 6px 0 0; color: var(--muted); font-size: 13px; }
+  main { padding: 28px 48px 64px; display: grid; grid-template-columns: repeat(2, 1fr); gap: 18px; }
+  .card {
+    background: var(--card); border: 1px solid var(--line); border-radius: 12px;
+    padding: 18px 20px;
+    display: grid; grid-template-columns: 60px 1fr; gap: 16px; align-items: center;
+  }
+  .num { color: var(--muted); font-variant-numeric: tabular-nums; font-size: 12px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .meta { display: flex; flex-direction: column; gap: 6px; }
+  .meta .name  { font-size: 13px; font-weight: 600; }
+  .meta .desc  { font-size: 12px; color: var(--muted); line-height: 1.4; }
+  .stage {
+    grid-column: 1 / -1;
+    display: flex; gap: 18px; align-items: center;
+    padding: 14px 12px; border-radius: 10px;
+    background:
+      repeating-linear-gradient(45deg, #2c2c30 0 8px, #232327 8px 16px);
+    margin-top: 10px;
+  }
+  .pill-1x { transform: scale(1); }
+  .pill-2x { transform: scale(2); transform-origin: left center; }
+  .label { color: var(--muted); font-size: 11px; font-family: ui-monospace, monospace; }
+  .stage > .label:first-child { width: 52px; }
+
+  /* ---- Common pill primitives ---- */
+  .pill {
+    display: inline-flex; align-items: center;
+    height: 22px; padding: 0 10px; gap: 8px;
+    border-radius: 999px;
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    font-size: 12px; font-weight: 700; letter-spacing: 0.02em;
+    color: #fff;
+    line-height: 1; white-space: nowrap;
+  }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--red); flex-shrink: 0; }
+  .time { font-variant-numeric: tabular-nums; }
+  .rec  { color: var(--red); }
+  .pulse { animation: pulse 1s ease-in-out infinite alternate; }
+  @keyframes pulse { from { opacity: 0.4 } to { opacity: 1 } }
+  .spin { animation: spin 2s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg) } }
+
+  /* ---- 1: Classic black pill (current) ---- */
+  .v1 { background: #000; border: 1px solid var(--red); }
+
+  /* ---- 2: Red gradient pill ---- */
+  .v2 { background: linear-gradient(90deg, #6a1212, #c41a1a); }
+  .v2 .dot { background: #fff; box-shadow: 0 0 6px #fff8; }
+
+  /* ---- 3: Outlined pulsing-ring + time ---- */
+  .v3 { background: transparent; color: var(--red); border: 1.5px solid var(--red); }
+  .v3 .ring { width: 11px; height: 11px; border-radius: 50%;
+    border: 2px solid var(--red); animation: pulse-ring 1.2s ease-out infinite; }
+  @keyframes pulse-ring {
+    0%   { transform: scale(0.7); opacity: 1; }
+    80%  { transform: scale(1.4); opacity: 0; }
+    100% { transform: scale(0.7); opacity: 0; }
+  }
+
+  /* ---- 4: Terminal dark with green accent ---- */
+  .v4 { background: #0a1a0a; border: 1px solid #1f4d1f; color: #b6f5b6;
+    font-family: "JetBrains Mono", ui-monospace, monospace; }
+  .v4 .dot { background: #ff3030; box-shadow: 0 0 4px #ff3030; }
+  .v4 .rec { color: #ff3030; }
+  .v4::before { content: "$"; color: #4faf4f; margin-right: 4px; }
+
+  /* ---- 5: Glassmorphism ---- */
+  .v5 { background: rgba(255,255,255,0.08); backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+    border: 1px solid rgba(255,255,255,0.18); color: #fff; }
+  .v5 .dot { background: var(--red); box-shadow: 0 0 8px var(--red); }
+
+  /* ---- 6: Tape reels ---- */
+  .v6 { background: #1a1a1a; border: 1px solid #444; padding: 0 9px; gap: 6px; }
+  .v6 .reel { width: 14px; height: 14px; border-radius: 50%;
+    background: radial-gradient(circle, #444 35%, #888 36% 65%, #ccc 66%);
+    border: 1.5px solid #999; flex-shrink: 0; }
+  .v6 .reel.spin { animation: spin 1.6s linear infinite; }
+
+  /* ---- 7: Neon outline ---- */
+  .v7 { background: rgba(0,0,0,0.55); border: 1px solid #ff5c5c;
+    box-shadow: 0 0 12px #ff3030, inset 0 0 6px #ff303060; color: #ff7f7f; }
+  .v7 .dot { background: #fff; box-shadow: 0 0 10px #ff3030; }
+
+  /* ---- 8: Brutalist square ---- */
+  .v8 { border-radius: 2px; background: #ffe600; color: #000; border: 2px solid #000;
+    height: 22px; padding: 0 8px; font-weight: 900; }
+  .v8 .dot { background: #000; border-radius: 2px; }
+  .v8 .rec { color: #000; }
+
+  /* ---- 9: Vinyl record ---- */
+  .v9 { background: #161616; border: 1px solid #333; padding: 0 8px; gap: 7px; }
+  .v9 .vinyl { width: 16px; height: 16px; border-radius: 50%;
+    background:
+      radial-gradient(circle at center, #c41a1a 0 3px, #181818 3px 5px,
+                      #2a2a2a 5px 6px, #181818 6px 7px,
+                      #2a2a2a 7px 8px, #181818 8px); }
+
+  /* ---- 10: Equalizer bars ---- */
+  .v10 { background: #0c0c0e; border: 1px solid #2a2a2f; }
+  .v10 .eq { display: inline-flex; align-items: end; gap: 2px; height: 14px; flex-shrink: 0; }
+  .v10 .eq i { width: 2.5px; background: var(--red); border-radius: 1px; display: inline-block;
+    animation: eq 0.8s ease-in-out infinite alternate; }
+  .v10 .eq i:nth-child(1) { height: 60%; animation-delay: 0s; }
+  .v10 .eq i:nth-child(2) { height: 100%; animation-delay: 0.15s; }
+  .v10 .eq i:nth-child(3) { height: 40%; animation-delay: 0.3s; }
+  .v10 .eq i:nth-child(4) { height: 85%; animation-delay: 0.45s; }
+  @keyframes eq { from { transform: scaleY(0.4); } to { transform: scaleY(1); } }
+
+  /* ---- 11: Minimal — dot + time only ---- */
+  .v11 { background: transparent; padding: 0 4px; gap: 6px; color: var(--muted); }
+  .v11 .dot { width: 8px; height: 8px; }
+
+  /* ---- 12: CRT scanline ---- */
+  .v12 { background:
+      linear-gradient(180deg, transparent 50%, rgba(0,0,0,0.35) 50%) 0/100% 2px,
+      #2a0606;
+    color: #ffb0b0; border: 1px solid #5a1010; text-shadow: 0 0 4px #ff5050; }
+  .v12 .dot { background: #ff7070; box-shadow: 0 0 6px #ff5050; }
+
+  /* ---- 13: Pixel / 8-bit ---- */
+  .v13 { background: #000; border: 2px solid #ff3030; border-radius: 0;
+    image-rendering: pixelated; font-family: "Press Start 2P", monospace;
+    font-size: 9px; padding: 0 8px; height: 22px; gap: 6px; }
+  .v13 .dot { width: 6px; height: 6px; border-radius: 0; background: #ff3030; }
+
+  /* ---- 14: Frosted with hard shadow ---- */
+  .v14 { background: rgba(255,255,255,0.92); color: #1a1a1a;
+    box-shadow: 3px 3px 0 #000;
+    border: 1px solid #1a1a1a; }
+  .v14 .dot { background: var(--red); }
+  .v14 .rec { color: var(--red); }
+
+  /* ---- 15: Ribbon banner ---- */
+  .v15 { background: var(--red); color: #fff; border-radius: 4px;
+    clip-path: polygon(0 0, 100% 0, calc(100% - 8px) 50%, 100% 100%, 0 100%);
+    padding: 0 16px 0 10px; }
+  .v15 .dot { background: #fff; }
+
+  /* ---- 16: Monochrome — red accent only ---- */
+  .v16 { background: #f4f4f6; color: #1a1a1a; border: 1px solid #d4d4d8; }
+  .v16 .dot { background: var(--red); box-shadow: 0 0 0 3px #ff4d4d22; }
+  .v16 .rec { color: var(--red); }
+
+  /* ---- 17: Sunset gradient red→orange ---- */
+  .v17 { background: linear-gradient(90deg, #ff3030, #ff8a30); color: #fff;
+    border: 1px solid #ff5c20; }
+  .v17 .dot { background: #fff; }
+
+  /* ---- 18: Dotted border pulse ---- */
+  .v18 { background: #18181b; color: #fff; border: 1.5px dashed var(--red);
+    animation: dash-rotate 2s linear infinite; }
+  @keyframes dash-rotate { to { background-position: 22px 0; } }
+  .v18 .dot { background: var(--red); }
+  .v18 .rec { color: var(--red); }
+
+  /* ---- 19: Tachograph segmented ---- */
+  .v19 { background: #14141a; border: 1px solid #353540; padding: 0 6px; gap: 4px; }
+  .v19 .seg { display: inline-flex; gap: 2px; }
+  .v19 .seg i { width: 4px; height: 8px; background: #2a2a35; border-radius: 1px; }
+  .v19 .seg i.on { background: var(--red); }
+  .v19 .time { font-family: "Orbitron", "DSEG14", ui-monospace, monospace; color: #ff6060; }
+
+  /* ---- 20: Status badge with tally ---- */
+  .v20 { background: #1a1a1d; border: 1px solid #2a2a2f; color: #fff; gap: 6px; }
+  .v20 .dot { background: var(--red); }
+  .v20 .tally { background: var(--red); color: #fff; padding: 2px 6px;
+    border-radius: 999px; font-size: 10px; font-weight: 700; }
+
+  /* Compact CSS-only stop/pause glyphs reused across some variants */
+  .glyph { display: inline-flex; align-items: center; gap: 4px; flex-shrink: 0; opacity: 0.85; }
+  .glyph .stop { width: 9px; height: 9px; border-radius: 1px; background: currentColor; }
+  .glyph .pause { display: inline-flex; gap: 2px; }
+  .glyph .pause i { width: 2.6px; height: 11px; background: currentColor; border-radius: 1px; }
+  .sep { width: 1px; height: 12px; background: currentColor; opacity: 0.25; flex-shrink: 0; }
+
+  @media print {
+    html, body { background: #fff; color: #000; }
+    header h1, .meta .name { color: #000; }
+    .meta .desc, header p { color: #444; }
+    .card { background: #fff; border: 1px solid #ccc; box-shadow: none; }
+    .num { color: #555; }
+    .stage { background: #f0f0f0; }
+    .pulse, .spin { animation: none; }
+    main { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>Snapforge — Recording-state menubar pill</h1>
+  <p>20 mocks. Each row shows the design at native menubar size (1×) and 2× for inspection.
+     Pulse / spin animations preview live in the browser; print or save as PDF for review.</p>
+</header>
+
+<main>
+
+<!-- 1 -->
+<div class="card">
+  <div class="num">01</div>
+  <div class="meta">
+    <div class="name">Classic black pill (current)</div>
+    <div class="desc">Solid black bg, red border + dot, white time, red REC.
+      Safe baseline; works in light + dark menubars.</div>
+    <div class="stage">
+      <span class="label">1×</span>
+      <span class="pill v1"><span class="dot pulse"></span><span class="rec">REC</span><span class="time">00:42</span><span class="sep"></span><span class="glyph"><span class="pause"><i></i><i></i></span><span class="stop"></span></span></span>
+      <span class="label">2×</span>
+      <span class="pill v1 pill-2x" style="margin-left:auto"><span class="dot pulse"></span><span class="rec">REC</span><span class="time">00:42</span><span class="sep"></span><span class="glyph"><span class="pause"><i></i><i></i></span><span class="stop"></span></span></span>
+    </div>
+  </div>
+</div>
+
+<!-- 2 -->
+<div class="card">
+  <div class="num">02</div>
+  <div class="meta">
+    <div class="name">Red gradient pill</div>
+    <div class="desc">Dark→bright red gradient with white dot. Reads as "actively bleeding red"
+      so the eye lands on it instantly.</div>
+    <div class="stage">
+      <span class="label">1×</span>
+      <span class="pill v2"><span class="dot pulse"></span>REC<span class="time">00:42</span></span>
+      <span class="label">2×</span>
+      <span class="pill v2 pill-2x" style="margin-left:auto"><span class="dot pulse"></span>REC<span class="time">00:42</span></span>
+    </div>
+  </div>
+</div>
+
+<!-- 3 -->
+<div class="card">
+  <div class="num">03</div>
+  <div class="meta">
+    <div class="name">Outlined pulsing ring</div>
+    <div class="desc">Transparent body, 1.5px red border, expanding ring instead of a static dot.
+      Light + dark menubars both clear because nothing's filled.</div>
+    <div class="stage">
+      <span class="label">1×</span>
+      <span class="pill v3"><span class="ring"></span>REC<span class="time">00:42</span></span>
+      <span class="label">2×</span>
+      <span class="pill v3 pill-2x" style="margin-left:auto"><span class="ring"></span>REC<span class="time">00:42</span></span>
+    </div>
+  </div>
+</div>
+
+<!-- 4 -->
+<div class="card">
+  <div class="num">04</div>
+  <div class="meta">
+    <div class="name">Terminal / hacker</div>
+    <div class="desc">Phosphor-green pill with a red record dot and a leading <code>$</code> prompt.
+      Targets dev-tool aesthetic.</div>
+    <div class="stage">
+      <span class="label">1×</span>
+      <span class="pill v4"><span class="dot pulse"></span><span class="rec">REC</span><span class="time">00:42</span></span>
+      <span class="label">2×</span>
+      <span class="pill v4 pill-2x" style="margin-left:auto"><span class="dot pulse"></span><span class="rec">REC</span><span class="time">00:42</span></span>
+    </div>
+  </div>
+</div>
+
+<!-- 5 -->
+<div class="card">
+  <div class="num">05</div>
+  <div class="meta">
+    <div class="name">Glassmorphism</div>
+    <div class="desc">Translucent, blurred backdrop pill — adopts the menubar's underlying tone.
+      Modern macOS-native feel.</div>
+    <div class="stage">
+      <span class="label">1×</span>
+      <span class="pill v5"><span class="dot pulse"></span>REC<span class="time">00:42</span></span>
+      <span class="label">2×</span>
+      <span class="pill v5 pill-2x" style="margin-left:auto"><span class="dot pulse"></span>REC<span class="time">00:42</span></span>
+    </div>
+  </div>
+</div>
+
+<!-- 6 -->
+<div class="card">
+  <div class="num">06</div>
+  <div class="meta">
+    <div class="name">Tape reels</div>
+    <div class="desc">Two spinning cassette reels flanking the timer. Skeuomorphic,
+      conveys "actively recording onto media".</div>
+    <div class="stage">
+      <span class="label">1×</span>
+      <span class="pill v6"><span class="reel spin"></span><span class="time">00:42</span><span class="reel spin"></span></span>
+      <span class="label">2×</span>
+      <span class="pill v6 pill-2x" style="margin-left:auto"><span class="reel spin"></span><span class="time">00:42</span><span class="reel spin"></span></span>
+    </div>
+  </div>
+</div>
+
+<!-- 7 -->
+<div class="card">
+  <div class="num">07</div>
+  <div class="meta">
+    <div class="name">Neon outline</div>
+    <div class="desc">Inner + outer red glow with a white dot. Pops on dark menubars,
+      a little harder to read on bright wallpapers.</div>
+    <div class="stage">
+      <span class="label">1×</span>
+      <span class="pill v7"><span class="dot pulse"></span>REC<span class="time">00:42</span></span>
+      <span class="label">2×</span>
+      <span class="pill v7 pill-2x" style="margin-left:auto"><span class="dot pulse"></span>REC<span class="time">00:42</span></span>
+    </div>
+  </div>
+</div>
+
+<!-- 8 -->
+<div class="card">
+  <div class="num">08</div>
+  <div class="meta">
+    <div class="name">Brutalist hazard</div>
+    <div class="desc">Yellow-on-black warning palette with a thick black border.
+      Impossible to miss; clashes with system palette by design.</div>
+    <div class="stage">
+      <span class="label">1×</span>
+      <span class="pill v8"><span class="dot"></span>REC<span class="time">00:42</span></span>
+      <span class="label">2×</span>
+      <span class="pill v8 pill-2x" style="margin-left:auto"><span class="dot"></span>REC<span class="time">00:42</span></span>
+    </div>
+  </div>
+</div>
+
+<!-- 9 -->
+<div class="card">
+  <div class="num">09</div>
+  <div class="meta">
+    <div class="name">Vinyl record</div>
+    <div class="desc">A miniature spinning vinyl with red label center, paired with the timer.
+      Charming, recognizable.</div>
+    <div class="stage">
+      <span class="label">1×</span>
+      <span class="pill v9"><span class="vinyl spin"></span><span class="time">00:42</span></span>
+      <span class="label">2×</span>
+      <span class="pill v9 pill-2x" style="margin-left:auto"><span class="vinyl spin"></span><span class="time">00:42</span></span>
+    </div>
+  </div>
+</div>
+
+<!-- 10 -->
+<div class="card">
+  <div class="num">10</div>
+  <div class="meta">
+    <div class="name">Equalizer bars</div>
+    <div class="desc">Audio-style bouncing bars + timer. Reads more like screen recording
+      with audio capture; differentiates from a still-screenshot tool.</div>
+    <div class="stage">
+      <span class="label">1×</span>
+      <span class="pill v10"><span class="eq"><i></i><i></i><i></i><i></i></span><span class="time">00:42</span></span>
+      <span class="label">2×</span>
+      <span class="pill v10 pill-2x" style="margin-left:auto"><span class="eq"><i></i><i></i><i></i><i></i></span><span class="time">00:42</span></span>
+    </div>
+  </div>
+</div>
+
+<!-- 11 -->
+<div class="card">
+  <div class="num">11</div>
+  <div class="meta">
+    <div class="name">Minimal — dot + time</div>
+    <div class="desc">No background, just a pulsing red dot and the timer. Smallest footprint;
+      great for users who want a quiet menu bar.</div>
+    <div class="stage">
+      <span class="label">1×</span>
+      <span class="pill v11"><span class="dot pulse"></span><span class="time">00:42</span></span>
+      <span class="label">2×</span>
+      <span class="pill v11 pill-2x" style="margin-left:auto"><span class="dot pulse"></span><span class="time">00:42</span></span>
+    </div>
+  </div>
+</div>
+
+<!-- 12 -->
+<div class="card">
+  <div class="num">12</div>
+  <div class="meta">
+    <div class="name">CRT scanline</div>
+    <div class="desc">Faux-CRT crimson body with horizontal scanlines and red glow.
+      Retro broadcast feel — the "ON AIR" cousin.</div>
+    <div class="stage">
+      <span class="label">1×</span>
+      <span class="pill v12"><span class="dot pulse"></span><span class="rec">REC</span><span class="time">00:42</span></span>
+      <span class="label">2×</span>
+      <span class="pill v12 pill-2x" style="margin-left:auto"><span class="dot pulse"></span><span class="rec">REC</span><span class="time">00:42</span></span>
+    </div>
+  </div>
+</div>
+
+<!-- 13 -->
+<div class="card">
+  <div class="num">13</div>
+  <div class="meta">
+    <div class="name">Pixel / 8-bit</div>
+    <div class="desc">Square pixelated dot + bitmap-style font. Small but distinctive on retina;
+      probably blurry on 1× external displays.</div>
+    <div class="stage">
+      <span class="label">1×</span>
+      <span class="pill v13"><span class="dot"></span>REC<span class="time">00:42</span></span>
+      <span class="label">2×</span>
+      <span class="pill v13 pill-2x" style="margin-left:auto"><span class="dot"></span>REC<span class="time">00:42</span></span>
+    </div>
+  </div>
+</div>
+
+<!-- 14 -->
+<div class="card">
+  <div class="num">14</div>
+  <div class="meta">
+    <div class="name">Frosted card with hard shadow</div>
+    <div class="desc">Light pill on a 2px black drop shadow. Inverts the typical dark-pill look —
+      pops on dark wallpapers especially.</div>
+    <div class="stage">
+      <span class="label">1×</span>
+      <span class="pill v14"><span class="dot pulse"></span><span class="rec">REC</span><span class="time">00:42</span></span>
+      <span class="label">2×</span>
+      <span class="pill v14 pill-2x" style="margin-left:auto"><span class="dot pulse"></span><span class="rec">REC</span><span class="time">00:42</span></span>
+    </div>
+  </div>
+</div>
+
+<!-- 15 -->
+<div class="card">
+  <div class="num">15</div>
+  <div class="meta">
+    <div class="name">Ribbon banner</div>
+    <div class="desc">Solid red banner with a chevron tail right edge. Reads as "active alert" —
+      think old-school broadcast lower-third.</div>
+    <div class="stage">
+      <span class="label">1×</span>
+      <span class="pill v15"><span class="dot pulse"></span>REC<span class="time">00:42</span></span>
+      <span class="label">2×</span>
+      <span class="pill v15 pill-2x" style="margin-left:auto"><span class="dot pulse"></span>REC<span class="time">00:42</span></span>
+    </div>
+  </div>
+</div>
+
+<!-- 16 -->
+<div class="card">
+  <div class="num">16</div>
+  <div class="meta">
+    <div class="name">Light monochrome with red accent</div>
+    <div class="desc">Near-white pill with a red dot only. Quiet, system-respecting,
+      pairs well with light menubar themes.</div>
+    <div class="stage">
+      <span class="label">1×</span>
+      <span class="pill v16"><span class="dot pulse"></span><span class="rec">REC</span><span class="time">00:42</span></span>
+      <span class="label">2×</span>
+      <span class="pill v16 pill-2x" style="margin-left:auto"><span class="dot pulse"></span><span class="rec">REC</span><span class="time">00:42</span></span>
+    </div>
+  </div>
+</div>
+
+<!-- 17 -->
+<div class="card">
+  <div class="num">17</div>
+  <div class="meta">
+    <div class="name">Sunset gradient</div>
+    <div class="desc">Red→orange diagonal gradient with a white dot. Less aggressive than pure red
+      while staying in the alert family.</div>
+    <div class="stage">
+      <span class="label">1×</span>
+      <span class="pill v17"><span class="dot pulse"></span>REC<span class="time">00:42</span></span>
+      <span class="label">2×</span>
+      <span class="pill v17 pill-2x" style="margin-left:auto"><span class="dot pulse"></span>REC<span class="time">00:42</span></span>
+    </div>
+  </div>
+</div>
+
+<!-- 18 -->
+<div class="card">
+  <div class="num">18</div>
+  <div class="meta">
+    <div class="name">Dashed border pulse</div>
+    <div class="desc">Animated dashed border + dark body. Subtle motion implies "live"
+      without forcing a constant red flash.</div>
+    <div class="stage">
+      <span class="label">1×</span>
+      <span class="pill v18"><span class="dot pulse"></span><span class="rec">REC</span><span class="time">00:42</span></span>
+      <span class="label">2×</span>
+      <span class="pill v18 pill-2x" style="margin-left:auto"><span class="dot pulse"></span><span class="rec">REC</span><span class="time">00:42</span></span>
+    </div>
+  </div>
+</div>
+
+<!-- 19 -->
+<div class="card">
+  <div class="num">19</div>
+  <div class="meta">
+    <div class="name">Tachograph segmented</div>
+    <div class="desc">Segmented LED-style indicator with a 7-seg-flavor timer.
+      Industrial / dashcam vibe.</div>
+    <div class="stage">
+      <span class="label">1×</span>
+      <span class="pill v19"><span class="seg"><i class="on"></i><i class="on"></i><i class="on"></i><i></i></span><span class="time">00:42</span></span>
+      <span class="label">2×</span>
+      <span class="pill v19 pill-2x" style="margin-left:auto"><span class="seg"><i class="on"></i><i class="on"></i><i class="on"></i><i></i></span><span class="time">00:42</span></span>
+    </div>
+  </div>
+</div>
+
+<!-- 20 -->
+<div class="card">
+  <div class="num">20</div>
+  <div class="meta">
+    <div class="name">Status badge + tally</div>
+    <div class="desc">Quiet dark pill with REC text + a count-up tally chip
+      (frame counter or take number). Power-user variant.</div>
+    <div class="stage">
+      <span class="label">1×</span>
+      <span class="pill v20"><span class="dot pulse"></span>REC<span class="time">00:42</span><span class="tally">#1</span></span>
+      <span class="label">2×</span>
+      <span class="pill v20 pill-2x" style="margin-left:auto"><span class="dot pulse"></span>REC<span class="time">00:42</span><span class="tally">#1</span></span>
+    </div>
+  </div>
+</div>
+
+</main>
+</body>
+</html>

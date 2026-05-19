@@ -9,6 +9,7 @@
 #include <QJsonValue>
 #include <future>
 #include <chrono>
+#include <cstdlib>
 
 #include "snapforge_ffi.h"
 
@@ -24,11 +25,11 @@ RecordingManager::RecordingManager(QObject *parent)
 
 RecordingManager::~RecordingManager()
 {
-    // H5: bound shutdown to 5 seconds.
-    // snapforge_stop_recording blocks until ffmpeg finalizes the file which
-    // can be slow. Run it on a detached std::thread and wait via a promise.
-    // Atomically grab ownership of the handle: if stopRecording() races us, the
-    // exchange leaves us with nullptr and we just return.
+    // snapforge_stop_recording blocks until ffmpeg finalizes the file which can
+    // be slow (writing the moov atom for a long recording). Run it on a worker
+    // thread so we can apply a deadline. Atomically grab ownership of the
+    // handle: if stopRecording() races us, the exchange leaves us with nullptr
+    // and we just return.
     void *handle = m_handle.exchange(nullptr);
     if (!handle) {
         return;
@@ -37,17 +38,29 @@ RecordingManager::~RecordingManager()
     auto donePromise = std::make_shared<std::promise<void>>();
     std::future<void> doneFuture = donePromise->get_future();
 
-    std::thread([handle, donePromise]() {
+    std::thread worker([handle, donePromise]() {
         snapforge_stop_recording(handle);
         snapforge_free_recording_handle(handle);
         donePromise->set_value();
-    }).detach();
+    });
 
-    if (doneFuture.wait_for(std::chrono::seconds(5)) != std::future_status::ready) {
-        qWarning("RecordingManager: shutdown timed out after 5s; detaching stop thread");
-        // Thread keeps running and finishes whenever ffmpeg exits — the process
-        // is going away anyway, so a brief leak during teardown is acceptable.
+    // 30s gives ffmpeg enough headroom for moov finalisation on long
+    // recordings without making app quit feel hung in the normal case where
+    // it finishes well under 1s.
+    if (doneFuture.wait_for(std::chrono::seconds(30)) == std::future_status::ready) {
+        worker.join();
+        return;
     }
+
+    // Previously we detached and let main() return, but the detached thread
+    // kept calling into Rust statics (LAST_RECORDING_ERROR etc.) while the
+    // process was tearing them down — undefined behaviour. _Exit terminates
+    // the process immediately without running further destructors or atexit
+    // hooks, which is strictly safer than racing teardown order.
+    qWarning("RecordingManager: ffmpeg finalize did not complete within 30s; "
+             "aborting via _Exit to avoid FFI use-after-teardown");
+    worker.detach();
+    std::_Exit(1);
 }
 
 bool RecordingManager::isRecording() const
@@ -201,6 +214,10 @@ void RecordingManager::startRecording(int display, QRect region, QString outputD
     m_elapsed.start();
     m_timer->start();
 
+    qInfo("Recording started: display=%d region=%dx%d format=%s fps=%d quality=%s -> %s",
+          display, region.width(), region.height(),
+          qUtf8Printable(fmt), fps, qUtf8Printable(quality),
+          qUtf8Printable(m_outputPath));
     emit recordingStarted(m_outputPath);
 }
 
@@ -223,6 +240,7 @@ void RecordingManager::stopRecording()
             detail = QStringLiteral("Recording failed: %1").arg(QString::fromUtf8(errMsg));
             snapforge_free_string(errMsg);
         }
+        qCritical("Recording finalize failed: %s", qUtf8Printable(detail));
         emit recordingError(detail);
         return;
     }
@@ -252,5 +270,7 @@ void RecordingManager::stopRecording()
         return;
     }
 
+    qInfo("Recording stopped: %s (%lld bytes)",
+          qUtf8Printable(m_outputPath), (long long)fi.size());
     emit recordingStopped(m_outputPath);
 }

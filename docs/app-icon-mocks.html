@@ -1,0 +1,586 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Snapforge — App icon concepts</title>
+<style>
+  :root {
+    --bg: #0e0e10;
+    --card: #141418;
+    --line: #2a2a2f;
+    --text: #e8e8ea;
+    --muted: #8a8a90;
+    --red: #ff3b30;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    background: var(--bg); color: var(--text); margin: 0; padding: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", sans-serif;
+  }
+  header { padding: 36px 48px 8px; border-bottom: 1px solid var(--line); }
+  header h1 { margin: 0; font-size: 22px; font-weight: 600; letter-spacing: -0.02em; }
+  header p  { margin: 6px 0 0; color: var(--muted); font-size: 13px; max-width: 720px; line-height: 1.5; }
+  main { padding: 28px 48px 64px; display: grid; grid-template-columns: repeat(2, 1fr); gap: 18px; }
+  .card {
+    background: var(--card); border: 1px solid var(--line); border-radius: 14px;
+    padding: 18px;
+    display: grid; grid-template-columns: 144px 1fr; gap: 18px; align-items: center;
+  }
+  .meta .num { color: var(--muted); font-size: 11px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: 0.05em; }
+  .meta .name  { font-size: 14px; font-weight: 600; margin-top: 4px; }
+  .meta .desc  { font-size: 12px; color: var(--muted); line-height: 1.45; margin-top: 6px; }
+  .strip { display: flex; gap: 10px; align-items: center; margin-top: 10px; }
+  .mini  { width: 24px; height: 24px; border-radius: 5px; overflow: hidden;
+    box-shadow: 0 0 0 1px rgba(255,255,255,0.06); }
+  .small { width: 48px; height: 48px; border-radius: 10px; overflow: hidden;
+    box-shadow: 0 0 0 1px rgba(255,255,255,0.06); }
+  .icon  { width: 128px; height: 128px; border-radius: 28px; overflow: hidden;
+    display: flex; align-items: center; justify-content: center;
+    box-shadow: 0 12px 28px rgba(0,0,0,0.55), 0 0 0 1px rgba(255,255,255,0.06); }
+  svg { display: block; width: 100%; height: 100%; }
+
+  /* ---------- Backgrounds ---------- */
+  .bg-night  { background: linear-gradient(160deg, #1a1a22 0%, #0a0a10 100%); }
+  .bg-blood  { background: linear-gradient(160deg, #ff3b30 0%, #8b0000 100%); }
+  .bg-sunset { background: linear-gradient(160deg, #ff8a30 0%, #c41a1a 100%); }
+  .bg-mono   { background: linear-gradient(160deg, #2a2a2e 0%, #0e0e12 100%); }
+  .bg-ocean  { background: linear-gradient(160deg, #0a3a6b 0%, #06182d 100%); }
+  .bg-mint   { background: linear-gradient(160deg, #0fbf8f 0%, #075a44 100%); }
+  .bg-ivory  { background: linear-gradient(160deg, #fafafa 0%, #d8d8db 100%); }
+  .bg-noir   { background: #0b0b0f; }
+  .bg-grid   { background:
+      linear-gradient(160deg, #1f2127 0%, #0a0b0f 100%),
+      repeating-linear-gradient(90deg, rgba(255,255,255,0.03) 0 1px, transparent 1px 24px); }
+  .bg-amethyst{ background: linear-gradient(160deg, #6b21a8 0%, #2e1065 100%); }
+  .bg-sky    { background: linear-gradient(160deg, #38bdf8 0%, #1e3a8a 100%); }
+  .bg-paper  { background:
+      radial-gradient(ellipse at top, #fff 0%, #ebe5d8 100%); }
+
+  @media print {
+    html, body { background: #fff; color: #111; }
+    header h1, .meta .name { color: #111; }
+    header p, .meta .desc, .meta .num { color: #555; }
+    .card { background: #fafafa; border: 1px solid #ddd; box-shadow: none; }
+    main { grid-template-columns: 1fr 1fr; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>Snapforge — App icon concepts</h1>
+  <p>20 directions for the macOS app icon. Each card shows the 128px hero icon plus 48px and 24px
+     down-sampled previews so legibility at small sizes can be judged. Save this page to PDF
+     (⌘P → Save as PDF) for offline review.</p>
+</header>
+
+<main>
+
+<!-- 01 -->
+<div class="card">
+  <div class="icon bg-night">
+    <svg viewBox="0 0 128 128" aria-hidden="true">
+      <!-- Six-blade aperture in white -->
+      <g fill="none" stroke="#fff" stroke-width="3" stroke-linejoin="round" stroke-linecap="round">
+        <polygon points="64,28 92,44 92,84 64,100 36,84 36,44" />
+        <line x1="64" y1="28" x2="64" y2="64" />
+        <line x1="92" y1="44" x2="64" y2="64" />
+        <line x1="92" y1="84" x2="64" y2="64" />
+        <line x1="64" y1="100" x2="64" y2="64" />
+        <line x1="36" y1="84"  x2="64" y2="64" />
+        <line x1="36" y1="44"  x2="64" y2="64" />
+      </g>
+      <circle cx="64" cy="64" r="6" fill="#ff3b30" />
+    </svg>
+  </div>
+  <div class="meta">
+    <div class="num">01 / aperture-classic</div>
+    <div class="name">Aperture, classic</div>
+    <div class="desc">Six-blade iris with a red pupil. Reads as "capture" at every size; pupil
+      doubles as the recording indicator.</div>
+    <div class="strip">
+      <span class="small bg-night"><svg viewBox="0 0 128 128"><g fill="none" stroke="#fff" stroke-width="3" stroke-linejoin="round" stroke-linecap="round"><polygon points="64,28 92,44 92,84 64,100 36,84 36,44"/><line x1="64" y1="28" x2="64" y2="64"/><line x1="92" y1="44" x2="64" y2="64"/><line x1="92" y1="84" x2="64" y2="64"/><line x1="64" y1="100" x2="64" y2="64"/><line x1="36" y1="84"  x2="64" y2="64"/><line x1="36" y1="44"  x2="64" y2="64"/></g><circle cx="64" cy="64" r="6" fill="#ff3b30"/></svg></span>
+      <span class="mini bg-night"><svg viewBox="0 0 128 128"><g fill="none" stroke="#fff" stroke-width="6" stroke-linejoin="round"><polygon points="64,28 92,44 92,84 64,100 36,84 36,44"/></g><circle cx="64" cy="64" r="10" fill="#ff3b30"/></svg></span>
+    </div>
+  </div>
+</div>
+
+<!-- 02 -->
+<div class="card">
+  <div class="icon bg-mono">
+    <svg viewBox="0 0 128 128">
+      <!-- Bracket frame + diagonal slash + red dot -->
+      <g fill="none" stroke="#fff" stroke-width="6" stroke-linecap="round" stroke-linejoin="round">
+        <polyline points="32,52 32,32 52,32" />
+        <polyline points="96,76 96,96 76,96" />
+        <line x1="92" y1="36" x2="36" y2="92" />
+      </g>
+      <circle cx="96" cy="32" r="8" fill="#ff3b30"/>
+    </svg>
+  </div>
+  <div class="meta">
+    <div class="num">02 / brackets-slash</div>
+    <div class="name">Snap brackets</div>
+    <div class="desc">The current logo language refined: corner brackets + diagonal slash, with a
+      record dot tucked into the top-right corner as a notification-style accent.</div>
+    <div class="strip">
+      <span class="small bg-mono"><svg viewBox="0 0 128 128"><g fill="none" stroke="#fff" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"><polyline points="32,52 32,32 52,32"/><polyline points="96,76 96,96 76,96"/><line x1="92" y1="36" x2="36" y2="92"/></g><circle cx="96" cy="32" r="8" fill="#ff3b30"/></svg></span>
+      <span class="mini bg-mono"><svg viewBox="0 0 128 128"><g fill="none" stroke="#fff" stroke-width="10" stroke-linecap="round" stroke-linejoin="round"><polyline points="32,52 32,32 52,32"/><polyline points="96,76 96,96 76,96"/><line x1="92" y1="36" x2="36" y2="92"/></g><circle cx="96" cy="32" r="14" fill="#ff3b30"/></svg></span>
+    </div>
+  </div>
+</div>
+
+<!-- 03 -->
+<div class="card">
+  <div class="icon bg-blood">
+    <svg viewBox="0 0 128 128">
+      <!-- Shutter button (concentric circles) -->
+      <circle cx="64" cy="64" r="40" fill="rgba(255,255,255,0.18)"/>
+      <circle cx="64" cy="64" r="34" fill="#fff"/>
+      <circle cx="64" cy="64" r="20" fill="#ff3b30"/>
+    </svg>
+  </div>
+  <div class="meta">
+    <div class="num">03 / shutter-button</div>
+    <div class="name">Shutter button</div>
+    <div class="desc">Camera-app DNA: a tappable shutter button on a blood-red gradient. Strongest
+      "press to capture" affordance.</div>
+    <div class="strip">
+      <span class="small bg-blood"><svg viewBox="0 0 128 128"><circle cx="64" cy="64" r="40" fill="rgba(255,255,255,0.18)"/><circle cx="64" cy="64" r="34" fill="#fff"/><circle cx="64" cy="64" r="20" fill="#ff3b30"/></svg></span>
+      <span class="mini bg-blood"><svg viewBox="0 0 128 128"><circle cx="64" cy="64" r="46" fill="#fff"/><circle cx="64" cy="64" r="26" fill="#ff3b30"/></svg></span>
+    </div>
+  </div>
+</div>
+
+<!-- 04 -->
+<div class="card">
+  <div class="icon bg-grid">
+    <svg viewBox="0 0 128 128">
+      <!-- Window frame with rec dot in title bar -->
+      <rect x="22" y="30" width="84" height="68" rx="8" fill="#1a1a22" stroke="#fff" stroke-width="3"/>
+      <line x1="22" y1="46" x2="106" y2="46" stroke="#fff" stroke-width="3"/>
+      <circle cx="32" cy="38" r="2.5" fill="#ff5f57"/>
+      <circle cx="40" cy="38" r="2.5" fill="#febc2e"/>
+      <circle cx="48" cy="38" r="2.5" fill="#28c840"/>
+      <circle cx="64" cy="74" r="14" fill="#ff3b30"/>
+    </svg>
+  </div>
+  <div class="meta">
+    <div class="num">04 / window-rec</div>
+    <div class="name">Window with REC dot</div>
+    <div class="desc">macOS window chrome with traffic lights + a centered red record dot.
+      Immediately reads as "screen capture" without needing a label.</div>
+    <div class="strip">
+      <span class="small bg-grid"><svg viewBox="0 0 128 128"><rect x="22" y="30" width="84" height="68" rx="8" fill="#1a1a22" stroke="#fff" stroke-width="4"/><line x1="22" y1="46" x2="106" y2="46" stroke="#fff" stroke-width="4"/><circle cx="64" cy="74" r="18" fill="#ff3b30"/></svg></span>
+      <span class="mini bg-grid"><svg viewBox="0 0 128 128"><rect x="22" y="30" width="84" height="68" rx="8" fill="#1a1a22" stroke="#fff" stroke-width="6"/><circle cx="64" cy="68" r="22" fill="#ff3b30"/></svg></span>
+    </div>
+  </div>
+</div>
+
+<!-- 05 -->
+<div class="card">
+  <div class="icon bg-noir">
+    <svg viewBox="0 0 128 128">
+      <!-- Crosshair frame -->
+      <rect x="20" y="20" width="88" height="88" rx="14" fill="none" stroke="#fff" stroke-width="3"/>
+      <line x1="64" y1="28" x2="64" y2="100" stroke="#fff" stroke-width="2" stroke-dasharray="2 4"/>
+      <line x1="28" y1="64" x2="100" y2="64" stroke="#fff" stroke-width="2" stroke-dasharray="2 4"/>
+      <circle cx="64" cy="64" r="6" fill="#ff3b30"/>
+    </svg>
+  </div>
+  <div class="meta">
+    <div class="num">05 / crosshair</div>
+    <div class="name">Crosshair frame</div>
+    <div class="desc">Region-select metaphor: a frame with a dashed crosshair and a center dot.
+      Strong "snipping tool" association.</div>
+    <div class="strip">
+      <span class="small bg-noir"><svg viewBox="0 0 128 128"><rect x="20" y="20" width="88" height="88" rx="14" fill="none" stroke="#fff" stroke-width="4"/><circle cx="64" cy="64" r="8" fill="#ff3b30"/></svg></span>
+      <span class="mini bg-noir"><svg viewBox="0 0 128 128"><rect x="20" y="20" width="88" height="88" rx="14" fill="none" stroke="#fff" stroke-width="8"/><circle cx="64" cy="64" r="12" fill="#ff3b30"/></svg></span>
+    </div>
+  </div>
+</div>
+
+<!-- 06 -->
+<div class="card">
+  <div class="icon bg-sunset">
+    <svg viewBox="0 0 128 128">
+      <!-- Lightning bolt over a frame -->
+      <rect x="20" y="20" width="88" height="88" rx="14" fill="rgba(0,0,0,0.18)"/>
+      <path d="M70 28 L46 70 L62 70 L52 100 L82 56 L66 56 L78 28 Z"
+            fill="#fff" stroke="#000" stroke-width="2" stroke-linejoin="round"/>
+    </svg>
+  </div>
+  <div class="meta">
+    <div class="num">06 / bolt</div>
+    <div class="name">Snapforge bolt</div>
+    <div class="desc">Lightning-bolt mark on a sunset gradient. Reads as "fast capture / forge".
+      Distinctive at any size.</div>
+    <div class="strip">
+      <span class="small bg-sunset"><svg viewBox="0 0 128 128"><path d="M70 28 L46 70 L62 70 L52 100 L82 56 L66 56 L78 28 Z" fill="#fff" stroke="#000" stroke-width="3"/></svg></span>
+      <span class="mini bg-sunset"><svg viewBox="0 0 128 128"><path d="M72 24 L42 72 L60 72 L48 104 L86 56 L66 56 L80 24 Z" fill="#fff" stroke="#000" stroke-width="6"/></svg></span>
+    </div>
+  </div>
+</div>
+
+<!-- 07 -->
+<div class="card">
+  <div class="icon bg-mono">
+    <svg viewBox="0 0 128 128">
+      <!-- Cassette tape -->
+      <rect x="14" y="36" width="100" height="56" rx="8" fill="#1a1a22" stroke="#fff" stroke-width="3"/>
+      <rect x="22" y="48" width="84" height="14" rx="3" fill="#0a0a10" stroke="#fff" stroke-width="1.5"/>
+      <circle cx="44" cy="76" r="10" fill="none" stroke="#fff" stroke-width="3"/>
+      <circle cx="84" cy="76" r="10" fill="none" stroke="#fff" stroke-width="3"/>
+      <circle cx="44" cy="76" r="3" fill="#ff3b30"/>
+      <circle cx="84" cy="76" r="3" fill="#ff3b30"/>
+    </svg>
+  </div>
+  <div class="meta">
+    <div class="num">07 / cassette</div>
+    <div class="name">Cassette tape</div>
+    <div class="desc">Skeuomorphic cassette with red-pupiled reels. Plays into the "recording" theme;
+      nostalgic without being kitschy.</div>
+    <div class="strip">
+      <span class="small bg-mono"><svg viewBox="0 0 128 128"><rect x="14" y="36" width="100" height="56" rx="8" fill="#1a1a22" stroke="#fff" stroke-width="4"/><circle cx="44" cy="76" r="10" fill="none" stroke="#fff" stroke-width="4"/><circle cx="84" cy="76" r="10" fill="none" stroke="#fff" stroke-width="4"/></svg></span>
+      <span class="mini bg-mono"><svg viewBox="0 0 128 128"><rect x="14" y="40" width="100" height="48" rx="8" fill="#1a1a22" stroke="#fff" stroke-width="8"/></svg></span>
+    </div>
+  </div>
+</div>
+
+<!-- 08 -->
+<div class="card">
+  <div class="icon bg-noir">
+    <svg viewBox="0 0 128 128">
+      <!-- Vinyl record -->
+      <circle cx="64" cy="64" r="44" fill="#0a0a0d" stroke="#1a1a22" stroke-width="2"/>
+      <g fill="none" stroke="#2a2a30" stroke-width="1">
+        <circle cx="64" cy="64" r="40"/>
+        <circle cx="64" cy="64" r="34"/>
+        <circle cx="64" cy="64" r="28"/>
+        <circle cx="64" cy="64" r="22"/>
+      </g>
+      <circle cx="64" cy="64" r="14" fill="#ff3b30"/>
+      <circle cx="64" cy="64" r="3"  fill="#0a0a0d"/>
+    </svg>
+  </div>
+  <div class="meta">
+    <div class="num">08 / vinyl</div>
+    <div class="name">Vinyl record</div>
+    <div class="desc">Black vinyl with a red label. The single black-on-black icon feels premium;
+      the red center is the only chromatic anchor.</div>
+    <div class="strip">
+      <span class="small bg-noir"><svg viewBox="0 0 128 128"><circle cx="64" cy="64" r="44" fill="#0a0a0d"/><circle cx="64" cy="64" r="14" fill="#ff3b30"/><circle cx="64" cy="64" r="3"  fill="#0a0a0d"/></svg></span>
+      <span class="mini bg-noir"><svg viewBox="0 0 128 128"><circle cx="64" cy="64" r="46" fill="#0a0a0d"/><circle cx="64" cy="64" r="20" fill="#ff3b30"/></svg></span>
+    </div>
+  </div>
+</div>
+
+<!-- 09 -->
+<div class="card">
+  <div class="icon bg-paper">
+    <svg viewBox="0 0 128 128">
+      <!-- Polaroid frame -->
+      <g transform="rotate(-6 64 64)">
+        <rect x="24" y="22" width="80" height="92" rx="4" fill="#fff" stroke="#aaa" stroke-width="1"/>
+        <rect x="32" y="30" width="64" height="58" fill="#1a1a22"/>
+        <circle cx="64" cy="59" r="14" fill="#ff3b30"/>
+      </g>
+    </svg>
+  </div>
+  <div class="meta">
+    <div class="num">09 / polaroid</div>
+    <div class="name">Polaroid</div>
+    <div class="desc">A tilted Polaroid with a red dot framed in its window. Warm, inviting, but
+      the white background may clash with macOS Sonoma+ uniformity.</div>
+    <div class="strip">
+      <span class="small bg-paper"><svg viewBox="0 0 128 128"><g transform="rotate(-6 64 64)"><rect x="24" y="22" width="80" height="92" rx="4" fill="#fff" stroke="#aaa" stroke-width="1"/><rect x="32" y="30" width="64" height="58" fill="#1a1a22"/><circle cx="64" cy="59" r="16" fill="#ff3b30"/></g></svg></span>
+      <span class="mini bg-paper"><svg viewBox="0 0 128 128"><rect x="24" y="22" width="80" height="92" rx="4" fill="#fff"/><rect x="32" y="30" width="64" height="58" fill="#1a1a22"/></svg></span>
+    </div>
+  </div>
+</div>
+
+<!-- 10 -->
+<div class="card">
+  <div class="icon bg-mono">
+    <svg viewBox="0 0 128 128">
+      <!-- Film strip -->
+      <rect x="20" y="22" width="88" height="84" rx="6" fill="#1a1a22" stroke="#fff" stroke-width="2"/>
+      <g fill="#fff">
+        <rect x="26" y="28" width="6" height="6"/>
+        <rect x="26" y="44" width="6" height="6"/>
+        <rect x="26" y="60" width="6" height="6"/>
+        <rect x="26" y="76" width="6" height="6"/>
+        <rect x="26" y="92" width="6" height="6"/>
+        <rect x="96" y="28" width="6" height="6"/>
+        <rect x="96" y="44" width="6" height="6"/>
+        <rect x="96" y="60" width="6" height="6"/>
+        <rect x="96" y="76" width="6" height="6"/>
+        <rect x="96" y="92" width="6" height="6"/>
+      </g>
+      <rect x="40" y="38" width="48" height="52" rx="4" fill="#0a0a10"/>
+      <circle cx="64" cy="64" r="14" fill="#ff3b30"/>
+    </svg>
+  </div>
+  <div class="meta">
+    <div class="num">10 / filmstrip</div>
+    <div class="name">Film strip</div>
+    <div class="desc">Vertical sprockets framing a single dark frame with a red dot. Reads as
+      "movie / capture" cleanly even when shrunk.</div>
+    <div class="strip">
+      <span class="small bg-mono"><svg viewBox="0 0 128 128"><rect x="20" y="22" width="88" height="84" rx="6" fill="#1a1a22"/><rect x="40" y="38" width="48" height="52" rx="4" fill="#0a0a10"/><circle cx="64" cy="64" r="16" fill="#ff3b30"/></svg></span>
+      <span class="mini bg-mono"><svg viewBox="0 0 128 128"><rect x="20" y="22" width="88" height="84" rx="6" fill="#1a1a22"/><circle cx="64" cy="64" r="22" fill="#ff3b30"/></svg></span>
+    </div>
+  </div>
+</div>
+
+<!-- 11 -->
+<div class="card">
+  <div class="icon bg-amethyst">
+    <svg viewBox="0 0 128 128">
+      <!-- Stylized 'S' monogram with cut/snap accent -->
+      <path d="M88 36 q-8 -10 -22 -10 q-18 0 -18 16 q0 14 22 16 q22 2 22 18 q0 16 -20 16 q-14 0 -22 -10"
+            fill="none" stroke="#fff" stroke-width="9" stroke-linecap="round" stroke-linejoin="round"/>
+      <line x1="20" y1="100" x2="108" y2="28" stroke="#ff3b30" stroke-width="6" stroke-linecap="round"/>
+    </svg>
+  </div>
+  <div class="meta">
+    <div class="num">11 / monogram-s</div>
+    <div class="name">"S" monogram</div>
+    <div class="desc">A stylized white S with a red diagonal cut, evoking "snapforge" through letterform
+      alone. Most word-mark adjacent.</div>
+    <div class="strip">
+      <span class="small bg-amethyst"><svg viewBox="0 0 128 128"><path d="M88 36 q-8 -10 -22 -10 q-18 0 -18 16 q0 14 22 16 q22 2 22 18 q0 16 -20 16 q-14 0 -22 -10" fill="none" stroke="#fff" stroke-width="11" stroke-linecap="round" stroke-linejoin="round"/><line x1="20" y1="100" x2="108" y2="28" stroke="#ff3b30" stroke-width="8" stroke-linecap="round"/></svg></span>
+      <span class="mini bg-amethyst"><svg viewBox="0 0 128 128"><text x="64" y="92" text-anchor="middle" fill="#fff" font-family="-apple-system, sans-serif" font-size="92" font-weight="900">S</text></svg></span>
+    </div>
+  </div>
+</div>
+
+<!-- 12 -->
+<div class="card">
+  <div class="icon bg-ocean">
+    <svg viewBox="0 0 128 128">
+      <!-- Magnifying glass with red dot lens -->
+      <circle cx="56" cy="56" r="28" fill="rgba(255,255,255,0.08)" stroke="#fff" stroke-width="5"/>
+      <circle cx="56" cy="56" r="10" fill="#ff3b30"/>
+      <line x1="78" y1="78" x2="104" y2="104" stroke="#fff" stroke-width="9" stroke-linecap="round"/>
+    </svg>
+  </div>
+  <div class="meta">
+    <div class="num">12 / magnify</div>
+    <div class="name">Magnifier with REC lens</div>
+    <div class="desc">Search/inspect metaphor; the red dot in the lens repurposes "look" as "record".
+      Strong utility-app vibe.</div>
+    <div class="strip">
+      <span class="small bg-ocean"><svg viewBox="0 0 128 128"><circle cx="56" cy="56" r="32" fill="none" stroke="#fff" stroke-width="7"/><circle cx="56" cy="56" r="12" fill="#ff3b30"/><line x1="80" y1="80" x2="106" y2="106" stroke="#fff" stroke-width="11" stroke-linecap="round"/></svg></span>
+      <span class="mini bg-ocean"><svg viewBox="0 0 128 128"><circle cx="56" cy="56" r="32" fill="none" stroke="#fff" stroke-width="11"/><line x1="80" y1="80" x2="108" y2="108" stroke="#fff" stroke-width="14" stroke-linecap="round"/></svg></span>
+    </div>
+  </div>
+</div>
+
+<!-- 13 -->
+<div class="card">
+  <div class="icon bg-noir">
+    <svg viewBox="0 0 128 128">
+      <!-- Eye with REC pupil -->
+      <path d="M16 64 Q64 16 112 64 Q64 112 16 64 Z" fill="#1a1a22" stroke="#fff" stroke-width="3"/>
+      <circle cx="64" cy="64" r="22" fill="#fff"/>
+      <circle cx="64" cy="64" r="14" fill="#ff3b30"/>
+      <circle cx="60" cy="60" r="4"  fill="#fff"/>
+    </svg>
+  </div>
+  <div class="meta">
+    <div class="num">13 / eye</div>
+    <div class="name">Eye + red pupil</div>
+    <div class="desc">"You're being watched" iconography — fits a recording app explicitly. Slightly
+      ominous; great if positioning is privacy-aware.</div>
+    <div class="strip">
+      <span class="small bg-noir"><svg viewBox="0 0 128 128"><path d="M16 64 Q64 16 112 64 Q64 112 16 64 Z" fill="#1a1a22" stroke="#fff" stroke-width="5"/><circle cx="64" cy="64" r="20" fill="#ff3b30"/></svg></span>
+      <span class="mini bg-noir"><svg viewBox="0 0 128 128"><path d="M16 64 Q64 16 112 64 Q64 112 16 64 Z" fill="#1a1a22" stroke="#fff" stroke-width="9"/><circle cx="64" cy="64" r="22" fill="#ff3b30"/></svg></span>
+    </div>
+  </div>
+</div>
+
+<!-- 14 -->
+<div class="card">
+  <div class="icon bg-mint">
+    <svg viewBox="0 0 128 128">
+      <!-- Anvil with spark — "forge" half of the name -->
+      <path d="M28 76 L100 76 L92 92 L36 92 Z" fill="#1a1a22"/>
+      <rect x="58" y="64" width="12" height="14" fill="#1a1a22"/>
+      <rect x="50" y="56" width="28" height="10" rx="2" fill="#0e0e10"/>
+      <g stroke="#ff3b30" stroke-width="3" stroke-linecap="round">
+        <line x1="58" y1="42" x2="58" y2="34"/>
+        <line x1="64" y1="40" x2="64" y2="28"/>
+        <line x1="70" y1="42" x2="70" y2="34"/>
+      </g>
+    </svg>
+  </div>
+  <div class="meta">
+    <div class="num">14 / forge</div>
+    <div class="name">Forge anvil</div>
+    <div class="desc">Plays the "forge" half of the brand: an anvil with red sparks. Distinct from
+      every other screenshot tool's iconography.</div>
+    <div class="strip">
+      <span class="small bg-mint"><svg viewBox="0 0 128 128"><path d="M28 76 L100 76 L92 92 L36 92 Z" fill="#1a1a22"/><rect x="50" y="56" width="28" height="14" rx="2" fill="#0e0e10"/><line x1="64" y1="40" x2="64" y2="22" stroke="#ff3b30" stroke-width="4"/></svg></span>
+      <span class="mini bg-mint"><svg viewBox="0 0 128 128"><path d="M28 76 L100 76 L92 92 L36 92 Z" fill="#1a1a22"/></svg></span>
+    </div>
+  </div>
+</div>
+
+<!-- 15 -->
+<div class="card">
+  <div class="icon bg-sky">
+    <svg viewBox="0 0 128 128">
+      <!-- Stylized scissors / snip -->
+      <g fill="none" stroke="#fff" stroke-width="5" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="42" cy="86" r="12"/>
+        <circle cx="86" cy="86" r="12"/>
+        <line x1="50" y1="78" x2="98" y2="30"/>
+        <line x1="78" y1="78" x2="30" y2="30"/>
+      </g>
+      <circle cx="64" cy="60" r="6" fill="#ff3b30"/>
+    </svg>
+  </div>
+  <div class="meta">
+    <div class="num">15 / scissors</div>
+    <div class="name">Scissors / snip</div>
+    <div class="desc">Direct snip/clip metaphor. Universally legible, works as a small icon, but
+      less unique than other directions.</div>
+    <div class="strip">
+      <span class="small bg-sky"><svg viewBox="0 0 128 128"><g fill="none" stroke="#fff" stroke-width="7" stroke-linecap="round"><circle cx="42" cy="86" r="14"/><circle cx="86" cy="86" r="14"/><line x1="50" y1="78" x2="98" y2="30"/><line x1="78" y1="78" x2="30" y2="30"/></g></svg></span>
+      <span class="mini bg-sky"><svg viewBox="0 0 128 128"><g fill="none" stroke="#fff" stroke-width="11"><circle cx="42" cy="86" r="16"/><circle cx="86" cy="86" r="16"/></g></svg></span>
+    </div>
+  </div>
+</div>
+
+<!-- 16 -->
+<div class="card">
+  <div class="icon bg-blood">
+    <svg viewBox="0 0 128 128">
+      <!-- "ON AIR" ribbon -->
+      <rect x="14" y="48" width="100" height="32" rx="6" fill="#0a0a10" stroke="#fff" stroke-width="2"/>
+      <text x="64" y="70" text-anchor="middle" fill="#fff" font-family="-apple-system, sans-serif"
+            font-size="20" font-weight="900" letter-spacing="2">ON AIR</text>
+      <circle cx="22" cy="64" r="4" fill="#ff3b30"/>
+      <circle cx="106" cy="64" r="4" fill="#ff3b30"/>
+    </svg>
+  </div>
+  <div class="meta">
+    <div class="num">16 / on-air</div>
+    <div class="name">"ON AIR" sign</div>
+    <div class="desc">Broadcast aesthetic — quotes the studio sign. Clear at large sizes; the text
+      collapses below ~32px so a 16/24px variant must replace text with a dot.</div>
+    <div class="strip">
+      <span class="small bg-blood"><svg viewBox="0 0 128 128"><rect x="14" y="48" width="100" height="32" rx="6" fill="#0a0a10" stroke="#fff" stroke-width="3"/><circle cx="64" cy="64" r="10" fill="#ff3b30"/></svg></span>
+      <span class="mini bg-blood"><svg viewBox="0 0 128 128"><circle cx="64" cy="64" r="32" fill="#fff"/><circle cx="64" cy="64" r="20" fill="#ff3b30"/></svg></span>
+    </div>
+  </div>
+</div>
+
+<!-- 17 -->
+<div class="card">
+  <div class="icon bg-night">
+    <svg viewBox="0 0 128 128">
+      <!-- Layered frames implying a stack of captures -->
+      <rect x="36" y="20" width="68" height="50" rx="6" fill="#2a2a30" stroke="#fff" stroke-width="2"/>
+      <rect x="28" y="36" width="68" height="50" rx="6" fill="#1a1a20" stroke="#fff" stroke-width="2"/>
+      <rect x="20" y="52" width="68" height="50" rx="6" fill="#0e0e14" stroke="#fff" stroke-width="3"/>
+      <circle cx="54" cy="77" r="9" fill="#ff3b30"/>
+    </svg>
+  </div>
+  <div class="meta">
+    <div class="num">17 / stack</div>
+    <div class="name">Stacked frames</div>
+    <div class="desc">A cascade of three captures with the active one (front, red dot) in focus.
+      Speaks to the history/library feature too.</div>
+    <div class="strip">
+      <span class="small bg-night"><svg viewBox="0 0 128 128"><rect x="20" y="52" width="68" height="50" rx="6" fill="#0e0e14" stroke="#fff" stroke-width="4"/><rect x="28" y="36" width="68" height="50" rx="6" fill="#1a1a20" stroke="#fff" stroke-width="3"/><rect x="36" y="20" width="68" height="50" rx="6" fill="#2a2a30" stroke="#fff" stroke-width="3"/><circle cx="54" cy="77" r="11" fill="#ff3b30"/></svg></span>
+      <span class="mini bg-night"><svg viewBox="0 0 128 128"><rect x="22" y="42" width="84" height="60" rx="8" fill="#1a1a20" stroke="#fff" stroke-width="9"/><circle cx="64" cy="72" r="16" fill="#ff3b30"/></svg></span>
+    </div>
+  </div>
+</div>
+
+<!-- 18 -->
+<div class="card">
+  <div class="icon bg-noir">
+    <svg viewBox="0 0 128 128">
+      <!-- Concentric red rings (radar / pulse) -->
+      <circle cx="64" cy="64" r="44" fill="none" stroke="#ff3b30" stroke-width="3" opacity="0.25"/>
+      <circle cx="64" cy="64" r="32" fill="none" stroke="#ff3b30" stroke-width="3" opacity="0.45"/>
+      <circle cx="64" cy="64" r="20" fill="none" stroke="#ff3b30" stroke-width="3" opacity="0.7"/>
+      <circle cx="64" cy="64" r="10" fill="#ff3b30"/>
+    </svg>
+  </div>
+  <div class="meta">
+    <div class="num">18 / pulse</div>
+    <div class="name">Recording pulse</div>
+    <div class="desc">A static rendition of the menubar pulse: concentric red rings around a solid
+      dot. Pure, abstract, minimal.</div>
+    <div class="strip">
+      <span class="small bg-noir"><svg viewBox="0 0 128 128"><circle cx="64" cy="64" r="40" fill="none" stroke="#ff3b30" stroke-width="4" opacity="0.4"/><circle cx="64" cy="64" r="22" fill="none" stroke="#ff3b30" stroke-width="4" opacity="0.7"/><circle cx="64" cy="64" r="12" fill="#ff3b30"/></svg></span>
+      <span class="mini bg-noir"><svg viewBox="0 0 128 128"><circle cx="64" cy="64" r="46" fill="none" stroke="#ff3b30" stroke-width="9" opacity="0.55"/><circle cx="64" cy="64" r="22" fill="#ff3b30"/></svg></span>
+    </div>
+  </div>
+</div>
+
+<!-- 19 -->
+<div class="card">
+  <div class="icon bg-grid">
+    <svg viewBox="0 0 128 128">
+      <!-- Pixel-art camera -->
+      <g fill="#fff">
+        <rect x="20" y="40" width="88" height="64"/>
+      </g>
+      <g fill="#0a0a10">
+        <rect x="28" y="48" width="72" height="48"/>
+      </g>
+      <g fill="#fff">
+        <rect x="52" y="32" width="24" height="10"/>
+      </g>
+      <circle cx="64" cy="72" r="20" fill="#fff"/>
+      <circle cx="64" cy="72" r="14" fill="#0a0a10"/>
+      <circle cx="64" cy="72" r="8"  fill="#ff3b30"/>
+      <rect x="92" y="46" width="6" height="6" fill="#ff3b30"/>
+    </svg>
+  </div>
+  <div class="meta">
+    <div class="num">19 / camera-pixel</div>
+    <div class="name">Pixel camera</div>
+    <div class="desc">Old-school camera body with a center lens. Small red rec-light pixel in the
+      corner ties it to the menubar pill.</div>
+    <div class="strip">
+      <span class="small bg-grid"><svg viewBox="0 0 128 128"><rect x="20" y="40" width="88" height="64" fill="#fff"/><circle cx="64" cy="72" r="20" fill="#0a0a10"/><circle cx="64" cy="72" r="10" fill="#ff3b30"/></svg></span>
+      <span class="mini bg-grid"><svg viewBox="0 0 128 128"><rect x="20" y="40" width="88" height="64" fill="#fff"/><circle cx="64" cy="72" r="22" fill="#ff3b30"/></svg></span>
+    </div>
+  </div>
+</div>
+
+<!-- 20 -->
+<div class="card">
+  <div class="icon bg-ivory">
+    <svg viewBox="0 0 128 128">
+      <!-- Quoted region: brackets framing a dot, mono palette -->
+      <g fill="none" stroke="#1a1a1a" stroke-width="5" stroke-linecap="round" stroke-linejoin="round">
+        <polyline points="32,40 32,28 44,28"/>
+        <polyline points="84,28 96,28 96,40"/>
+        <polyline points="32,88 32,100 44,100"/>
+        <polyline points="84,100 96,100 96,88"/>
+      </g>
+      <circle cx="64" cy="64" r="14" fill="#ff3b30"/>
+    </svg>
+  </div>
+  <div class="meta">
+    <div class="num">20 / quoted-dot</div>
+    <div class="name">Quoted region</div>
+    <div class="desc">All four corner brackets enclosing a center red dot. Minimalist, mono palette,
+      friendliest in light Sonoma+ Dock; reads instantly as "select region".</div>
+    <div class="strip">
+      <span class="small bg-ivory"><svg viewBox="0 0 128 128"><g fill="none" stroke="#1a1a1a" stroke-width="6" stroke-linecap="round"><polyline points="32,40 32,28 44,28"/><polyline points="84,28 96,28 96,40"/><polyline points="32,88 32,100 44,100"/><polyline points="84,100 96,100 96,88"/></g><circle cx="64" cy="64" r="16" fill="#ff3b30"/></svg></span>
+      <span class="mini bg-ivory"><svg viewBox="0 0 128 128"><circle cx="64" cy="64" r="32" fill="#ff3b30"/></svg></span>
+    </div>
+  </div>
+</div>
+
+</main>
+</body>
+</html>

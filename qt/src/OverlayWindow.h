@@ -19,6 +19,12 @@ public:
     void activateForRecording();
     void setRememberRegion(bool enabled) { m_rememberRegion = enabled; }
 
+    // True only when overlay is visible AND mid-flight work exists (drawing,
+    // region committed, annotate/record-select mode, or async capture pending).
+    // Visible-but-idle returns false so a desynced AppKit hide can't deadlock
+    // the hotkey gate in main.cpp.
+    bool isBusy() const;
+
 signals:
     void screenshotReady(QImage composited, int w, int h);
     void clipboardReady(QImage composited, int w, int h);

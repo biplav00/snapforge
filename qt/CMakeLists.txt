@@ -42,6 +42,7 @@ qt_add_resources(SNAPFORGE_QRC_FILES
 
 set(SNAPFORGE_SOURCES
     src/main.cpp
+    src/Logger.cpp
     src/OverlayWindow.cpp
     src/AnnotationState.cpp
     src/AnnotationRenderer.cpp
@@ -50,12 +51,15 @@ set(SNAPFORGE_SOURCES
     src/RecordingManager.cpp
     src/HistoryWindow.cpp
     src/PreferencesWindow.cpp
+    src/ClickIndicatorOverlay.cpp
 )
 
 if(APPLE)
     list(APPEND SNAPFORGE_SOURCES
         src/WorkspaceSleepObserver.mm
-        src/SpaceChangeObserver.mm)
+        src/SpaceChangeObserver.mm
+        src/ClickEventTap.mm
+        src/ClickIndicatorOverlayMac.mm)
     # The .mm files use ARC's __bridge_retained / __bridge_transfer; enable ARC.
     set_source_files_properties(src/WorkspaceSleepObserver.mm
         PROPERTIES COMPILE_FLAGS "-fobjc-arc")
@@ -120,12 +124,22 @@ if(APPLE AND MACDEPLOYQT)
         VERBATIM
     )
 
+    # Bundle ffmpeg + its Homebrew dylibs into the .app so shipped builds run
+    # on machines without Homebrew. Runs after macdeployqt (it walks
+    # Contents/MacOS/) and before codesign (signature must cover ffmpeg).
+    add_custom_command(TARGET snapforge-qt POST_BUILD
+        COMMAND "${CMAKE_SOURCE_DIR}/scripts/bundle-ffmpeg.sh"
+                "$<TARGET_BUNDLE_DIR:snapforge-qt>"
+        COMMENT "Bundling ffmpeg and dylibs..."
+        VERBATIM
+    )
+
     # Ad-hoc sign with a stable identifier. Without this, every CI build
     # gets a fresh ad-hoc signature, so macOS TCC treats each build as a
     # different app and the user has to re-grant Screen Recording. Pinning
     # the identifier to com.snapforge.app keeps TCC's grant stable across
-    # rebuilds. Runs after macdeployqt so the framework re-bundling doesn't
-    # invalidate the signature.
+    # rebuilds. Runs after macdeployqt + ffmpeg bundling so the framework
+    # re-bundling doesn't invalidate the signature.
     add_custom_command(TARGET snapforge-qt POST_BUILD
         COMMAND codesign --force --deep --sign - --identifier com.snapforge.app
                 "$<TARGET_BUNDLE_DIR:snapforge-qt>"

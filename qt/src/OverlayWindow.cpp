@@ -109,10 +109,15 @@ void OverlayWindow::activateInternal() {
     int displayIndex = m_displayIndex;
     QPointer<OverlayWindow> self(this);
     auto *watcher = new QFutureWatcher<QImage>(this);
-    connect(watcher, &QFutureWatcher<QImage>::finished, this, [self, watcher]() {
+    connect(watcher, &QFutureWatcher<QImage>::finished, this, [self, watcher, displayIndex]() {
         QImage img = watcher->result();
         watcher->deleteLater();
         if (!self) return;
+        // Discard stale completions: user dismissed overlay or switched display
+        // (Space change) before capture finished. Without these guards we'd
+        // paint the prior Space's screenshot into the current overlay.
+        if (!self->isVisible()) return;
+        if (self->m_displayIndex != displayIndex) return;
         if (img.isNull()) {
             qWarning("Overlay: snapforge_capture_fullscreen failed");
             return;
@@ -153,6 +158,13 @@ void OverlayWindow::activateInternal() {
                 nsWindow, sel_registerName("setMovable:"), NO);
             ((void (*)(id, SEL, BOOL))objc_msgSend)(
                 nsWindow, sel_registerName("setMovableByWindowBackground:"), NO);
+            // Qt::Tool maps to NSPanel; NSPanel.hidesOnDeactivate defaults YES,
+            // which makes AppKit auto-hide the overlay the moment Snapforge
+            // loses focus (e.g. user clicks an input field in another app, or
+            // switches Space). The hide bypasses Qt, leaving isVisible() in a
+            // stale state and the hotkey gate stuck on "busy". Pin it visible.
+            ((void (*)(id, SEL, BOOL))objc_msgSend)(
+                nsWindow, sel_registerName("setHidesOnDeactivate:"), NO);
             // Clear all NSWindowStyleMask bits that imply resizability.
             ((void (*)(id, SEL, unsigned long))objc_msgSend)(
                 nsWindow, sel_registerName("setStyleMask:"), 0UL); // NSWindowStyleMaskBorderless
@@ -545,6 +557,17 @@ void OverlayWindow::emitRecordFullscreen() {
 
 void OverlayWindow::hideOverlay() {
     hide();
+}
+
+bool OverlayWindow::isBusy() const {
+    if (!isVisible()) return false;
+    // Visible but idle (no draw in progress, no committed region, default mode,
+    // and capture already landed) = stale window AppKit may have hidden behind
+    // our back. Allow the hotkey to recover by re-entering activate().
+    if (m_drawing || m_hasRegion) return true;
+    if (m_mode == Annotate || m_mode == RecordSelect) return true;
+    if (m_screenshot.isNull()) return true; // async capture still in flight
+    return false;
 }
 
 void OverlayWindow::handleSave() {

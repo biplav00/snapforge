@@ -8,6 +8,7 @@
 #include <QJsonObject>
 #include <QMessageBox>
 #include <QMap>
+#include <QProcess>
 #include <QScrollArea>
 #include <QShowEvent>
 #include <QTabWidget>
@@ -17,7 +18,15 @@
 #include <QEvent>
 #include <QStyle>
 
+#include <QPlainTextEdit>
+#include <QClipboard>
+#include <QDesktopServices>
+#include <QFileInfo>
+#include <QScrollBar>
+#include <QUrl>
+
 #include "snapforge_ffi.h"
+#include "Logger.h"
 
 // ===========================================================================
 // Theme colors
@@ -258,6 +267,8 @@ void PreferencesWindow::buildUi()
     tabs->addTab(buildScreenshotsTab(), QStringLiteral("Screenshots"));
     tabs->addTab(buildRecordingTab(),   QStringLiteral("Recording"));
     tabs->addTab(buildHotkeysTab(),     QStringLiteral("Hotkeys"));
+    tabs->addTab(buildPermissionsTab(), QStringLiteral("Permissions"));
+    tabs->addTab(buildLogsTab(),        QStringLiteral("Logs"));
     root->addWidget(tabs, 1);
 
     // Dark separator
@@ -558,6 +569,24 @@ QWidget *PreferencesWindow::buildRecordingTab()
         updateQualPills();
     });
 
+    // — Click indicator —
+    layout->addWidget(makeSectionLabel(QStringLiteral("Click Indicator"), w));
+
+    m_showClicks = new QCheckBox(QStringLiteral("Show clicks while recording"), w);
+    m_showClicks->setStyleSheet(
+        QStringLiteral("QCheckBox { color: %1; font-size: 13px; }").arg(g_theme.text));
+    layout->addWidget(m_showClicks);
+
+    auto *clickHint = new QLabel(
+        QStringLiteral("Draws a brief red ring at each mouse-click location so "
+                       "they are visible in the recorded video. Requires Input "
+                       "Monitoring permission (System Settings → Privacy & Security)."),
+        w);
+    clickHint->setWordWrap(true);
+    clickHint->setStyleSheet(
+        QStringLiteral("QLabel { color: %1; font-size: 11px; }").arg(g_theme.textMuted));
+    layout->addWidget(clickHint);
+
     layout->addStretch();
     return w;
 }
@@ -762,6 +791,153 @@ QWidget *PreferencesWindow::buildHotkeysTab()
 }
 
 // ===========================================================================
+// Permissions tab
+// ===========================================================================
+
+QWidget *PreferencesWindow::buildPermissionsTab()
+{
+    auto *w = new QWidget;
+    w->setStyleSheet("QWidget { background: " + g_theme.bg + "; }");
+    auto *form = new QVBoxLayout(w);
+    form->setContentsMargins(24, 24, 24, 24);
+    form->setSpacing(16);
+
+    form->addWidget(makeSectionLabel(QStringLiteral("Screen Recording"), w));
+
+    auto *desc = new QLabel(
+        QStringLiteral("Required to capture your screen for screenshots and recordings. "
+                       "macOS only shows the system prompt once per app install — if you "
+                       "denied it earlier, use \"Open System Settings\" to grant access "
+                       "manually."),
+        w);
+    desc->setWordWrap(true);
+    desc->setStyleSheet(QStringLiteral(
+        "QLabel { color: %1; font-size: 12px; background: transparent; }"
+    ).arg(g_theme.textMuted));
+    form->addWidget(desc);
+
+    // Status badge (green=granted, red=denied/unknown).
+    auto *statusRow = new QHBoxLayout;
+    statusRow->setSpacing(8);
+    auto *statusLbl = new QLabel(QStringLiteral("Status:"), w);
+    statusLbl->setStyleSheet(QStringLiteral(
+        "QLabel { color: %1; font-size: 13px; background: transparent; }"
+    ).arg(g_theme.text));
+    m_screenRecStatusBadge = new QLabel(QStringLiteral("Checking..."), w);
+    m_screenRecStatusBadge->setStyleSheet(QStringLiteral(
+        "QLabel { color: %1; font-size: 13px; font-weight: 600; background: transparent; }"
+    ).arg(g_theme.textMuted));
+    statusRow->addWidget(statusLbl);
+    statusRow->addWidget(m_screenRecStatusBadge);
+    statusRow->addStretch();
+    form->addLayout(statusRow);
+
+    // Help text shown only when permission is missing.
+    m_screenRecHelpText = new QLabel(w);
+    m_screenRecHelpText->setWordWrap(true);
+    m_screenRecHelpText->setStyleSheet(QStringLiteral(
+        "QLabel { color: %1; font-size: 12px; background: transparent; }"
+    ).arg(g_theme.textMuted));
+    m_screenRecHelpText->setVisible(false);
+    form->addWidget(m_screenRecHelpText);
+
+    // Action buttons.
+    auto *btnRow = new QHBoxLayout;
+    btnRow->setSpacing(8);
+
+    m_screenRecRequestBtn = new QPushButton(QStringLiteral("Request Permission"), w);
+    m_screenRecRequestBtn->setStyleSheet(defaultBtnStyle());
+    connect(m_screenRecRequestBtn, &QPushButton::clicked, this, [this]() {
+        // Triggers the system prompt the first time; subsequent calls are
+        // no-ops at the OS level (the platform only asks once per bundle).
+        snapforge_request_permission();
+        refreshPermissionStatus();
+    });
+
+    m_screenRecOpenSettingsBtn = new QPushButton(QStringLiteral("Open System Settings"), w);
+    m_screenRecOpenSettingsBtn->setStyleSheet(defaultBtnStyle());
+    connect(m_screenRecOpenSettingsBtn, &QPushButton::clicked, this, []() {
+        // Deep-link to the Screen Recording pane. URL scheme is documented
+        // for the new System Settings app (macOS 13+); on older systems it
+        // falls back to opening the top-level Privacy pane.
+        QProcess::startDetached(
+            QStringLiteral("open"),
+            {QStringLiteral("x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")}
+        );
+    });
+
+    m_screenRecRefreshBtn = new QPushButton(QStringLiteral("Refresh Status"), w);
+    m_screenRecRefreshBtn->setStyleSheet(defaultBtnStyle());
+    connect(m_screenRecRefreshBtn, &QPushButton::clicked,
+            this, &PreferencesWindow::refreshPermissionStatus);
+
+    btnRow->addWidget(m_screenRecRequestBtn);
+    btnRow->addWidget(m_screenRecOpenSettingsBtn);
+    btnRow->addWidget(m_screenRecRefreshBtn);
+    btnRow->addStretch();
+    form->addLayout(btnRow);
+
+    form->addWidget(makeSeparator(w));
+
+    // Note on accessibility (used by click tracking overlay).
+    form->addWidget(makeSectionLabel(QStringLiteral("Accessibility (Optional)"), w));
+    auto *axDesc = new QLabel(
+        QStringLiteral("Needed only if you enable click visualisation in recordings. "
+                       "Grant via System Settings → Privacy & Security → Accessibility."),
+        w);
+    axDesc->setWordWrap(true);
+    axDesc->setStyleSheet(QStringLiteral(
+        "QLabel { color: %1; font-size: 12px; background: transparent; }"
+    ).arg(g_theme.textMuted));
+    form->addWidget(axDesc);
+
+    auto *axBtn = new QPushButton(QStringLiteral("Open Accessibility Settings"), w);
+    axBtn->setStyleSheet(defaultBtnStyle());
+    connect(axBtn, &QPushButton::clicked, []() {
+        QProcess::startDetached(
+            QStringLiteral("open"),
+            {QStringLiteral("x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")}
+        );
+    });
+    auto *axBtnRow = new QHBoxLayout;
+    axBtnRow->addWidget(axBtn);
+    axBtnRow->addStretch();
+    form->addLayout(axBtnRow);
+
+    form->addStretch();
+    return w;
+}
+
+void PreferencesWindow::refreshPermissionStatus()
+{
+    if (!m_screenRecStatusBadge) return;
+    const bool granted = snapforge_has_permission() == 1;
+    if (granted) {
+        m_screenRecStatusBadge->setText(QStringLiteral("Granted"));
+        m_screenRecStatusBadge->setStyleSheet(QStringLiteral(
+            "QLabel { color: #22c55e; font-size: 13px; font-weight: 600; background: transparent; }"
+        ));
+        if (m_screenRecHelpText) m_screenRecHelpText->setVisible(false);
+        if (m_screenRecRequestBtn) m_screenRecRequestBtn->setEnabled(false);
+    } else {
+        m_screenRecStatusBadge->setText(QStringLiteral("Not Granted"));
+        m_screenRecStatusBadge->setStyleSheet(QStringLiteral(
+            "QLabel { color: #ef4444; font-size: 13px; font-weight: 600; background: transparent; }"
+        ));
+        if (m_screenRecHelpText) {
+            m_screenRecHelpText->setText(QStringLiteral(
+                "Click \"Request Permission\" to trigger the macOS prompt. If nothing "
+                "happens (already-denied apps don't re-prompt), open System Settings, "
+                "enable Snapforge under Screen & System Audio Recording, then come back "
+                "and click \"Refresh Status\"."
+            ));
+            m_screenRecHelpText->setVisible(true);
+        }
+        if (m_screenRecRequestBtn) m_screenRecRequestBtn->setEnabled(true);
+    }
+}
+
+// ===========================================================================
 // Event overrides
 // ===========================================================================
 
@@ -769,6 +945,9 @@ void PreferencesWindow::showEvent(QShowEvent *event)
 {
     QWidget::showEvent(event);
     loadConfig();
+    // TCC state can change while the window is hidden (user toggles in System
+    // Settings); re-query on every show so the badge is never stale.
+    refreshPermissionStatus();
 }
 
 void PreferencesWindow::hideEvent(QHideEvent *event)
@@ -1166,6 +1345,10 @@ void PreferencesWindow::loadConfig()
     for (QAbstractButton *btn : m_recQualGroup->buttons())
         btn->setStyleSheet(pillStyle(btn->isChecked()));
 
+    if (m_showClicks) {
+        m_showClicks->setChecked(rec.value(QStringLiteral("show_clicks")).toBool());
+    }
+
     // — Hotkeys —
     QJsonObject hotkeys = obj.value(QStringLiteral("hotkeys")).toObject();
     for (int i = 0; i < m_hotkeyRows.size(); ++i) {
@@ -1221,6 +1404,7 @@ void PreferencesWindow::saveConfig()
     if (qualId == 0)      qualStr = QStringLiteral("Low");
     else if (qualId == 2) qualStr = QStringLiteral("High");
     rec[QStringLiteral("quality")] = qualStr;
+    rec[QStringLiteral("show_clicks")] = m_showClicks && m_showClicks->isChecked();
     obj[QStringLiteral("recording")] = rec;
 
     // — Hotkeys —
@@ -1239,5 +1423,139 @@ void PreferencesWindow::saveConfig()
         QTimer::singleShot(3000, this, [this]() { m_statusLabel->clear(); });
     } else {
         m_statusLabel->setText(QStringLiteral("Error: failed to save config."));
+    }
+}
+
+// ===========================================================================
+// Logs tab
+// ===========================================================================
+
+QWidget *PreferencesWindow::buildLogsTab()
+{
+    auto *w = new QWidget;
+    w->setStyleSheet("QWidget { background: " + g_theme.bg + "; }");
+    auto *form = new QVBoxLayout(w);
+    form->setContentsMargins(24, 24, 24, 24);
+    form->setSpacing(12);
+
+    form->addWidget(makeSectionLabel(QStringLiteral("Application Logs"), w));
+
+    m_logPathLabel = new QLabel(w);
+    m_logPathLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    m_logPathLabel->setStyleSheet(QStringLiteral(
+        "QLabel { color: %1; font-size: 11px; font-family: 'JetBrains Mono', monospace; background: transparent; }"
+    ).arg(g_theme.textMuted));
+    m_logPathLabel->setText(QStringLiteral("File: ") + Logger::instance()->filePath());
+    form->addWidget(m_logPathLabel);
+
+    // Controls row.
+    auto *ctrlRow = new QHBoxLayout;
+    ctrlRow->setSpacing(8);
+
+    auto *filterLbl = new QLabel(QStringLiteral("Level:"), w);
+    filterLbl->setStyleSheet(QStringLiteral(
+        "QLabel { color: %1; font-size: 12px; background: transparent; }"
+    ).arg(g_theme.text));
+    ctrlRow->addWidget(filterLbl);
+
+    m_logLevelFilter = new QComboBox(w);
+    m_logLevelFilter->addItem(QStringLiteral("All"),    -1);
+    m_logLevelFilter->addItem(QStringLiteral("Debug+"), (int)QtDebugMsg);
+    m_logLevelFilter->addItem(QStringLiteral("Info+"),  (int)QtInfoMsg);
+    m_logLevelFilter->addItem(QStringLiteral("Warn+"),  (int)QtWarningMsg);
+    m_logLevelFilter->addItem(QStringLiteral("Error"),  (int)QtCriticalMsg);
+    ctrlRow->addWidget(m_logLevelFilter);
+    connect(m_logLevelFilter, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, [this](int){ reloadLogBuffer(); });
+
+    m_logAutoScroll = new QCheckBox(QStringLiteral("Auto-scroll"), w);
+    m_logAutoScroll->setChecked(true);
+    m_logAutoScroll->setStyleSheet(QStringLiteral(
+        "QCheckBox { color: %1; font-size: 12px; background: transparent; }"
+    ).arg(g_theme.text));
+    ctrlRow->addWidget(m_logAutoScroll);
+
+    ctrlRow->addStretch();
+
+    auto *copyBtn = new QPushButton(QStringLiteral("Copy"), w);
+    copyBtn->setStyleSheet(defaultBtnStyle());
+    connect(copyBtn, &QPushButton::clicked, this, [this]() {
+        QApplication::clipboard()->setText(m_logView->toPlainText());
+        m_statusLabel->setText(QStringLiteral("Logs copied."));
+        QTimer::singleShot(2000, this, [this]() { m_statusLabel->clear(); });
+    });
+    ctrlRow->addWidget(copyBtn);
+
+    auto *revealBtn = new QPushButton(QStringLiteral("Reveal in Finder"), w);
+    revealBtn->setStyleSheet(defaultBtnStyle());
+    connect(revealBtn, &QPushButton::clicked, this, []() {
+        QString path = Logger::instance()->filePath();
+        if (QFileInfo::exists(path)) {
+            QProcess::startDetached(QStringLiteral("open"),
+                {QStringLiteral("-R"), path});
+        } else {
+            QProcess::startDetached(QStringLiteral("open"),
+                {QFileInfo(path).absolutePath()});
+        }
+    });
+    ctrlRow->addWidget(revealBtn);
+
+    auto *clearBtn = new QPushButton(QStringLiteral("Clear"), w);
+    clearBtn->setStyleSheet(defaultBtnStyle());
+    connect(clearBtn, &QPushButton::clicked, this, []() {
+        Logger::instance()->clear();
+    });
+    ctrlRow->addWidget(clearBtn);
+
+    form->addLayout(ctrlRow);
+
+    // The log view.
+    m_logView = new QPlainTextEdit(w);
+    m_logView->setReadOnly(true);
+    m_logView->setMaximumBlockCount(5000);
+    m_logView->setStyleSheet(QStringLiteral(
+        "QPlainTextEdit { background: %1; color: %2; border: 1px solid %3; "
+        "border-radius: 6px; padding: 8px; "
+        "font-family: 'JetBrains Mono', 'Menlo', monospace; font-size: 11px; }"
+    ).arg(g_theme.bgInput, g_theme.text, g_theme.border));
+    form->addWidget(m_logView, 1);
+
+    // Wire Logger signals — append on new entry, reload on clear.
+    auto *logger = Logger::instance();
+    connect(logger, &Logger::entryAdded, this, [this](const LogEntry &e) {
+        const int filter = m_logLevelFilter->currentData().toInt();
+        if (filter >= 0 && (int)e.level < filter) return;
+        appendLogLine(e.formatted());
+    });
+    connect(logger, &Logger::cleared, this, [this]() {
+        if (m_logView) m_logView->clear();
+    });
+
+    reloadLogBuffer();
+    return w;
+}
+
+void PreferencesWindow::appendLogLine(const QString &line)
+{
+    if (!m_logView) return;
+    m_logView->appendPlainText(line);
+    if (m_logAutoScroll && m_logAutoScroll->isChecked()) {
+        auto *bar = m_logView->verticalScrollBar();
+        bar->setValue(bar->maximum());
+    }
+}
+
+void PreferencesWindow::reloadLogBuffer()
+{
+    if (!m_logView) return;
+    m_logView->clear();
+    const int filter = m_logLevelFilter ? m_logLevelFilter->currentData().toInt() : -1;
+    for (const auto &e : Logger::instance()->recent()) {
+        if (filter >= 0 && (int)e.level < filter) continue;
+        m_logView->appendPlainText(e.formatted());
+    }
+    if (m_logAutoScroll && m_logAutoScroll->isChecked()) {
+        auto *bar = m_logView->verticalScrollBar();
+        bar->setValue(bar->maximum());
     }
 }

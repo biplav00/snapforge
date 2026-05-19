@@ -7,7 +7,7 @@ use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum RecordError {
-    #[error("ffmpeg not found — run scripts/download-ffmpeg.sh or install ffmpeg")]
+    #[error("ffmpeg not found — rebuild the app (qt/scripts/bundle-ffmpeg.sh runs automatically) or install ffmpeg on PATH")]
     FfmpegNotFound,
     #[error("ffmpeg failed to start: {0}")]
     FfmpegSpawnFailed(String),

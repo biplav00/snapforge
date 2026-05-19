@@ -15,6 +15,7 @@
 #include <QComboBox>
 #include <QMap>
 #include <QString>
+#include <QPlainTextEdit>
 #include <functional>
 
 // ---------------------------------------------------------------------------
@@ -49,6 +50,7 @@ public:
     int screenshotFormat() const { return m_screenshotFmtGroup ? m_screenshotFmtGroup->checkedId() : 0; }
     int jpgQuality() const { return m_quality ? m_quality->value() : 90; }
     QString filenamePattern() const { return m_filenamePattern ? m_filenamePattern->text() : QString(); }
+    bool showClicksEnabled() const { return m_showClicks && m_showClicks->isChecked(); }
 
 signals:
     void configSaved();
@@ -71,6 +73,11 @@ private:
     QWidget *buildScreenshotsTab();
     QWidget *buildRecordingTab();
     QWidget *buildHotkeysTab();
+    QWidget *buildPermissionsTab();
+    QWidget *buildLogsTab();
+    void refreshPermissionStatus();
+    void appendLogLine(const QString &line);
+    void reloadLogBuffer();
 
     void loadConfig();
     void saveConfig();
@@ -110,6 +117,7 @@ private:
     QPushButton  *m_recGifBtn     = nullptr;
     QButtonGroup *m_fpsGroup      = nullptr;
     QButtonGroup *m_recQualGroup  = nullptr;
+    QCheckBox    *m_showClicks    = nullptr;
 
     // Hotkeys tab
     QVector<HotkeyRow> m_hotkeyRows;
@@ -118,8 +126,21 @@ private:
     // Theme
     QComboBox    *m_themeCombo   = nullptr;
 
+    // Permissions tab
+    QLabel       *m_screenRecStatusBadge = nullptr;
+    QLabel       *m_screenRecHelpText    = nullptr;
+    QPushButton  *m_screenRecRequestBtn  = nullptr;
+    QPushButton  *m_screenRecOpenSettingsBtn = nullptr;
+    QPushButton  *m_screenRecRefreshBtn  = nullptr;
+
     // Bottom bar
     QLabel       *m_statusLabel  = nullptr;
+
+    // Logs tab
+    QPlainTextEdit *m_logView      = nullptr;
+    QComboBox      *m_logLevelFilter = nullptr;
+    QCheckBox      *m_logAutoScroll  = nullptr;
+    QLabel         *m_logPathLabel   = nullptr;
 };
 
 #endif // PREFERENCESWINDOW_H

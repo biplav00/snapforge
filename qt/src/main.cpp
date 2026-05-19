@@ -1,5 +1,6 @@
 #include <QApplication>
 #include <QSystemTrayIcon>
+#include <cmath>
 #include <QMenu>
 #include <QDir>
 #include <QDateTime>
@@ -17,10 +18,16 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QGuiApplication>
+#include <QMessageBox>
 #include "OverlayWindow.h"
 #include "RecordingManager.h"
 #include "HistoryWindow.h"
 #include "PreferencesWindow.h"
+#include "ClickIndicatorOverlay.h"
+#ifdef Q_OS_MACOS
+#include "ClickEventTap.h"
+#endif
+#include "Logger.h"
 #include "snapforge_ffi.h"
 #ifdef Q_OS_MAC
 #include "WorkspaceSleepObserver.h"
@@ -55,14 +62,24 @@ OSStatus hotkeyHandler(EventHandlerCallRef, EventRef event, void *) {
                       sizeof(firedID), nullptr, &firedID);
 
     // Fix #14: ignore any hotkey that would re-enter the overlay while it's
-    // already on screen. Repeat presses would otherwise stack activations
-    // and double-capture the screen.
-    const bool overlayBusy = g_overlay && g_overlay->isVisible();
-    qDebug("hotkey id=%u overlayExists=%d overlayVisible=%d overlayMinimized=%d",
+    // already doing real work (drawing, region committed, annotating, or
+    // mid-capture). Visible-but-idle is treated as recoverable: AppKit can
+    // hide an NSPanel out from under Qt on deactivation, leaving isVisible()
+    // desynced. isBusy() consults real state instead of bare visibility.
+    const bool overlayBusy = g_overlay && g_overlay->isBusy();
+    qDebug("hotkey id=%u overlayExists=%d overlayVisible=%d overlayBusy=%d overlayMinimized=%d",
            (unsigned)firedID.id,
            g_overlay != nullptr,
            g_overlay && g_overlay->isVisible(),
+           overlayBusy,
            g_overlay && g_overlay->isMinimized());
+
+    // Idle-hide: if overlay is visible but not busy, force a clean reset
+    // before re-activating so we don't stack a fresh activate() on top of a
+    // stale shown-but-desynced window.
+    auto resetIfStale = []() {
+        if (g_overlay && g_overlay->isVisible()) g_overlay->hide();
+    };
 
     auto notifyBusy = []() {
         // Give the user some feedback so the hotkey doesn't feel dead. The
@@ -82,14 +99,20 @@ OSStatus hotkeyHandler(EventHandlerCallRef, EventRef event, void *) {
     case kHotkeyIDScreenshot:
         if (g_overlay) {
             if (overlayBusy) notifyBusy();
-            else QTimer::singleShot(0, g_overlay, &OverlayWindow::activate);
+            else {
+                resetIfStale();
+                QTimer::singleShot(0, g_overlay, &OverlayWindow::activate);
+            }
         }
         break;
 
     case kHotkeyIDFullscreen:
         if (g_overlay) {
             if (overlayBusy) notifyBusy();
-            else QTimer::singleShot(0, g_overlay, &OverlayWindow::activateFullscreen);
+            else {
+                resetIfStale();
+                QTimer::singleShot(0, g_overlay, &OverlayWindow::activateFullscreen);
+            }
         }
         break;
 
@@ -100,6 +123,7 @@ OSStatus hotkeyHandler(EventHandlerCallRef, EventRef event, void *) {
             } else if (overlayBusy) {
                 notifyBusy();
             } else {
+                resetIfStale();
                 QTimer::singleShot(0, g_overlay, &OverlayWindow::activateForRecording);
             }
         }
@@ -288,8 +312,13 @@ int main(int argc, char *argv[]) {
     // in QCocoaWindow::raise(). Without this, raise() triggers a Space switch.
     qputenv("QT_MAC_SET_RAISE_PROCESS", "0");
 
+    // Route qDebug/qWarning/qInfo/qCritical to the on-disk log + ring buffer
+    // before any other init so startup messages get captured.
+    Logger::install();
+
     QApplication app(argc, argv);
     app.setApplicationName("Snapforge");
+    qInfo("Snapforge starting");
     app.setQuitOnLastWindowClosed(false);
 
     // App-wide icon used by Dock, task switcher, and any generic windows.
@@ -392,6 +421,16 @@ int main(int argc, char *argv[]) {
     auto *paletteFilter = new PaletteFilter(&prefs, &app);
     app.installEventFilter(paletteFilter);
 
+    // Click visualizer: ripple overlay + global mouse-down tap.
+    // Tap is only started while recording AND the pref is on. Permission
+    // failure surfaces as a tray banner; the recording itself continues.
+    ClickIndicatorOverlay clickOverlay;
+#ifdef Q_OS_MACOS
+    ClickEventTap clickTap;
+    QObject::connect(&clickTap, &ClickEventTap::clicked,
+                     &clickOverlay, &ClickIndicatorOverlay::addRipple);
+#endif
+
     // Sync prefs → overlay
     auto syncPrefsToOverlay = [&]() {
         overlay.setRememberRegion(prefs.rememberRegionEnabled());
@@ -406,6 +445,10 @@ int main(int argc, char *argv[]) {
     // Idle tray icon — brand mark in white on a transparent background:
     // two opposing corner brackets (top-left + bottom-right) with a diagonal
     // slash, matching the original Snapforge logo glyph.
+    // Unique idle mark: a six-blade camera aperture inscribed in a thin
+    // rounded square with a tiny shutter notch in the top-right corner.
+    // Distinct from generic crosshair / camera glyphs and reads as a
+    // capture/record motif at menu-bar size.
     auto makeIdleIcon = []() -> QIcon {
         const qreal logicalSz = 18.0;
         const qreal dpr = 2.0;
@@ -417,152 +460,131 @@ int main(int argc, char *argv[]) {
         QPainter p(&pm);
         p.setRenderHint(QPainter::Antialiasing);
 
-        const qreal margin = 2.0;
-        const qreal hook = 5.0;     // length of each bracket arm
-        const qreal stroke = 1.6;
-        const qreal x0 = margin;
-        const qreal y0 = margin;
-        const qreal x1 = logicalSz - margin;
-        const qreal y1 = logicalSz - margin;
-
-        QPen pen(QColor(255, 255, 255, 255), stroke);
+        const QColor ink(255, 255, 255, 255);
+        QPen pen(ink, 1.2);
         pen.setCapStyle(Qt::RoundCap);
         pen.setJoinStyle(Qt::RoundJoin);
         p.setPen(pen);
         p.setBrush(Qt::NoBrush);
 
-        // Top-left bracket ┌
-        QPainterPath tl;
-        tl.moveTo(x0, y0 + hook);
-        tl.lineTo(x0, y0);
-        tl.lineTo(x0 + hook, y0);
-        p.drawPath(tl);
+        // Outer rounded frame.
+        const qreal frameMargin = 1.5;
+        QRectF frame(frameMargin, frameMargin,
+                     logicalSz - 2 * frameMargin, logicalSz - 2 * frameMargin);
+        p.drawRoundedRect(frame, 3.5, 3.5);
 
-        // Bottom-right bracket ┘
-        QPainterPath br;
-        br.moveTo(x1 - hook, y1);
-        br.lineTo(x1, y1);
-        br.lineTo(x1, y1 - hook);
-        p.drawPath(br);
+        // Aperture: a hexagonal ring with three short blade lines that
+        // converge toward the center, evoking a six-blade iris.
+        const qreal cx = logicalSz / 2.0;
+        const qreal cy = logicalSz / 2.0;
+        const qreal r = 4.6;
+        QPolygonF hex;
+        for (int i = 0; i < 6; ++i) {
+            // Tilt the hexagon 30° so a flat edge sits at the top — reads
+            // as an aperture rather than a hex nut.
+            qreal a = (M_PI / 3.0) * i + (M_PI / 6.0);
+            hex << QPointF(cx + r * std::cos(a), cy + r * std::sin(a));
+        }
+        p.drawPolygon(hex);
 
-        // Diagonal slash (top-right → bottom-left direction per original logo)
-        const qreal slashInset = 3.5;
-        p.drawLine(QPointF(x1 - slashInset, y0 + slashInset),
-                   QPointF(x0 + slashInset, y1 - slashInset));
+        // Three blade ticks: from alternating hex vertices toward center,
+        // stopping short to leave a clear pupil.
+        const qreal pupil = 1.4;
+        for (int i = 0; i < 6; i += 2) {
+            QPointF v = hex[i];
+            QPointF dir(cx - v.x(), cy - v.y());
+            qreal len = std::hypot(dir.x(), dir.y());
+            if (len <= pupil) continue;
+            qreal t = (len - pupil) / len;
+            QPointF endP(v.x() + dir.x() * t, v.y() + dir.y() * t);
+            p.drawLine(v, endP);
+        }
+
+        // Shutter notch: small filled square in the top-right corner of
+        // the frame, signaling "press to capture" — the unique flourish.
+        p.setPen(Qt::NoPen);
+        p.setBrush(ink);
+        p.drawRoundedRect(QRectF(logicalSz - 4.6, frameMargin - 0.2, 2.4, 2.4),
+                          0.6, 0.6);
 
         p.end();
-        // Non-template so the icon stays white regardless of macOS menu-bar mode.
         return QIcon(pm);
     };
 
-    // Single wide recording pill icon — renders the full mockup `.rec-indicator`
-    // (red dot + "REC" label + "mm:ss" timer + pause glyph + stop glyph) inside
-    // one rounded container, displayed as a single NSStatusItem in the menu bar.
-    // Interactive actions (Pause/Resume/Stop) are exposed through the tray's
-    // context menu when clicked.
+    // Minimal recording indicator (mock D2): pulsing red dot + white "mm:ss"
+    // timer, no background pill, no REC label, no inline controls. All
+    // pause/stop actions live in the tray's context menu.
     auto makeRecordingPillIcon = [](double alpha, bool paused, int seconds) -> QIcon {
-        // Match mockup spacing: dot — REC — time — | pause | stop
-        const int logicalW = 156;
-        const int logicalH = 22;
-        const qreal dpr = 2.0;
-        QPixmap pm(static_cast<int>(logicalW * dpr), static_cast<int>(logicalH * dpr));
+        QString timeStr;
+        if (seconds >= 3600) {
+            timeStr = QStringLiteral("%1:%2:%3")
+                .arg(seconds / 3600, 1, 10, QLatin1Char('0'))
+                .arg((seconds / 60) % 60, 2, 10, QLatin1Char('0'))
+                .arg(seconds % 60, 2, 10, QLatin1Char('0'));
+        } else {
+            timeStr = QStringLiteral("%1:%2")
+                .arg(seconds / 60, 2, 10, QLatin1Char('0'))
+                .arg(seconds % 60, 2, 10, QLatin1Char('0'));
+        }
+
+        QFont timeFont(QStringLiteral("Menlo"));
+        timeFont.setPixelSize(14);
+        timeFont.setWeight(QFont::Bold);
+        QFontMetrics tfm(timeFont);
+        const qreal timeW = tfm.horizontalAdvance(timeStr);
+
+        const qreal padX = 4.0;
+        const qreal dotR = 4.0;
+        const qreal gap = 6.0;
+        const int logicalH = 18;
+        const int logicalW = static_cast<int>(std::ceil(
+            padX + dotR * 2.0 + gap + timeW + padX));
+
+        const qreal dpr = 3.0;
+        QPixmap pm(static_cast<int>(logicalW * dpr),
+                   static_cast<int>(logicalH * dpr));
         pm.setDevicePixelRatio(dpr);
         pm.fill(Qt::transparent);
         QPainter p(&pm);
         p.setRenderHint(QPainter::Antialiasing);
+        p.setRenderHint(QPainter::TextAntialiasing);
 
-        // Pill background — mockup: rgba(12,14,18,0.92), red border 0.3 alpha,
-        // border-radius: 24px (fully rounded at this height).
-        const qreal radius = logicalH / 2.0;
-        QRectF pillRect(0.5, 0.5, logicalW - 1.0, logicalH - 1.0);
-        QPainterPath pill;
-        pill.addRoundedRect(pillRect, radius, radius);
-        p.fillPath(pill, QColor(12, 14, 18, 235));
-        p.setPen(QPen(QColor(239, 68, 68, 90), 1.0));
-        p.setBrush(Qt::NoBrush);
-        p.drawPath(pill);
-
-        qreal x = 10.0;
         const qreal cy = logicalH / 2.0;
+        const qreal dotCx = padX + dotR;
 
-        // Red dot / pause glyph (left of label)
-        if (paused) {
-            p.setPen(Qt::NoPen);
-            p.setBrush(QColor(239, 68, 68, 220));
-            p.drawRoundedRect(QRectF(x, cy - 4.5, 2.5, 9.0), 1.0, 1.0);
-            p.drawRoundedRect(QRectF(x + 4.5, cy - 4.5, 2.5, 9.0), 1.0, 1.0);
-            x += 11.0;
-        } else {
-            // Glow halo
-            int halo = qBound(0, static_cast<int>(70 * alpha), 70);
-            p.setPen(Qt::NoPen);
-            p.setBrush(QColor(239, 68, 68, halo));
-            p.drawEllipse(QPointF(x + 5.0, cy), 7.5, 7.5);
-            // Solid red dot
-            int dotAlpha = qBound(120, static_cast<int>(255 * alpha), 255);
-            p.setBrush(QColor(239, 68, 68, dotAlpha));
-            p.drawEllipse(QPointF(x + 5.0, cy), 5.0, 5.0);
-            x += 11.0;
-        }
-
-        // REC label — mockup .rec-label: 10px mono, uppercase, red, letter-spacing: 1
-        QFont labelFont(QStringLiteral("Menlo"));
-        labelFont.setPixelSize(10);
-        labelFont.setWeight(QFont::Bold);
-        labelFont.setLetterSpacing(QFont::AbsoluteSpacing, 1.0);
-        p.setFont(labelFont);
-        p.setPen(paused ? QColor(239, 68, 68, 180) : QColor(239, 68, 68, 255));
-        QString recLabel = paused ? QStringLiteral("PAUSED") : QStringLiteral("REC");
-        QFontMetrics lfm(labelFont);
-        qreal labelW = lfm.horizontalAdvance(recLabel);
-        p.drawText(QRectF(x + 4, 0, labelW + 6, logicalH),
-                   Qt::AlignVCenter | Qt::AlignLeft, recLabel);
-        x += labelW + 10.0;
-
-        // Timer — mockup .rec-time: 16px mono, white, tabular numerals
-        QFont timeFont(QStringLiteral("Menlo"));
-        timeFont.setPixelSize(14);
-        timeFont.setWeight(QFont::DemiBold);
-        p.setFont(timeFont);
-        p.setPen(paused ? QColor(200, 200, 200, 230) : QColor(245, 245, 245, 255));
-        QString timeStr = QStringLiteral("%1:%2")
-            .arg(seconds / 60, 2, 10, QLatin1Char('0'))
-            .arg(seconds % 60, 2, 10, QLatin1Char('0'));
-        QFontMetrics tfm(timeFont);
-        qreal timeW = tfm.horizontalAdvance(timeStr);
-        p.drawText(QRectF(x, 0, timeW + 4, logicalH),
-                   Qt::AlignVCenter | Qt::AlignLeft, timeStr);
-        x += timeW + 8.0;
-
-        // Subtle separator before the control glyphs
-        p.setPen(QPen(QColor(239, 68, 68, 40), 1.0));
-        p.drawLine(QPointF(x, 5.0), QPointF(x, logicalH - 5.0));
-        x += 8.0;
-
-        // Pause / Play glyph — mockup .rec-stop colour (#ff8888)
-        const QColor ctrlColor(255, 136, 136, 230);
         p.setPen(Qt::NoPen);
-        p.setBrush(ctrlColor);
-        qreal pauseCx = x + 5.0;
         if (paused) {
-            QPainterPath tri;
-            tri.moveTo(pauseCx - 3.0, cy - 5.0);
-            tri.lineTo(pauseCx + 4.5, cy);
-            tri.lineTo(pauseCx - 3.0, cy + 5.0);
-            tri.closeSubpath();
-            p.drawPath(tri);
+            // Two short bars in place of the dot — same footprint so the
+            // overall layout doesn't shift when toggling pause.
+            p.setBrush(QColor(255, 150, 150, 230));
+            const qreal barW = 2.6;
+            const qreal barH = 8.0;
+            p.drawRoundedRect(QRectF(dotCx - dotR, cy - barH / 2.0, barW, barH),
+                              0.8, 0.8);
+            p.drawRoundedRect(QRectF(dotCx + dotR - barW, cy - barH / 2.0,
+                                     barW, barH), 0.8, 0.8);
         } else {
-            p.drawRoundedRect(QRectF(pauseCx - 4.0, cy - 5.0, 2.8, 10.0), 1.0, 1.0);
-            p.drawRoundedRect(QRectF(pauseCx + 1.2, cy - 5.0, 2.8, 10.0), 1.0, 1.0);
+            int halo = qBound(0, static_cast<int>(90 * alpha), 90);
+            p.setBrush(QColor(255, 70, 70, halo));
+            p.drawEllipse(QPointF(dotCx, cy), dotR + 2.0, dotR + 2.0);
+            int dotAlpha = qBound(200, static_cast<int>(255 * alpha), 255);
+            p.setBrush(QColor(255, 70, 70, dotAlpha));
+            p.drawEllipse(QPointF(dotCx, cy), dotR, dotR);
         }
-        x += 14.0;
 
-        // Stop glyph — filled square (.rec-stop-icon)
-        p.setBrush(ctrlColor);
-        p.drawRoundedRect(QRectF(x - 1.0, cy - 4.5, 9.0, 9.0), 1.2, 1.2);
+        p.setFont(timeFont);
+        p.setPen(paused ? QColor(220, 220, 220, 240)
+                        : QColor(255, 255, 255, 255));
+        const qreal textX = padX + dotR * 2.0 + gap;
+        p.drawText(QRectF(textX, 0, timeW + 2, logicalH),
+                   Qt::AlignVCenter | Qt::AlignLeft, timeStr);
 
         p.end();
-        return QIcon(pm);
+        // Multi-color (red dot + white text), so render as a regular icon —
+        // template mode would collapse the dot's red into the menu-bar tint.
+        QIcon icon(pm);
+        icon.setIsMask(false);
+        return icon;
     };
 
     qDebug("System tray available: %d", QSystemTrayIcon::isSystemTrayAvailable());
@@ -639,7 +661,7 @@ int main(int argc, char *argv[]) {
             });
         }
 
-        menu->addAction("■ Stop Recording", [&]() {
+        menu->addAction("■ Stop Recording (Cmd+Shift+R)", [&]() {
             recording.stopRecording();
         });
 
@@ -713,6 +735,20 @@ int main(int argc, char *argv[]) {
         tray.setToolTip("Snapforge — Recording");
         refreshPill(1.0);
         pulseTimer->start();
+
+        if (prefs.showClicksEnabled()) {
+            clickOverlay.showOverlay();
+#ifdef Q_OS_MACOS
+            if (!clickTap.start()) {
+                tray.showMessage(
+                    "Snapforge — Click indicator unavailable",
+                    "Grant Input Monitoring permission in System Settings → "
+                    "Privacy & Security to show clicks in recordings.",
+                    QSystemTrayIcon::Warning, 5000);
+                clickOverlay.hideOverlay();
+            }
+#endif
+        }
     });
 
     QObject::connect(&recording, &RecordingManager::recordingStopped,
@@ -721,6 +757,11 @@ int main(int argc, char *argv[]) {
         tray.setIcon(idleIcon);
         tray.setToolTip("Snapforge");
         buildNormalMenu();
+
+#ifdef Q_OS_MACOS
+        clickTap.stop();
+#endif
+        clickOverlay.hideOverlay();
 
         // Copy the finished recording file to the clipboard as a file URL so
         // the user can paste it into Finder, Messages, Slack, etc.
@@ -737,34 +778,71 @@ int main(int argc, char *argv[]) {
     });
 
     // Surface recording failures to the user instead of silently dropping them.
+    // Tray banners get suppressed by Notification Center for unsigned bundles,
+    // so we also pop a modal warning as the source of truth — without it the
+    // failure looks identical to "nothing happened" and the user can't act.
     QObject::connect(&recording, &RecordingManager::recordingError,
                      [&](const QString &message) {
         qWarning("Recording error: %s", qPrintable(message));
         pulseTimer->stop();
         tray.setIcon(idleIcon);
         tray.setToolTip("Snapforge");
+        // Reset the tray menu back to the idle layout — leaving the recording
+        // menu visible after a start-failure makes Stop/Pause clickable for a
+        // recording that never began, which then no-ops confusingly.
+        buildNormalMenu();
+#ifdef Q_OS_MACOS
+        clickTap.stop();
+#endif
+        clickOverlay.hideOverlay();
         tray.showMessage("Snapforge — Recording Failed", message,
                          QSystemTrayIcon::Warning, 5000);
+        // Defer the modal so the recordingError signal completes its delivery
+        // first; opening a blocking dialog inside the slot can re-enter the
+        // event loop while RecordingManager is mid-cleanup.
+        QTimer::singleShot(0, qApp, [message]() {
+            QMessageBox box;
+            box.setIcon(QMessageBox::Warning);
+            box.setWindowTitle(QStringLiteral("Snapforge — Recording Failed"));
+            box.setText(message);
+            box.setInformativeText(QStringLiteral(
+                "Common causes: Screen Recording permission not granted, "
+                "ffmpeg missing from PATH, or selected output folder not writable. "
+                "Open Preferences → Permissions to check, or relaunch Snapforge "
+                "from a terminal to see the underlying error."));
+            box.setStandardButtons(QMessageBox::Ok);
+            box.exec();
+        });
     });
 
 #ifdef Q_OS_MAC
     registerGlobalHotkey();
     QObject::connect(&app, &QCoreApplication::aboutToQuit, []() {
+        // Zero globals BEFORE tearing down the Carbon hotkey registration so
+        // any handler invocation racing with shutdown sees null pointers
+        // instead of stack objects about to be unwound. The hotkey handler
+        // null-checks every global before use.
+        g_overlay = nullptr;
+        g_recording = nullptr;
+        g_history = nullptr;
+        g_prefsRef = nullptr;
         unregisterGlobalHotkeys();
     });
 #endif
 
     int rc = app.exec();
 
-#ifdef Q_OS_MAC
-    // Clear globals so any late-arriving Carbon hotkey event (unlikely after
-    // app.exec returns, but possible during teardown) sees null pointers
-    // instead of dangling stack objects.
+    // Non-mac platforms (and as belt-and-braces for mac if aboutToQuit
+    // somehow didn't fire) — globals are raw pointers to stack objects that
+    // are about to unwind; null them before return.
+    g_prefsRef = nullptr;
+#ifndef Q_OS_MAC
+    // No-op on non-mac builds: the mac-only globals don't exist here.
+#else
     g_overlay = nullptr;
     g_recording = nullptr;
     g_history = nullptr;
 #endif
-    g_prefsRef = nullptr;
 
     return rc;
 }

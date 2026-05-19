@@ -5,7 +5,7 @@
 //! - Caller-owned buffers are allocated here and freed via snapforge_free_buffer.
 //! - String out-params are allocated here and freed via snapforge_free_string.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ffi::{c_char, c_int, c_void, CStr, CString};
 use std::path::{Path, PathBuf};
 use std::ptr;
@@ -30,6 +30,44 @@ fn register_buffer(ptr: *mut u8, len: usize) {
             map.insert(ptr as usize, len);
         }
     }
+}
+
+/// Tracks every live recording handle pointer we've issued so an arbitrary
+/// caller-supplied pointer can be rejected without dereferencing it. This is
+/// the authoritative liveness check; the in-band magic word is a secondary
+/// defense against allocator reuse of a recently-freed slot.
+static HANDLE_REGISTRY: OnceLock<Mutex<HashSet<usize>>> = OnceLock::new();
+
+fn handle_registry() -> &'static Mutex<HashSet<usize>> {
+    HANDLE_REGISTRY.get_or_init(|| Mutex::new(HashSet::new()))
+}
+
+fn register_handle(ptr: *mut c_void) {
+    if !ptr.is_null() {
+        if let Ok(mut set) = handle_registry().lock() {
+            set.insert(ptr as usize);
+        }
+    }
+}
+
+fn unregister_handle(ptr: *mut c_void) -> bool {
+    if ptr.is_null() {
+        return false;
+    }
+    handle_registry()
+        .lock()
+        .map(|mut set| set.remove(&(ptr as usize)))
+        .unwrap_or(false)
+}
+
+fn is_registered_handle(ptr: *mut c_void) -> bool {
+    if ptr.is_null() {
+        return false;
+    }
+    handle_registry()
+        .lock()
+        .map(|set| set.contains(&(ptr as usize)))
+        .unwrap_or(false)
 }
 
 fn set_recording_error(msg: impl Into<String>) {
@@ -369,15 +407,43 @@ struct FfiRecordingHandle {
 }
 
 impl FfiRecordingHandle {
-    /// Lock the inner mutex, recovering automatically if the record thread
-    /// panicked (which would otherwise poison the mutex and hand back UB to C).
-    fn lock_recording(&self) -> MutexGuard<'_, Option<RecordingHandle>> {
-        self.inner.lock().unwrap_or_else(|e| e.into_inner())
+    /// Lock the inner mutex. If the recording thread panicked while holding
+    /// the lock, the inner state is in an unknown half-mutated condition;
+    /// touching it further could trigger UB (e.g. double-dropping a partially
+    /// initialised ffmpeg stdin pipe). Mark the handle dead so subsequent FFI
+    /// calls reject it and a later free leaks the allocation rather than
+    /// running Drop on broken state.
+    fn lock_recording(&self) -> Option<MutexGuard<'_, Option<RecordingHandle>>> {
+        match self.inner.lock() {
+            Ok(g) => Some(g),
+            Err(_) => {
+                set_recording_error("recording thread panicked");
+                // SAFETY: write_volatile of a u64 is a single-store on all
+                // supported platforms. Even if another FFI thread races, the
+                // worst outcome is two writers writing the same DEAD value.
+                unsafe {
+                    let p = self as *const Self as *mut Self;
+                    std::ptr::write_volatile(
+                        std::ptr::addr_of_mut!((*p).magic),
+                        HANDLE_MAGIC_DEAD,
+                    );
+                }
+                None
+            }
+        }
     }
 }
 
-/// Validate a caller-supplied recording handle pointer. Returns a reference
-/// only when the in-band magic matches; otherwise logs and returns `None`.
+/// Validate a caller-supplied recording handle pointer.
+///
+/// Verification order:
+///   1. Reject NULL and obviously-bogus low-address pointers (null page).
+///   2. Reject pointers we never issued (via `HANDLE_REGISTRY`) — this is the
+///      only safe check for arbitrary attacker-supplied pointers, since the
+///      magic-word read would otherwise UB on freed/unmapped memory.
+///   3. Verify the in-band magic word, which catches use-after-free on a slot
+///      we issued and then freed (the registry would still hold the address
+///      if there's a UAF race; the dead magic catches that).
 ///
 /// # Safety
 ///
@@ -385,6 +451,23 @@ impl FfiRecordingHandle {
 /// borrows from `handle` for the FFI call's lifetime.
 unsafe fn check_recording_handle<'a>(handle: *mut c_void) -> Option<&'a FfiRecordingHandle> {
     if handle.is_null() {
+        return None;
+    }
+    // Null page guard — any address below one page is definitely not a valid
+    // allocation. Cheap protection against C callers passing small integers
+    // (errno values, enum tags) by mistake.
+    if (handle as usize) < 4096 {
+        eprintln!(
+            "[snapforge] recording handle {:p} below null page; rejecting",
+            handle
+        );
+        return None;
+    }
+    if !is_registered_handle(handle) {
+        eprintln!(
+            "[snapforge] recording handle {:p} not in live-handle registry; rejecting",
+            handle
+        );
         return None;
     }
     let p = handle.cast::<FfiRecordingHandle>();
@@ -506,7 +589,9 @@ pub unsafe extern "C" fn snapforge_start_recording(config_json: *const c_char) -
                 magic: HANDLE_MAGIC_ALIVE,
                 inner: Mutex::new(Some(handle)),
             });
-            Box::into_raw(wrapper).cast::<c_void>()
+            let raw = Box::into_raw(wrapper).cast::<c_void>();
+            register_handle(raw);
+            raw
         }
         Err(e) => {
             set_recording_error(e.to_string());
@@ -527,7 +612,11 @@ pub unsafe extern "C" fn snapforge_stop_recording(handle: *mut c_void) -> c_int 
     let Some(wrapper) = check_recording_handle(handle) else {
         return -1;
     };
-    let taken = wrapper.lock_recording().take();
+    let Some(mut guard) = wrapper.lock_recording() else {
+        return -1;
+    };
+    let taken = guard.take();
+    drop(guard);
     match taken {
         Some(h) => match h.stop() {
             Ok(()) => 0,
@@ -551,7 +640,9 @@ pub unsafe extern "C" fn snapforge_pause_recording(handle: *mut c_void) -> c_int
     let Some(wrapper) = check_recording_handle(handle) else {
         return -1;
     };
-    let guard = wrapper.lock_recording();
+    let Some(guard) = wrapper.lock_recording() else {
+        return -1;
+    };
     match guard.as_ref() {
         Some(h) => {
             h.pause();
@@ -571,7 +662,9 @@ pub unsafe extern "C" fn snapforge_resume_recording(handle: *mut c_void) -> c_in
     let Some(wrapper) = check_recording_handle(handle) else {
         return -1;
     };
-    let guard = wrapper.lock_recording();
+    let Some(guard) = wrapper.lock_recording() else {
+        return -1;
+    };
     match guard.as_ref() {
         Some(h) => {
             h.resume();
@@ -610,7 +703,9 @@ pub unsafe extern "C" fn snapforge_is_recording(handle: *mut c_void) -> c_int {
     let Some(wrapper) = check_recording_handle(handle) else {
         return 0;
     };
-    let guard = wrapper.lock_recording();
+    let Some(guard) = wrapper.lock_recording() else {
+        return 0;
+    };
     match guard.as_ref() {
         Some(h) => c_int::from(h.is_running()),
         None => 0,
@@ -629,11 +724,39 @@ pub unsafe extern "C" fn snapforge_free_recording_handle(handle: *mut c_void) {
     if handle.is_null() {
         return;
     }
+    if (handle as usize) < 4096 {
+        eprintln!(
+            "[snapforge] free_recording_handle: pointer {:p} below null page; ignoring",
+            handle
+        );
+        return;
+    }
+    // Authoritative liveness check — refuse to touch a pointer we never
+    // issued. Also removes it from the registry so a double-free is rejected.
+    if !unregister_handle(handle) {
+        eprintln!(
+            "[snapforge] free_recording_handle: pointer {:p} not in live-handle registry (double-free, foreign pointer, or post-poison free); ignoring",
+            handle
+        );
+        return;
+    }
     let p = handle.cast::<FfiRecordingHandle>();
     let magic = std::ptr::read_volatile(std::ptr::addr_of!((*p).magic));
+    if magic == HANDLE_MAGIC_DEAD {
+        // Marked dead by poisoned-mutex recovery in `lock_recording`. Inner
+        // state is in an unknown half-mutated condition — leak the allocation
+        // rather than run Drop and risk UB. The leak is bounded by the number
+        // of recordings whose worker thread panicked, which should be zero in
+        // practice.
+        eprintln!(
+            "[snapforge] free_recording_handle: pointer {:p} previously poisoned; leaking",
+            handle
+        );
+        return;
+    }
     if magic != HANDLE_MAGIC_ALIVE {
         eprintln!(
-            "[snapforge] free_recording_handle: stale or invalid pointer {:p} (magic 0x{:016x}); ignoring",
+            "[snapforge] free_recording_handle: pointer {:p} has corrupted magic 0x{:016x}; leaking",
             handle, magic
         );
         return;

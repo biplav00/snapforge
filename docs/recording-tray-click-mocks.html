@@ -1,0 +1,659 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Snapforge — Recording tray icon + click action mocks</title>
+<style>
+  :root {
+    --bg: #0e0e10;
+    --card: #1a1a1d;
+    --line: #2a2a2f;
+    --text: #e8e8ea;
+    --muted: #8a8a90;
+    --red: #ff4d4d;
+    --red-deep: #c41a1a;
+    --menubar: #1d1d1f;
+    --menu-bg: #2a2a2dee;
+    --menu-hover: #3a82f6;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    background: var(--bg); color: var(--text); margin: 0; padding: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", sans-serif;
+  }
+  header { padding: 36px 48px 8px; border-bottom: 1px solid var(--line); }
+  header h1 { margin: 0; font-size: 22px; font-weight: 600; letter-spacing: -0.02em; }
+  header p  { margin: 6px 0 0; color: var(--muted); font-size: 13px; max-width: 760px; line-height: 1.5; }
+
+  main {
+    padding: 28px 48px 64px;
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 22px;
+  }
+
+  .card {
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    padding: 18px 22px 22px;
+  }
+  .head {
+    display: flex; align-items: baseline; gap: 12px; margin-bottom: 12px;
+  }
+  .num {
+    color: var(--muted); font-size: 11px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: 0.05em;
+  }
+  .name { font-size: 14px; font-weight: 600; }
+  .desc { font-size: 12px; color: var(--muted); margin-top: 2px; max-width: 640px; line-height: 1.45; }
+
+  .stage {
+    display: grid;
+    grid-template-columns: 1fr 220px;
+    gap: 24px;
+    align-items: start;
+    margin-top: 14px;
+  }
+
+  /* ---- Menu bar mock ---- */
+  .menubar {
+    height: 28px;
+    background: linear-gradient(180deg, #232326, #1a1a1c);
+    border: 1px solid #000;
+    border-radius: 8px 8px 0 0;
+    display: flex; align-items: center; justify-content: flex-end;
+    padding: 0 10px; gap: 14px;
+    color: #d8d8da; font-size: 12px;
+    position: relative;
+  }
+  .menubar .sys {
+    display: flex; gap: 14px; align-items: center; color: #c8c8cc; font-size: 11px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  .menubar .slot {
+    margin-right: auto;
+    display: flex; align-items: center; gap: 18px;
+    color: #d8d8da; font-size: 12px;
+  }
+  .menubar .slot .app { font-weight: 700; }
+  .menubar .tray-slot {
+    display: inline-flex; align-items: center;
+    padding: 0 8px; height: 22px; border-radius: 6px;
+    cursor: pointer;
+  }
+  .menubar .tray-slot.active { background: rgba(255,255,255,0.08); }
+
+  .desktop {
+    background:
+      radial-gradient(ellipse at 30% 20%, #1a3a6a 0%, #0a1530 70%);
+    border: 1px solid #000;
+    border-top: none;
+    border-radius: 0 0 8px 8px;
+    min-height: 220px;
+    padding: 12px;
+    position: relative;
+    overflow: hidden;
+  }
+
+  /* ---- Dropdown menu (macOS NSMenu style) ---- */
+  .dropdown {
+    position: absolute;
+    right: 12px;
+    top: 8px;
+    width: 220px;
+    background: var(--menu-bg);
+    backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px);
+    border: 1px solid rgba(255,255,255,0.12);
+    border-radius: 8px;
+    padding: 4px;
+    box-shadow: 0 12px 30px rgba(0,0,0,0.55);
+    font-size: 13px;
+    color: #fff;
+  }
+  .dropdown .item {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 5px 10px; border-radius: 4px;
+    line-height: 1.3;
+  }
+  .dropdown .item .kbd {
+    color: rgba(255,255,255,0.55); font-size: 11px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  .dropdown .item.disabled { color: rgba(255,255,255,0.55); font-weight: 600; }
+  .dropdown .item.hover { background: var(--menu-hover); color: #fff; }
+  .dropdown .sep { height: 1px; background: rgba(255,255,255,0.10); margin: 4px 6px; }
+  .dropdown .glyph { width: 14px; display: inline-block; text-align: center; margin-right: 4px; }
+
+  /* ---- Side panel: click action description ---- */
+  .actions {
+    background: #111114;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 14px;
+    font-size: 12px; color: var(--muted); line-height: 1.5;
+  }
+  .actions h4 { margin: 0 0 6px; color: var(--text); font-size: 12px; font-weight: 600; letter-spacing: 0.02em; }
+  .actions ul { margin: 0 0 8px 16px; padding: 0; }
+  .actions li { margin: 2px 0; }
+  .actions code {
+    background: #000; padding: 1px 5px; border-radius: 3px;
+    color: #ffb4b4; font-size: 11px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+
+  /* ---- Common pill primitives ---- */
+  .pill {
+    display: inline-flex; align-items: center;
+    height: 22px; padding: 0 10px; gap: 8px;
+    border-radius: 999px;
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    font-size: 12px; font-weight: 700; letter-spacing: 0.02em;
+    color: #fff; line-height: 1; white-space: nowrap;
+  }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--red); flex-shrink: 0; }
+  .time { font-variant-numeric: tabular-nums; }
+  .pulse { animation: pulse 1s ease-in-out infinite alternate; }
+  @keyframes pulse { from { opacity: 0.35 } to { opacity: 1 } }
+
+  .icon-btn { display: inline-flex; align-items: center; justify-content: center; opacity: 0.85; }
+  .icon-btn svg { display: block; }
+
+  /* ---- D1: Current — dot + REC + time + pause + stop ---- */
+  .d1 { background: #000; border: 1px solid var(--red); }
+  .d1 .rec { color: var(--red); }
+
+  /* ---- D2: Minimal — pulsing dot + time only ---- */
+  .d2 { background: transparent; padding: 0 4px; gap: 6px; color: #e8e8ea; border: none; }
+  .d2 .dot { width: 8px; height: 8px; }
+
+  /* ---- D3: Solid red chip — high contrast ---- */
+  .d3 { background: linear-gradient(180deg, #ff5050, #c91a1a); border: 1px solid #8a0d0d; }
+  .d3 .dot { background: #fff; box-shadow: 0 0 6px #fff8; }
+
+  /* ---- D4: Waveform bars + time ---- */
+  .d4 { background: #0c0c0e; border: 1px solid #2a2a2f; }
+  .d4 .eq { display: inline-flex; align-items: end; gap: 2px; height: 14px; flex-shrink: 0; }
+  .d4 .eq i { width: 2.5px; background: var(--red); border-radius: 1px;
+    animation: eq 0.8s ease-in-out infinite alternate; }
+  .d4 .eq i:nth-child(1) { height: 60%; }
+  .d4 .eq i:nth-child(2) { height: 100%; animation-delay: 0.15s; }
+  .d4 .eq i:nth-child(3) { height: 40%; animation-delay: 0.3s; }
+  .d4 .eq i:nth-child(4) { height: 85%; animation-delay: 0.45s; }
+  @keyframes eq { from { transform: scaleY(0.35); } to { transform: scaleY(1); } }
+
+  /* ---- D5: Progress ring + time (segmented by minute) ---- */
+  .d5 { background: #18181b; border: 1px solid #353540; padding: 0 8px; gap: 7px; }
+  .d5 .ring {
+    width: 14px; height: 14px; border-radius: 50%;
+    background:
+      conic-gradient(var(--red) 0 220deg, #444 220deg 360deg);
+    position: relative; flex-shrink: 0;
+  }
+  .d5 .ring::after {
+    content: ""; position: absolute; inset: 3px;
+    background: #18181b; border-radius: 50%;
+  }
+
+  /* ---- D6: Inline controls — pause | time | stop, no REC text ---- */
+  .d6 { background: #1a1a1d; border: 1px solid #3a3a40; padding: 0 4px 0 6px; gap: 6px; }
+  .d6 .dot { width: 7px; height: 7px; }
+  .d6 .ctl {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 18px; height: 18px; border-radius: 4px;
+    color: #d8d8da;
+  }
+  .d6 .ctl:hover { background: rgba(255,255,255,0.10); }
+  .d6 .ctl.stop { color: var(--red); }
+
+  /* ---- D7: Cassette tape — twin reels + time ---- */
+  .d7 { background: #161616; border: 1px solid #444; padding: 0 9px; gap: 6px; }
+  .d7 .reel { width: 12px; height: 12px; border-radius: 50%;
+    background: radial-gradient(circle, #2a2a2a 30%, #888 32% 60%, #ccc 62%);
+    border: 1px solid #999; flex-shrink: 0;
+    animation: spin 2s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* ---- D8: Heartbeat — sweeping line ---- */
+  .d8 { background: #0a0a0c; border: 1px solid #2a2a30; gap: 8px; padding: 0 10px; }
+  .d8 .ekg {
+    width: 44px; height: 14px;
+    background: linear-gradient(90deg, transparent 0%, transparent 100%);
+    position: relative; overflow: hidden;
+  }
+  .d8 .ekg svg { position: absolute; inset: 0; }
+  .d8 .ekg svg path { stroke: var(--red); stroke-width: 1.5; fill: none; }
+  .d8 .ekg::after {
+    content: ""; position: absolute; top: 0; bottom: 0; width: 14px;
+    background: linear-gradient(90deg, transparent, rgba(255,77,77,0.6), transparent);
+    animation: sweep 1.4s linear infinite;
+  }
+  @keyframes sweep { from { left: -14px; } to { left: 100%; } }
+
+  @media print {
+    html, body { background: #fff; color: #111; }
+    .card { background: #fafafa; border: 1px solid #ddd; }
+    .desc, .num, .actions { color: #555; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>Snapforge — Recording tray icon + click action</h1>
+  <p>Eight design directions for the menu-bar pill shown while a screen recording is in progress.
+     Each card pairs the resting pill (left, inside a mock menu bar) with its click-action dropdown
+     (right, the NSMenu that appears on click). The side panel describes interaction semantics
+     and what differs from today's pill (D1 baseline).</p>
+</header>
+
+<main>
+
+<!-- ============ D1: Current baseline ============ -->
+<div class="card">
+  <div class="head">
+    <span class="num">D1</span>
+    <div>
+      <div class="name">Classic — dot · REC · time · pause · stop</div>
+      <div class="desc">Today's shipping pill. All controls inline. Click anywhere on the pill opens the
+        dropdown; ⏸ and ■ glyphs hint at the menu items but are not directly clickable in the menu bar.</div>
+    </div>
+  </div>
+  <div class="stage">
+    <div>
+      <div class="menubar">
+        <span class="slot"><span class="app">Snapforge</span> File  Edit  View  Window  Help</span>
+        <span class="tray-slot active">
+          <span class="pill d1">
+            <span class="dot pulse"></span>
+            <span class="rec">REC</span>
+            <span class="time">00:42</span>
+            <span class="icon-btn">⏸</span>
+            <span class="icon-btn">■</span>
+          </span>
+        </span>
+        <span class="sys">100% ▮  Thu 4:21 PM</span>
+      </div>
+      <div class="desktop">
+        <div class="dropdown">
+          <div class="item disabled">● Recording...</div>
+          <div class="sep"></div>
+          <div class="item"><span><span class="glyph">⏸</span>Pause Recording</span></div>
+          <div class="item hover"><span><span class="glyph">■</span>Stop Recording</span></div>
+          <div class="sep"></div>
+          <div class="item"><span>History</span><span class="kbd">⌘⇧H</span></div>
+          <div class="item"><span>Preferences</span></div>
+          <div class="sep"></div>
+          <div class="item"><span>Quit</span><span class="kbd">⌘Q</span></div>
+        </div>
+      </div>
+    </div>
+    <div class="actions">
+      <h4>Click action</h4>
+      <ul>
+        <li>Single click → menu drops down anchored to pill.</li>
+        <li>Disabled <code>● Recording...</code> header shows live state.</li>
+        <li>Pause/Stop swap with Resume when paused.</li>
+      </ul>
+      <h4>Notes</h4>
+      <ul>
+        <li>Widest of the eight (~110px). Slot-conflict risk on narrow notch displays.</li>
+      </ul>
+    </div>
+  </div>
+</div>
+
+<!-- ============ D2: Minimal ============ -->
+<div class="card">
+  <div class="head">
+    <span class="num">D2</span>
+    <div>
+      <div class="name">Minimal — pulsing dot + time</div>
+      <div class="desc">Strips REC text and inline controls. Relies on the dropdown for all actions.
+        Saves ~50px of menu-bar space and reads as "just a timer".</div>
+    </div>
+  </div>
+  <div class="stage">
+    <div>
+      <div class="menubar">
+        <span class="slot"><span class="app">Snapforge</span> File  Edit  View  Window  Help</span>
+        <span class="tray-slot">
+          <span class="pill d2">
+            <span class="dot pulse"></span>
+            <span class="time">00:42</span>
+          </span>
+        </span>
+        <span class="sys">100% ▮  Thu 4:21 PM</span>
+      </div>
+      <div class="desktop">
+        <div class="dropdown">
+          <div class="item disabled">● Recording — 00:42</div>
+          <div class="sep"></div>
+          <div class="item hover"><span><span class="glyph">⏸</span>Pause</span><span class="kbd">⌘⇧P</span></div>
+          <div class="item"><span><span class="glyph">■</span>Stop &amp; Save</span><span class="kbd">⌘⇧R</span></div>
+          <div class="item"><span><span class="glyph">✕</span>Discard</span></div>
+          <div class="sep"></div>
+          <div class="item"><span>History</span><span class="kbd">⌘⇧H</span></div>
+          <div class="item"><span>Preferences</span></div>
+          <div class="sep"></div>
+          <div class="item"><span>Quit</span><span class="kbd">⌘Q</span></div>
+        </div>
+      </div>
+    </div>
+    <div class="actions">
+      <h4>Click action</h4>
+      <ul>
+        <li>Click → dropdown with full action set.</li>
+        <li>Added <code>Discard</code> since stop alone is no longer one-click.</li>
+        <li>Live duration mirrored in disabled header.</li>
+      </ul>
+      <h4>Notes</h4>
+      <ul>
+        <li>Compact. Loses one-glance "this is Snapforge recording" signal.</li>
+      </ul>
+    </div>
+  </div>
+</div>
+
+<!-- ============ D3: Solid red chip ============ -->
+<div class="card">
+  <div class="head">
+    <span class="num">D3</span>
+    <div>
+      <div class="name">Solid red chip — maximum visibility</div>
+      <div class="desc">Hard-to-miss when sharing screen. Red fill instead of red accent. Stop button
+        prominent on right of dropdown.</div>
+    </div>
+  </div>
+  <div class="stage">
+    <div>
+      <div class="menubar">
+        <span class="slot"><span class="app">Snapforge</span> File  Edit  View  Window  Help</span>
+        <span class="tray-slot">
+          <span class="pill d3">
+            <span class="dot pulse"></span>
+            <span>REC 00:42</span>
+          </span>
+        </span>
+        <span class="sys">100% ▮  Thu 4:21 PM</span>
+      </div>
+      <div class="desktop">
+        <div class="dropdown">
+          <div class="item disabled">● Recording — 00:42</div>
+          <div class="sep"></div>
+          <div class="item"><span><span class="glyph">⏸</span>Pause Recording</span></div>
+          <div class="item hover"><span><span class="glyph">■</span>Stop Recording</span><span class="kbd">⌘⇧R</span></div>
+          <div class="sep"></div>
+          <div class="item"><span>History</span><span class="kbd">⌘⇧H</span></div>
+          <div class="item"><span>Preferences</span></div>
+          <div class="sep"></div>
+          <div class="item"><span>Quit</span><span class="kbd">⌘Q</span></div>
+        </div>
+      </div>
+    </div>
+    <div class="actions">
+      <h4>Click action</h4>
+      <ul>
+        <li>Click → standard dropdown.</li>
+        <li>Self-evident on bright/light desktops where black pill blends in.</li>
+      </ul>
+      <h4>Notes</h4>
+      <ul>
+        <li>May feel loud during long recordings. Consider dimming after 30s.</li>
+      </ul>
+    </div>
+  </div>
+</div>
+
+<!-- ============ D4: Waveform ============ -->
+<div class="card">
+  <div class="head">
+    <span class="num">D4</span>
+    <div>
+      <div class="name">Waveform — animated bars + time</div>
+      <div class="desc">Equalizer bars communicate liveness (and hint at audio capture). Quieter color
+        than D3. Bars freeze when paused.</div>
+    </div>
+  </div>
+  <div class="stage">
+    <div>
+      <div class="menubar">
+        <span class="slot"><span class="app">Snapforge</span> File  Edit  View  Window  Help</span>
+        <span class="tray-slot">
+          <span class="pill d4">
+            <span class="eq"><i></i><i></i><i></i><i></i></span>
+            <span class="time">00:42</span>
+          </span>
+        </span>
+        <span class="sys">100% ▮  Thu 4:21 PM</span>
+      </div>
+      <div class="desktop">
+        <div class="dropdown">
+          <div class="item disabled">● Recording — audio on</div>
+          <div class="sep"></div>
+          <div class="item"><span><span class="glyph">⏸</span>Pause Recording</span></div>
+          <div class="item"><span><span class="glyph">🎙</span>Mute Mic</span></div>
+          <div class="item hover"><span><span class="glyph">■</span>Stop Recording</span><span class="kbd">⌘⇧R</span></div>
+          <div class="sep"></div>
+          <div class="item"><span>History</span><span class="kbd">⌘⇧H</span></div>
+          <div class="item"><span>Preferences</span></div>
+          <div class="sep"></div>
+          <div class="item"><span>Quit</span><span class="kbd">⌘Q</span></div>
+        </div>
+      </div>
+    </div>
+    <div class="actions">
+      <h4>Click action</h4>
+      <ul>
+        <li>Click → dropdown. Adds <code>Mute Mic</code> toggle (cheap since waveform implies audio).</li>
+      </ul>
+      <h4>Notes</h4>
+      <ul>
+        <li>Constant motion can be distracting. Use 0.8s cycle, low amplitude.</li>
+      </ul>
+    </div>
+  </div>
+</div>
+
+<!-- ============ D5: Progress ring ============ -->
+<div class="card">
+  <div class="head">
+    <span class="num">D5</span>
+    <div>
+      <div class="name">Progress ring — minute-segment sweep + time</div>
+      <div class="desc">Ring fills 0→360° each minute, then resets. Glanceable "how long so far"
+        without parsing digits. Pairs with elapsed time string.</div>
+    </div>
+  </div>
+  <div class="stage">
+    <div>
+      <div class="menubar">
+        <span class="slot"><span class="app">Snapforge</span> File  Edit  View  Window  Help</span>
+        <span class="tray-slot">
+          <span class="pill d5">
+            <span class="ring"></span>
+            <span class="time">00:42</span>
+          </span>
+        </span>
+        <span class="sys">100% ▮  Thu 4:21 PM</span>
+      </div>
+      <div class="desktop">
+        <div class="dropdown">
+          <div class="item disabled">● Recording — 00:42</div>
+          <div class="sep"></div>
+          <div class="item"><span><span class="glyph">⏸</span>Pause Recording</span></div>
+          <div class="item hover"><span><span class="glyph">■</span>Stop Recording</span><span class="kbd">⌘⇧R</span></div>
+          <div class="item"><span><span class="glyph">⏱</span>Set Max Duration…</span></div>
+          <div class="sep"></div>
+          <div class="item"><span>History</span><span class="kbd">⌘⇧H</span></div>
+          <div class="item"><span>Preferences</span></div>
+          <div class="sep"></div>
+          <div class="item"><span>Quit</span><span class="kbd">⌘Q</span></div>
+        </div>
+      </div>
+    </div>
+    <div class="actions">
+      <h4>Click action</h4>
+      <ul>
+        <li>Click → dropdown. Ring affordance suggests <code>Set Max Duration…</code> entry.</li>
+        <li>If max set, ring shows progress toward limit instead of per-minute.</li>
+      </ul>
+    </div>
+  </div>
+</div>
+
+<!-- ============ D6: Inline controls ============ -->
+<div class="card">
+  <div class="head">
+    <span class="num">D6</span>
+    <div>
+      <div class="name">Inline controls — pause &amp; stop are real buttons</div>
+      <div class="desc">⏸ and ■ become actual hit targets in the menu bar (no dropdown needed for the
+        common case). Click on time-area opens the dropdown for everything else.</div>
+    </div>
+  </div>
+  <div class="stage">
+    <div>
+      <div class="menubar">
+        <span class="slot"><span class="app">Snapforge</span> File  Edit  View  Window  Help</span>
+        <span class="tray-slot">
+          <span class="pill d6">
+            <span class="dot pulse"></span>
+            <span class="time">00:42</span>
+            <span class="ctl">⏸</span>
+            <span class="ctl stop">■</span>
+          </span>
+        </span>
+        <span class="sys">100% ▮  Thu 4:21 PM</span>
+      </div>
+      <div class="desktop">
+        <div class="dropdown">
+          <div class="item disabled">● Recording — 00:42</div>
+          <div class="sep"></div>
+          <div class="item"><span><span class="glyph">↺</span>Restart Recording</span></div>
+          <div class="item hover"><span><span class="glyph">✕</span>Discard &amp; Stop</span></div>
+          <div class="sep"></div>
+          <div class="item"><span>History</span><span class="kbd">⌘⇧H</span></div>
+          <div class="item"><span>Preferences</span></div>
+          <div class="sep"></div>
+          <div class="item"><span>Quit</span><span class="kbd">⌘Q</span></div>
+        </div>
+      </div>
+    </div>
+    <div class="actions">
+      <h4>Click action</h4>
+      <ul>
+        <li>Click ⏸ → pause/resume directly (no menu).</li>
+        <li>Click ■ → stop &amp; save directly.</li>
+        <li>Click dot/time → dropdown with secondary actions only.</li>
+      </ul>
+      <h4>Notes</h4>
+      <ul>
+        <li>Requires multiple NSStatusItems or a custom view (NSStatusBarButton with regions).</li>
+        <li>Highest interaction efficiency. Highest implementation cost.</li>
+      </ul>
+    </div>
+  </div>
+</div>
+
+<!-- ============ D7: Cassette ============ -->
+<div class="card">
+  <div class="head">
+    <span class="num">D7</span>
+    <div>
+      <div class="name">Cassette — twin spinning reels + time</div>
+      <div class="desc">Skeuomorphic. Reels stop spinning when paused — instant visual feedback for state.
+        Playful but unmistakable.</div>
+    </div>
+  </div>
+  <div class="stage">
+    <div>
+      <div class="menubar">
+        <span class="slot"><span class="app">Snapforge</span> File  Edit  View  Window  Help</span>
+        <span class="tray-slot">
+          <span class="pill d7">
+            <span class="reel"></span>
+            <span class="time">00:42</span>
+            <span class="reel"></span>
+          </span>
+        </span>
+        <span class="sys">100% ▮  Thu 4:21 PM</span>
+      </div>
+      <div class="desktop">
+        <div class="dropdown">
+          <div class="item disabled">● Recording — 00:42</div>
+          <div class="sep"></div>
+          <div class="item"><span><span class="glyph">⏸</span>Pause Recording</span></div>
+          <div class="item hover"><span><span class="glyph">■</span>Stop Recording</span><span class="kbd">⌘⇧R</span></div>
+          <div class="sep"></div>
+          <div class="item"><span>History</span><span class="kbd">⌘⇧H</span></div>
+          <div class="item"><span>Preferences</span></div>
+          <div class="sep"></div>
+          <div class="item"><span>Quit</span><span class="kbd">⌘Q</span></div>
+        </div>
+      </div>
+    </div>
+    <div class="actions">
+      <h4>Click action</h4>
+      <ul>
+        <li>Click → standard dropdown.</li>
+        <li>Reel-spin animation = recording. Reel-frozen = paused. No extra glyph needed.</li>
+      </ul>
+    </div>
+  </div>
+</div>
+
+<!-- ============ D8: Heartbeat ============ -->
+<div class="card">
+  <div class="head">
+    <span class="num">D8</span>
+    <div>
+      <div class="name">Heartbeat — EKG sweep + time</div>
+      <div class="desc">Single sweeping red line, no spinning. Reads as "live signal". Less busy than
+        waveform but still clearly active.</div>
+    </div>
+  </div>
+  <div class="stage">
+    <div>
+      <div class="menubar">
+        <span class="slot"><span class="app">Snapforge</span> File  Edit  View  Window  Help</span>
+        <span class="tray-slot">
+          <span class="pill d8">
+            <span class="ekg">
+              <svg viewBox="0 0 44 14" preserveAspectRatio="none">
+                <path d="M0 7 L8 7 L11 2 L14 12 L17 4 L20 10 L23 7 L44 7" />
+              </svg>
+            </span>
+            <span class="time">00:42</span>
+          </span>
+        </span>
+        <span class="sys">100% ▮  Thu 4:21 PM</span>
+      </div>
+      <div class="desktop">
+        <div class="dropdown">
+          <div class="item disabled">● Recording — 00:42</div>
+          <div class="sep"></div>
+          <div class="item"><span><span class="glyph">⏸</span>Pause Recording</span></div>
+          <div class="item hover"><span><span class="glyph">■</span>Stop Recording</span><span class="kbd">⌘⇧R</span></div>
+          <div class="item"><span><span class="glyph">⚑</span>Mark Moment</span></div>
+          <div class="sep"></div>
+          <div class="item"><span>History</span><span class="kbd">⌘⇧H</span></div>
+          <div class="item"><span>Preferences</span></div>
+          <div class="sep"></div>
+          <div class="item"><span>Quit</span><span class="kbd">⌘Q</span></div>
+        </div>
+      </div>
+    </div>
+    <div class="actions">
+      <h4>Click action</h4>
+      <ul>
+        <li>Click → dropdown. EKG metaphor pairs naturally with a <code>Mark Moment</code> entry that
+          inserts a chapter marker into the recording timeline.</li>
+      </ul>
+    </div>
+  </div>
+</div>
+
+</main>
+</body>
+</html>
