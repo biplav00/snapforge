@@ -5,7 +5,7 @@ End-to-end: from hotkey to file on disk.
 ## Sequence
 
 ```
-User                Qt main thread          RecordingManager       FFI                 snapforge-core          ffmpeg child
+User                Qt main thread          RecordingManager       FFI                 snapforge-app/encode    ffmpeg child
  │                       │                       │                  │                       │                      │
  │── Cmd+Shift+R ───────►│                       │                  │                       │                      │
  │                       │── activateForRecording                   │                       │                      │
@@ -38,7 +38,7 @@ User                Qt main thread          RecordingManager       FFI          
 
 ## Inputs (RecordConfig JSON)
 
-Built in `qt/src/RecordingManager.cpp` from prefs + user selection:
+Built in `qt/src/capture/RecordingManager.cpp` from prefs + user selection:
 
 ```json
 {
@@ -48,13 +48,16 @@ Built in `qt/src/RecordingManager.cpp` from prefs + user selection:
   "format": "mp4",       // or "gif"
   "fps": 30,             // 10/15/24/30/60
   "quality": "medium",   // low/medium/high
-  "ffmpeg_path": null    // null = use bundled
+  "ffmpeg_path": null,   // null = use bundled
+  "add_to_history_on_stop": true
 }
 ```
 
+The `add_to_history_on_stop` flag tells `snapforge-app::recording` to add the finished file to the history index inside Rust on a successful stop — Qt no longer calls a separate `snapforge_history_add` (that primitive was deleted in Phase 2D).
+
 ## ffmpeg invocation
 
-Built in `crates/snapforge-core/src/record/ffmpeg.rs`. Shape:
+Built in `crates/snapforge-encode/src/record/ffmpeg.rs`. Shape:
 
 ```
 ffmpeg -y -f rawvideo -pix_fmt rgba -s WxH -r FPS -i pipe:0 \
@@ -80,7 +83,7 @@ Frames are read from ScreenCaptureKit in the capture worker thread and written t
 | SCK capture fails | `RecordError::CaptureFailed` | Same |
 | Bad config JSON | `LAST_APP_ERROR` set, NULL handle | Modal via `recordingError` signal (read via `snapforge_app_last_error`) |
 
-All paths go through the `recordingError` signal in `RecordingManager`, handled by `main.cpp` which resets tray + pops modal.
+All paths go through the `recordingError` signal in `RecordingManager`, handled by `RecordingController` (wired in `main.cpp`) which resets tray + pops the deferred `QMessageBox`.
 
 ## File output
 

@@ -10,12 +10,12 @@ The single old `snapforge-core` crate has been split into focused crates plus a 
 
 | Crate | Purpose | Key items |
 |-------|---------|-----------|
-| `crates/snapforge-domain` | Value types shared by every layer (no I/O). | `Rect`, `CaptureFormat` |
-| `crates/snapforge-capture` | Screen capture backends. | `capture::capture_fullscreen`, `capture::capture_region`, `display_count`, `has/request_permission`, `display_at_point`, `display_scale_factor` |
+| `crates/snapforge-domain` | Value types shared by every layer (no I/O). | `Rect`, `CaptureFormat`, `LastRegion` |
+| `crates/snapforge-capture` | Screen capture backends + global click tap. | `capture::capture_fullscreen`, `capture::capture_region`, `display_count`, `has/request_permission`, `display_at_point`, `display_scale_factor`, `clicks::macos_tap` (CGEventTap on its own CFRunLoop thread; tracks left + right via the `right_click: bool` field) |
 | `crates/snapforge-encode` | Image and video encoding. | `format::save_image`, `format::encode_image`, `record::ffmpeg::{start_recording, RecordingHandle}`, `record::RecordConfig` |
 | `crates/snapforge-storage` | Persistent I/O — config, clipboard, history. | `clipboard::copy_image_to_clipboard`, `config::AppConfig`, `history::ScreenshotHistory`, `history::is_incomplete_mp4` |
-| `crates/snapforge-core` | Facade that re-exports the above. Kept for in-tree call sites that haven't been migrated yet. | re-exports |
-| `crates/snapforge-app` | High-level use cases — orchestrate the leaf crates into single end-to-end operations. **This is what `snapforge-ffi` wraps.** | `screenshot::{take_screenshot, save_prerendered}`, `recording::{start_recording, stop_recording, pause_recording, resume_recording, RecordingHandle}`, `clicks::start_click_tracking`, `AppError` |
+| `crates/snapforge-core` | Facade that re-exports the above. Kept for in-tree call sites that haven't been migrated yet. | re-exports + convenience `screenshot_fullscreen` / `screenshot_region` |
+| `crates/snapforge-app` | High-level use cases — orchestrate the leaf crates into single end-to-end operations. **This is what `snapforge-ffi` wraps.** | `screenshot::{take_screenshot, save_prerendered}`, `recording::{start_recording, stop_recording, pause_recording, resume_recording, RecordingHandle}`, `clicks::start_click_tracking` (forwarder thread polls the capture tracker at ~60Hz), `AppError` |
 
 ### `crates/snapforge-ffi`
 
@@ -39,7 +39,7 @@ Grouped subfolders. Restructure Phase 1 + Phase 1 part 2 (tray + recording contr
 
 | File | Purpose |
 |------|---------|
-| `app/main.cpp` | App entry, DI, hotkey registration, top-level object lifetimes. ~520 LOC — no more icon drawing, menu builders, or recording-signal slot bodies inline. |
+| `app/main.cpp` | App entry, DI, hotkey registration, top-level object lifetimes. ~560 LOC — no more icon drawing, menu builders, or recording-signal slot bodies inline (down from ~849 LOC pre-Phase-1). |
 | `infra/Logger.{h,cpp}` | App-wide log buffer surfaced in Preferences → Logs tab |
 
 ### Capture surface (`src/capture/`, `src/ui/overlay/`)
@@ -84,13 +84,14 @@ Self-contained. Used after a screenshot before save.
 | `controllers/RecordingController.{h,cpp}` | Wires `RecordingManager`'s `recordingStarted/Stopped/Paused/Resumed/Error/elapsedChanged` signals to tray state, click overlay + click-tap toggling, clipboard-copy-on-stop of the finished file URL, and the deferred `QMessageBox` error modal. Constructed in main with refs to `RecordingManager`, `TrayIcon`, `ClickIndicatorOverlay`, `ClickTap` (all platforms), and `PreferencesWindow`. |
 | `controllers/ClickTap.{h,cpp}` | Platform-agnostic global mouse-down listener. Thin wrapper around the `snapforge_clicks_*` use-case FFI — the platform tap lives in `snapforge-app`/`snapforge-core`. Re-dispatches the FFI callback (Rust-owned thread) to the Qt main thread via `QMetaObject::invokeMethod`. Emits `clicked(QPoint, bool rightClick)`. Replaces the previous macOS-only `ClickEventTap.{h,mm}` (Phase 2C). |
 
-### Click visualizer (`src/ui/overlay/`, `src/controllers/`)
+### Click visualizer (`src/ui/overlay/`)
 
 | File | Purpose |
 |------|---------|
 | `ui/overlay/ClickIndicatorOverlay.{h,cpp}` | Transparent click-through Qt window spanning virtual desktop. Draws ~500ms expanding ring per click (red=left, blue=right). |
-| `ui/overlay/ClickIndicatorOverlayMac.mm` | macOS-only window-level + Space behaviour (`NSScreenSaverWindowLevel`, ignores mouse, joins all Spaces). |
-| `controllers/ClickTap.{h,cpp}` | Wraps `snapforge_clicks_start/stop/free_handle`. Platform-agnostic — the macOS `CGEventTap` lives in `snapforge-core::clicks` now, removing the Qt/Core duplication that existed pre-Phase-2C. |
+| `ui/overlay/ClickIndicatorOverlayMac.mm` | macOS-only window-level + Space behaviour (`NSScreenSaverWindowLevel`, ignores mouse, joins all Spaces). Manages CF types manually — **not** built with ARC. |
+
+The click tap that feeds this overlay is `controllers/ClickTap.{h,cpp}` (listed above). The macOS `CGEventTap` now lives in `snapforge-capture::clicks`; the previous Qt-side `ClickEventTap.{h,mm}` was deleted in Phase 2C.
 
 ### Platform observers (`src/platform/macos/`)
 

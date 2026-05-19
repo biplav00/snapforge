@@ -10,20 +10,26 @@
               └────────────────────┬────────────────────────────────┘
                                    │ Qt signals/slots
               ┌────────────────────▼────────────────────────────────┐
-              │  main.cpp + window controllers                      │
-              │   (currently inline lambdas — see future-direction) │
+              │  qt controllers + RecordingManager                  │
+              │   RecordingController, ClickTap, TrayIcon           │
+              │   (main.cpp = ~560 LOC of DI + hotkey wiring only)  │
               └────────────────────┬────────────────────────────────┘
                                    │ extern "C" snapforge_*
               ┌────────────────────▼────────────────────────────────┐
               │  snapforge-ffi (translation only)                   │
-              │   JSON in, opaque handle out, error via TLS-ish     │
-              │   global `LAST_RECORDING_ERROR`                     │
+              │   JSON in, opaque handle out; errors via            │
+              │   snapforge_app_last_error()                        │
               └────────────────────┬────────────────────────────────┘
-                                   │ snapforge_core::*
+                                   │ snapforge_app::*
               ┌────────────────────▼────────────────────────────────┐
-              │  snapforge-core                                     │
-              │   capture · record · clicks · format · history      │
-              │   config · clipboard · types                        │
+              │  snapforge-app  (use cases)                         │
+              │   screenshot · recording · clicks · AppError        │
+              └────────────────────┬────────────────────────────────┘
+                                   │
+              ┌────────────────────▼────────────────────────────────┐
+              │  Leaf crates                                        │
+              │   domain · capture · encode · storage               │
+              │   (snapforge-core = back-compat facade re-export)   │
               └────────────────────┬────────────────────────────────┘
                                    │ system calls
               ┌────────────────────▼────────────────────────────────┐
@@ -36,10 +42,10 @@
 ## Process model
 
 - **One process** total. Qt event loop on the main thread.
-- **ffmpeg = child process** spawned by `snapforge-core::record::ffmpeg`. Frames piped over stdin.
-- **Capture worker = dedicated thread** inside `RecordingHandle`. Pulls frames from ScreenCaptureKit, pushes to ffmpeg stdin.
-- **Click event tap = dedicated CFRunLoop thread** (Rust impl in `clicks.rs::macos_tap::start`).
-- **GUI work always on main thread.** FFI callbacks dispatch back via `dispatch_async(dispatch_get_main_queue())` or Qt queued connections.
+- **ffmpeg = child process** spawned by `snapforge-encode::record::ffmpeg`. Frames piped over stdin.
+- **Capture worker = dedicated thread** inside the encode-layer `RecordingHandle`. Pulls frames from ScreenCaptureKit, pushes to ffmpeg stdin.
+- **Click event tap = dedicated CFRunLoop thread** (Rust impl in `snapforge-capture::clicks`) plus a **forwarder thread** in `snapforge-app::clicks` that polls the tracker at ~60Hz (16ms sleep) and invokes the user-supplied callback.
+- **GUI work always on main thread.** FFI click callbacks fire on the forwarder thread; the Qt-side `ClickTap` re-dispatches via `QMetaObject::invokeMethod` (QueuedConnection semantics) before emitting `clicked()`.
 
 ## Data flow — screenshot
 
@@ -49,14 +55,13 @@ hotkey ─► OverlayWindow.activate()
        ─► user drags region + annotates on top in Qt (AnnotationCanvas / Renderer)
        ─► main.cpp builds path + format from PreferencesWindow
        ─► snapforge_save_prerendered(composited_rgba, len, w, h, req_json)
-              req_json: {output_path, format, quality, add_to_history:true}
-            └─► encodes file, indexes history
-       ─► copyImage(composited) ──► snapforge_save_prerendered(... output_path omitted, copy_to_clipboard:true)
+              req_json: {output_path, format, quality, copy_to_clipboard, add_to_history}
+            └─► encodes file, optionally copies to clipboard, indexes history
        ─► snapforge_free_buffer(buf, len)
        ─► tray banner "Screenshot saved"
 ```
 
-Plain fullscreen / region screenshots that never enter the annotation flow can use `snapforge_screenshot(req_json)` instead — it captures, saves, copies, and indexes in one FFI call.
+Plain fullscreen / region screenshots that never enter the annotation flow can use `snapforge_screenshot(req_json)` instead — it captures, saves, copies, and indexes in one FFI call. Cmd+C-from-region uses `snapforge_save_prerendered` with `output_path` omitted (clipboard-only).
 
 ## Data flow — recording
 
@@ -71,7 +76,7 @@ See [recording-pipeline.md](recording-pipeline.md) for the full sequence.
 | ffmpeg stdin writes | Record worker |
 | `snapforge_capture_*` FFI calls | Caller thread (Qt main usually) — blocking, fast |
 | `snapforge_record_start` | Caller thread — blocks until ffmpeg spawned |
-| Click tap callback | CFRunLoop thread — must `dispatch_async` to main before touching Qt |
+| `snapforge_clicks_*` callback | Rust forwarder thread (~60Hz poll) — Qt wrapper re-dispatches to main |
 
 ## Why Qt + Rust split
 
