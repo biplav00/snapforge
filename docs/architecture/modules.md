@@ -39,13 +39,13 @@ C ABI wrapper. Translates Rust types ↔ C types. Owns lifetime registries.
 
 ## Qt frontend (`qt/src/`)
 
-Grouped subfolders. Restructure Phase 1 (file moves) complete; tray/controllers extraction from `main.cpp` is Phase 1 part 2 (see [future-direction.md](future-direction.md)).
+Grouped subfolders. Restructure Phase 1 + Phase 1 part 2 (tray + recording controller extraction) complete.
 
 ### App entry / lifecycle (`src/app/`, `src/infra/`)
 
 | File | Purpose |
 |------|---------|
-| `app/main.cpp` | App entry. Holds tray icon, hotkeys, all signal wiring. **God-file** — next target for extraction. |
+| `app/main.cpp` | App entry, DI, hotkey registration, top-level object lifetimes. ~520 LOC — no more icon drawing, menu builders, or recording-signal slot bodies inline. |
 | `infra/Logger.{h,cpp}` | App-wide log buffer surfaced in Preferences → Logs tab |
 
 ### Capture surface (`src/capture/`, `src/ui/overlay/`)
@@ -74,11 +74,20 @@ Self-contained. Used after a screenshot before save.
 | `ui/annotation/AnnotationRenderer.{h,cpp}` | Composites annotations onto the source pixmap |
 | `ui/annotation/AnnotationToolbar.{h,cpp}` | Tool picker + colour/stroke controls |
 
-### Tray icon (in `app/main.cpp` today)
+### Tray icon (`src/ui/tray/`)
+
+| File | Purpose |
+|------|---------|
+| `ui/tray/TrayIcon.{h,cpp}` | Owns `QSystemTrayIcon`, idle + recording-pill icon factories, pulse `QTimer`, context menu and its idle/recording layouts. Public slots: `enterRecordingState`, `leaveRecordingState`, `updateElapsed`, `setPaused`, `showMessage`. Emits `actionScreenshot/Fullscreen/RecordToggle/History/Preferences/Quit/PauseRecording/ResumeRecording/StopRecording` so main can wire menu items to callers without TrayIcon knowing about them. |
 
 - Idle icon = 18pt aperture+shutter glyph (rendered procedurally).
-- Recording icon = pulsing red dot + `MM:SS` timer. Rebuilt every second by a `QTimer`.
-- Context menu rebuilt on state change (`buildNormalMenu` / `buildRecordingMenu`).
+- Recording icon = pulsing red dot + `MM:SS` timer. Rebuilt every second by the internal `QTimer`.
+
+### Controllers (`src/controllers/`)
+
+| File | Purpose |
+|------|---------|
+| `controllers/RecordingController.{h,cpp}` | Wires `RecordingManager`'s `recordingStarted/Stopped/Paused/Resumed/Error/elapsedChanged` signals to tray state, click overlay + macOS click-tap toggling, clipboard-copy-on-stop of the finished file URL, and the deferred `QMessageBox` error modal. Constructed in main with refs to `RecordingManager`, `TrayIcon`, `ClickIndicatorOverlay`, `ClickEventTap` (mac-only), and `PreferencesWindow`. |
 
 ### Click visualizer (`src/ui/overlay/`, `src/platform/macos/`)
 

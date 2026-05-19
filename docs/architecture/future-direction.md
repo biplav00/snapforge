@@ -58,8 +58,8 @@ Scalable target for when growth hurts. Phases below are ordered by cost. Don't d
 | Carve `qt/src/` into `{app, ui/{windows,overlay,annotation,tray}, controllers, infra, platform/macos}` | Low (`git mv` + CMake paths) | No more god-files; clear extension points |
 | Move `qt/scripts/` → `packaging/macos/` | Low | Separates dev tooling from app tree |
 | Carve `docs/` into `{architecture, design, guides}` | Already partially done | Audience-specific docs |
-| Extract tray pill + menu builders from `main.cpp` → `ui/tray/` | Medium (~200 LOC moved) | `main.cpp` <100 LOC, only DI |
-| Extract recording lifecycle from `main.cpp` → `controllers/RecordingController.{h,cpp}` | Medium | Same |
+| Extract tray pill + menu builders from `main.cpp` → `ui/tray/` (**Done** — `ui/tray/TrayIcon.{h,cpp}`) | Medium (~200 LOC moved) | `main.cpp` <100 LOC, only DI |
+| Extract recording lifecycle from `main.cpp` → `controllers/RecordingController.{h,cpp}` (**Done**) | Medium | Same |
 
 ### Phase 2 — Rust crate splits (medium, defer until second-client or test pain)
 
@@ -78,7 +78,6 @@ Scalable target for when growth hurts. Phases below are ordered by cost. Don't d
 
 ## Known debt (worth fixing before Phase 1 commits)
 
-- **`main.cpp` is a god-file** (~800 LOC). Extract tray + recording lifecycle controllers first.
 - **`ClickEventTap.{h,mm}` duplicates `crates/snapforge-core/src/clicks.rs`** — pick one, delete the other.
 - **No tests on the Qt side.** Once controllers exist, they become testable (Qt has QTest). Don't write tests against `main.cpp` lambdas.
 - **`ffmpeg` is arm64-only.** Intel build needs second binary + universal dylibs.

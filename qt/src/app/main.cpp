@@ -5,20 +5,14 @@
 #include <QShortcut>
 #include <QTimer>
 #include <QIcon>
-#include <QClipboard>
-#include <QMimeData>
-#include <QUrl>
 #include <QEvent>
-#include <QFile>
-#include <QFileInfo>
-#include <QGuiApplication>
-#include <QMessageBox>
 #include "OverlayWindow.h"
 #include "RecordingManager.h"
 #include "HistoryWindow.h"
 #include "PreferencesWindow.h"
 #include "ClickIndicatorOverlay.h"
 #include "TrayIcon.h"
+#include "RecordingController.h"
 #ifdef Q_OS_MACOS
 #include "ClickEventTap.h"
 #endif
@@ -482,99 +476,17 @@ int main(int argc, char *argv[]) {
                          QSystemTrayIcon::Information, 3000);
     });
 
-    // Update the timer text every second when elapsedChanged fires.
-    QObject::connect(&recording, &RecordingManager::elapsedChanged,
-                     [&tray, &recording](int secs) {
-        if (recording.isRecording() || recording.isPaused()) {
-            tray.updateElapsed(secs);
-        }
-    });
-
-    // Pause/Resume: ask the tray to swap pill animation + menu layout.
-    QObject::connect(&recording, &RecordingManager::recordingPaused, [&tray]() {
-        tray.setPaused(true);
-    });
-    QObject::connect(&recording, &RecordingManager::recordingResumed, [&tray]() {
-        tray.setPaused(false);
-    });
-
-    // On start: swap the tray icon to the recording pill and kick off the pulse.
-    QObject::connect(&recording, &RecordingManager::recordingStarted,
-                     [&](const QString &/*path*/) {
-        tray.enterRecordingState(/*paused=*/false);
-
-        if (prefs.showClicksEnabled()) {
-            clickOverlay.showOverlay();
+    // Wire all RecordingManager lifecycle signals → tray feedback + click
+    // overlay/tap toggling + clipboard copy on stop + error modal.
+    RecordingController recordingController(&recording,
+                                            &tray,
+                                            &clickOverlay,
 #ifdef Q_OS_MACOS
-            if (!clickTap.start()) {
-                tray.showMessage(
-                    "Snapforge — Click indicator unavailable",
-                    "Grant Input Monitoring permission in System Settings → "
-                    "Privacy & Security to show clicks in recordings.",
-                    QSystemTrayIcon::Warning, 5000);
-                clickOverlay.hideOverlay();
-            }
+                                            &clickTap,
 #endif
-        }
-    });
-
-    QObject::connect(&recording, &RecordingManager::recordingStopped,
-                     [&](const QString &path) {
-        tray.leaveRecordingState();
-
-#ifdef Q_OS_MACOS
-        clickTap.stop();
-#endif
-        clickOverlay.hideOverlay();
-
-        // Copy the finished recording file to the clipboard as a file URL so
-        // the user can paste it into Finder, Messages, Slack, etc.
-        if (!path.isEmpty() && QFile::exists(path)) {
-            auto *mime = new QMimeData();
-            mime->setUrls({ QUrl::fromLocalFile(path) });
-            // Also include the path as plain text for apps that don't take URLs.
-            mime->setText(path);
-            QGuiApplication::clipboard()->setMimeData(mime);
-            tray.showMessage("Snapforge — Recording saved",
-                             "Copied to clipboard: " + QFileInfo(path).fileName(),
-                             QSystemTrayIcon::Information, 3000);
-        }
-    });
-
-    // Surface recording failures to the user instead of silently dropping them.
-    // Tray banners get suppressed by Notification Center for unsigned bundles,
-    // so we also pop a modal warning as the source of truth — without it the
-    // failure looks identical to "nothing happened" and the user can't act.
-    QObject::connect(&recording, &RecordingManager::recordingError,
-                     [&](const QString &message) {
-        qWarning("Recording error: %s", qPrintable(message));
-        // Reset the tray back to idle — leaving the recording menu visible
-        // after a start-failure makes Stop/Pause clickable for a recording
-        // that never began, which then no-ops confusingly.
-        tray.leaveRecordingState();
-#ifdef Q_OS_MACOS
-        clickTap.stop();
-#endif
-        clickOverlay.hideOverlay();
-        tray.showMessage("Snapforge — Recording Failed", message,
-                         QSystemTrayIcon::Warning, 5000);
-        // Defer the modal so the recordingError signal completes its delivery
-        // first; opening a blocking dialog inside the slot can re-enter the
-        // event loop while RecordingManager is mid-cleanup.
-        QTimer::singleShot(0, qApp, [message]() {
-            QMessageBox box;
-            box.setIcon(QMessageBox::Warning);
-            box.setWindowTitle(QStringLiteral("Snapforge — Recording Failed"));
-            box.setText(message);
-            box.setInformativeText(QStringLiteral(
-                "Common causes: Screen Recording permission not granted, "
-                "ffmpeg missing from PATH, or selected output folder not writable. "
-                "Open Preferences → Permissions to check, or relaunch Snapforge "
-                "from a terminal to see the underlying error."));
-            box.setStandardButtons(QMessageBox::Ok);
-            box.exec();
-        });
-    });
+                                            &prefs,
+                                            &app);
+    Q_UNUSED(recordingController);
 
 #ifdef Q_OS_MAC
     registerGlobalHotkey();

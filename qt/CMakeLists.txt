@@ -53,6 +53,7 @@ set(SNAPFORGE_SOURCES
     src/ui/windows/PreferencesWindow.cpp
     src/ui/overlay/ClickIndicatorOverlay.cpp
     src/ui/tray/TrayIcon.cpp
+    src/controllers/RecordingController.cpp
 )
 
 if(APPLE)
