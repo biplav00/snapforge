@@ -32,13 +32,6 @@ CapturedImage snapforge_capture_region(uint32_t display, int32_t x, int32_t y, u
 /* Free a pixel buffer returned by snapforge_capture_*. */
 void snapforge_free_buffer(uint8_t *data, size_t len);
 
-/* Save RGBA data to file. fmt: 0=PNG, 1=JPG, 2=WebP. Returns 0 on success. */
-int snapforge_save_image(const uint8_t *data, uint32_t width, uint32_t height,
-                         const char *path, uint32_t fmt, uint8_t quality);
-
-/* Copy RGBA data to clipboard. Returns 0 on success. */
-int snapforge_copy_to_clipboard(const uint8_t *data, uint32_t width, uint32_t height);
-
 /* Check screen capture permission. Returns 1 if granted. */
 int snapforge_has_permission(void);
 
@@ -57,41 +50,10 @@ char *snapforge_default_save_path(void);
 /* Free a string returned by snapforge_*. */
 void snapforge_free_string(char *s);
 
-/* --- Recording --- */
-
-/* Start recording. config_json is a JSON string with fields:
-   display, region (optional), output_path, format, fps, quality, ffmpeg_path (optional).
-   Returns opaque handle on success, NULL on error.
-   Caller must call snapforge_stop_recording then snapforge_free_recording_handle. */
-void *snapforge_start_recording(const char *config_json);
-
-/* Stop recording and wait for completion. Returns 0 on success, -1 on error. */
-int snapforge_stop_recording(void *handle);
-
-/* Check if recording is active. Returns 1 if recording, 0 if not. */
-int snapforge_is_recording(void *handle);
-
-/* Free a recording handle. */
-void snapforge_free_recording_handle(void *handle);
-
-/* Pause an active recording (output freezes on last frame). Returns 0 on success. */
-int snapforge_pause_recording(void *handle);
-
-/* Resume a paused recording. Returns 0 on success. */
-int snapforge_resume_recording(void *handle);
-
-/* Last recording error message, or NULL. Caller frees via snapforge_free_string. */
-char *snapforge_last_recording_error(void);
-
 /* --- History --- */
 
 /* List history entries as JSON. Caller frees via snapforge_free_string. Returns NULL on error. */
 char *snapforge_history_list(void);
-
-/* Add a file path to history.
- * Returns 0 on success, -1 on error, -2 if skipped because the file is an
- * incomplete mp4 (non-fatal; caller may warn). */
-int snapforge_history_add(const char *path);
 
 /* Delete a history entry by path. Returns 0 on success, -1 on error. */
 int snapforge_history_delete(const char *path);
@@ -113,12 +75,14 @@ int snapforge_config_save(const char *json);
 
 /* --- Use-case FFI (snapforge-app)
  *
- * The wrappers below expose the high-level use cases (snapforge-app) and the
- * Qt frontend has migrated to them in Phase 2C. The primitive
- * snapforge_capture_*, snapforge_*_recording, snapforge_save_image,
- * snapforge_copy_to_clipboard, snapforge_history_add, and
- * snapforge_last_recording_error fns above are deprecated and slated for
- * removal in Phase 2D once all callers are gone. */
+ * The wrappers below expose the high-level use cases (snapforge-app) which
+ * are the only sanctioned entry points for new callers. The remaining
+ * primitives above (snapforge_capture_*, snapforge_free_buffer,
+ * snapforge_has/request_permission, snapforge_display_*,
+ * snapforge_default_save_path, snapforge_history_list/delete/clear,
+ * snapforge_is_incomplete_mp4, snapforge_config_*, snapforge_free_string)
+ * are kept because they are either raw building blocks the use-case layer
+ * cannot subsume (capture, free) or read-only metadata helpers. */
 
 /* Last use-case error, or NULL if none. Caller frees via snapforge_free_string.
  * Covers screenshot, recording, and click tracking use cases. */

@@ -23,7 +23,7 @@ From `qt/CMakeLists.txt`:
 
 | Permission | Plist key | Triggered by | Used for |
 |------------|-----------|--------------|----------|
-| Screen Recording | `NSScreenCaptureUsageDescription` | First `snapforge_capture_*` or `snapforge_start_recording` call | Capture frames, list windows |
+| Screen Recording | `NSScreenCaptureUsageDescription` | First `snapforge_capture_*`, `snapforge_screenshot`, or `snapforge_record_start` call | Capture frames, list windows |
 | Input Monitoring | `NSInputMonitoringUsageDescription` | First `CGEventTapCreate` call | Click visualizer + (future) global click logging |
 
 **Pinning grants**: `qt/CMakeLists.txt` ad-hoc-signs the bundle with `--identifier com.snapforge.app`. If this identifier changes, macOS treats it as a different app and the user must re-grant Screen Recording. **Do not change.**

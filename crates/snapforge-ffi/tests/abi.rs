@@ -11,7 +11,7 @@
 //! headless CI runners. Set it on developer machines and on any CI matrix
 //! entry that has a graphics session attached.
 
-use std::ffi::{c_char, c_void, CString};
+use std::ffi::{c_char, CString};
 use std::ptr;
 
 use snapforge_ffi::*;
@@ -89,57 +89,67 @@ fn capture_fullscreen_free_with_wrong_len_is_refused() {
 }
 
 // ---------------------------------------------------------------------------
-// Image saving
+// snapforge_save_prerendered (use-case surface; replaces the deprecated
+// snapforge_save_image and snapforge_copy_to_clipboard primitives)
 // ---------------------------------------------------------------------------
 
 #[test]
-fn save_image_null_inputs_return_minus_one() {
-    let path = CString::new("/tmp/should-not-be-created.png").unwrap();
-    let rc = unsafe {
-        snapforge_save_image(ptr::null(), 100, 100, path.as_ptr(), 0, 90)
+fn save_prerendered_null_inputs_return_null() {
+    let req = CString::new(r#"{"copy_to_clipboard":false}"#).unwrap();
+    let res = unsafe {
+        snapforge_save_prerendered(ptr::null(), 0, 1, 1, req.as_ptr())
     };
-    assert_eq!(rc, -1);
+    assert!(res.is_null());
 
-    let buf = vec![0u8; 100 * 100 * 4];
-    let rc = unsafe { snapforge_save_image(buf.as_ptr(), 100, 100, ptr::null(), 0, 90) };
-    assert_eq!(rc, -1);
+    let buf = vec![0u8; 4];
+    let res = unsafe {
+        snapforge_save_prerendered(buf.as_ptr(), buf.len(), 1, 1, ptr::null())
+    };
+    assert!(res.is_null());
 }
 
 #[test]
-fn save_image_invalid_format_returns_minus_one() {
-    let buf = vec![0u8; 4];
-    let path = CString::new("/tmp/bad-fmt.png").unwrap();
-    let rc = unsafe { snapforge_save_image(buf.as_ptr(), 1, 1, path.as_ptr(), 99, 90) };
-    assert_eq!(rc, -1);
+fn save_prerendered_length_mismatch_returns_null() {
+    let buf = vec![0u8; 10];
+    let req = CString::new(r#"{}"#).unwrap();
+    let res = unsafe {
+        snapforge_save_prerendered(buf.as_ptr(), buf.len(), 4, 4, req.as_ptr())
+    };
+    assert!(res.is_null());
 }
 
 #[test]
-fn save_image_overflow_dims_returns_minus_one() {
-    // width*height*4 wraps usize on 64-bit; the FFI must reject up front.
+fn save_prerendered_overflow_dims_returns_null() {
     let buf = vec![0u8; 4];
-    let path = CString::new("/tmp/overflow.png").unwrap();
-    let rc = unsafe {
-        snapforge_save_image(
+    let req = CString::new(r#"{}"#).unwrap();
+    let res = unsafe {
+        snapforge_save_prerendered(
             buf.as_ptr(),
+            buf.len(),
             u32::MAX,
             u32::MAX,
-            path.as_ptr(),
-            0,
-            90,
+            req.as_ptr(),
         )
     };
-    assert_eq!(rc, -1);
+    assert!(res.is_null());
 }
 
 #[test]
-fn save_image_writes_png() {
+fn save_prerendered_writes_png() {
     let tmp = tempfile::tempdir().unwrap();
     let target = tmp.path().join("ok.png");
-    let cpath = CString::new(target.to_str().unwrap()).unwrap();
-
     let buf = vec![255u8; 4 * 4 * 4]; // 4x4 RGBA all-white
-    let rc = unsafe { snapforge_save_image(buf.as_ptr(), 4, 4, cpath.as_ptr(), 0, 90) };
-    assert_eq!(rc, 0);
+    let req_json = format!(
+        r#"{{"output_path":"{}","format":"png","quality":90}}"#,
+        target.to_str().unwrap()
+    );
+    let creq = CString::new(req_json).unwrap();
+    let res = unsafe {
+        snapforge_save_prerendered(buf.as_ptr(), buf.len(), 4, 4, creq.as_ptr())
+    };
+    assert!(!res.is_null(), "save_prerendered should return JSON, not NULL");
+    unsafe { snapforge_free_string(res) };
+
     assert!(target.exists());
     let bytes = std::fs::read(&target).unwrap();
     assert_eq!(&bytes[0..4], &[0x89, b'P', b'N', b'G']);
@@ -165,64 +175,6 @@ fn default_save_path_round_trips_through_free() {
 }
 
 // ---------------------------------------------------------------------------
-// Recording handle: magic-tag enforcement
-// ---------------------------------------------------------------------------
-
-#[test]
-fn recording_calls_with_null_handle_are_safe() {
-    assert_eq!(unsafe { snapforge_stop_recording(ptr::null_mut()) }, -1);
-    assert_eq!(unsafe { snapforge_pause_recording(ptr::null_mut()) }, -1);
-    assert_eq!(unsafe { snapforge_resume_recording(ptr::null_mut()) }, -1);
-    assert_eq!(unsafe { snapforge_is_recording(ptr::null_mut()) }, 0);
-    unsafe { snapforge_free_recording_handle(ptr::null_mut()) };
-}
-
-#[test]
-fn recording_calls_with_garbage_handle_are_rejected() {
-    // A non-null pointer that doesn't carry our magic must be rejected by
-    // every entry point. Using a heap allocation so the address is well-formed
-    // but the magic word is wrong.
-    let mut sham = [0u8; 64];
-    let p = sham.as_mut_ptr().cast::<c_void>();
-
-    assert_eq!(unsafe { snapforge_stop_recording(p) }, -1);
-    assert_eq!(unsafe { snapforge_pause_recording(p) }, -1);
-    assert_eq!(unsafe { snapforge_resume_recording(p) }, -1);
-    assert_eq!(unsafe { snapforge_is_recording(p) }, 0);
-    // free must not actually free this allocation either — caller still owns it.
-    unsafe { snapforge_free_recording_handle(p) };
-    // If free happened, the next access would be UAF; we deliberately read
-    // from `sham` here to demonstrate it's still ours.
-    assert_eq!(sham[0], 0);
-}
-
-#[test]
-fn start_recording_null_or_invalid_json_returns_null() {
-    let h = unsafe { snapforge_start_recording(ptr::null()) };
-    assert!(h.is_null());
-
-    let junk = CString::new("not-json").unwrap();
-    let h = unsafe { snapforge_start_recording(junk.as_ptr()) };
-    assert!(h.is_null());
-
-    let err = snapforge_last_recording_error();
-    assert!(!err.is_null(), "an error message must be reported");
-    unsafe { snapforge_free_string(err) };
-}
-
-#[test]
-fn start_recording_missing_output_path_returns_null() {
-    // Valid JSON object, no output_path → must reject with last_error set.
-    let json = CString::new(r#"{"display":0,"format":"mp4","fps":30}"#).unwrap();
-    let h = unsafe { snapforge_start_recording(json.as_ptr()) };
-    assert!(h.is_null());
-
-    let err = snapforge_last_recording_error();
-    assert!(!err.is_null());
-    unsafe { snapforge_free_string(err) };
-}
-
-// ---------------------------------------------------------------------------
 // History
 // ---------------------------------------------------------------------------
 
@@ -235,11 +187,6 @@ fn history_list_is_well_formed() {
     unsafe { snapforge_free_string(s) };
     // Must be a JSON array (possibly empty).
     assert!(txt.starts_with('['), "history list must be a JSON array, got: {}", &txt[..txt.len().min(64)]);
-}
-
-#[test]
-fn history_add_null_returns_minus_one() {
-    assert_eq!(unsafe { snapforge_history_add(ptr::null()) }, -1);
 }
 
 #[test]

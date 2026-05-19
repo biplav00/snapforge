@@ -4,28 +4,32 @@ Source: `crates/snapforge-ffi/src/lib.rs`. C consumer: `qt/src/*` via `extern "C
 
 ## Surface split
 
-Two surfaces ship side by side as of Phase 2C:
+As of Phase 2D the FFI is split into two cleanly-scoped surfaces:
 
-- **Use-case FFI** (`snapforge_screenshot`, `snapforge_record_*`, `snapforge_clicks_*`, `snapforge_app_last_error`). Wraps the high-level workflows in `crates/snapforge-app`. **This is the surface the Qt frontend uses going forward.** The Qt recording + click paths have been migrated; the screenshot save path still uses primitives (see below).
-- **Primitive FFI** (`snapforge_capture_*`, `snapforge_save_image`, `snapforge_copy_to_clipboard`, `snapforge_start/stop/pause/resume_recording`, `snapforge_is_recording`, `snapforge_last_recording_error`, `snapforge_free_recording_handle`). Deprecated. Slated for removal in **Phase 2D** once every Qt callsite is migrated or the missing use-case surface is filled in. Until 2D ships, **do not add new callers of the primitives**.
+- **Use-case FFI** (`snapforge_screenshot`, `snapforge_save_prerendered`, `snapforge_record_*`, `snapforge_clicks_*`, `snapforge_app_last_error`). Wraps the high-level workflows in `crates/snapforge-app`. **All Qt callsites use this surface.** Errors flow through a single `snapforge_app_last_error()`.
+- **Primitive surface** that remains: raw screen capture (`snapforge_capture_fullscreen` / `_region` / `_free_buffer`), TCC checks, display / path metadata, history read/write that isn't subsumed by add, config, and the universal `snapforge_free_string`. These are kept because they're either raw building blocks the use-case layer cannot subsume (capture, free) or read-only metadata helpers that don't fit the "use case" shape.
 
-### Phase 2C screenshot exception
+### What was removed in Phase 2D
 
-`snapforge_screenshot` re-captures internally — it cannot accept Qt-rendered pixel data. The Qt save path composites annotations on top of the captured backdrop before writing, so `snapforge_save_image` / `snapforge_copy_to_clipboard` / `snapforge_history_add` still ship the bytes that Qt has already prepared. Phase 2D will either (a) add a `save_prerendered` use-case, or (b) move annotation rendering into a Rust crate, before removing those three primitives. The dim-backdrop capture in `OverlayWindow::activateInternal` and the Cmd+C region-to-clipboard path are also blocked until that decision lands. Everything else on the primitive surface (recording lifecycle, clicks, error string) has a Qt-side replacement and is safe to delete in 2D.
+`snapforge_save_image`, `snapforge_copy_to_clipboard`, `snapforge_history_add`, and the recording-primitive set (`snapforge_start/stop/pause/resume_recording`, `snapforge_is_recording`, `snapforge_free_recording_handle`, `snapforge_last_recording_error`). All callers now use `snapforge_save_prerendered` and `snapforge_record_*`.
+
+### Why `snapforge_save_prerendered` exists
+
+`snapforge_screenshot` captures the bitmap inside Rust before saving — that's fine for fullscreen / region grabs but not for the annotated screenshot flow, where Qt composites overlays on top of the captured backdrop before the save. Re-capturing inside Rust would drop the overlays. `snapforge_save_prerendered` accepts the already-composited RGBA bytes verbatim and handles the encode / clipboard / history-index tail. Same use case covers the Cmd+C region-to-clipboard path with `output_path` omitted.
 
 ## Conventions
 
 - **Return code**: `0` = success, `-1` = error (where the fn returns `c_int`).
 - **Pointer errors**: `NULL` returned. Caller must check before dereference.
-- **Error message retrieval**: recording-family errors stash a string in `LAST_RECORDING_ERROR`. Read once via `snapforge_last_recording_error()`; the returned string is owned by the caller.
+- **Error message retrieval**: every use-case fn writes a string to `LAST_APP_ERROR` on failure. Read via `snapforge_app_last_error()`; the returned string is owned by the caller. Reading does not clear; a subsequent successful call does.
 - **Owned buffers**: `*mut u8 + len`. Free with `snapforge_free_buffer(ptr, len)`. **Length must match** — mismatched length = heap corruption (registry catches it and aborts).
 - **Owned strings**: `*mut c_char`. Free with `snapforge_free_string(ptr)`.
-- **Opaque handles**: recording = `*mut c_void`. Free with `snapforge_free_recording_handle(h)`. Pointer must be in `HANDLE_REGISTRY` or it is rejected.
+- **Opaque handles**: recording / click handles = `*mut c_void`. Free with `snapforge_record_free_handle` / `snapforge_clicks_free_handle`. Pointer must be in `HANDLE_REGISTRY` or it is rejected.
 - **NUL safety**: input strings with embedded NUL are sanitized + logged (`cstring_sanitized`).
 
 ## Function surface
 
-### Image capture
+### Image capture (primitive)
 
 | Function | Returns | Notes |
 |----------|---------|-------|
@@ -33,14 +37,9 @@ Two surfaces ship side by side as of Phase 2C:
 | `snapforge_capture_region(display, x, y, w, h)` | `CapturedImage` | Same error contract |
 | `snapforge_free_buffer(ptr, len)` | void | **len must equal returned len** |
 
-### Image save / clipboard
+These remain because they are the only way to obtain a raw desktop bitmap that the caller can then annotate / composite before handing back to `snapforge_save_prerendered`.
 
-| Function | Returns | Notes |
-|----------|---------|-------|
-| `snapforge_save_image(ptr, len, w, h, path, fmt, quality)` | `c_int` | fmt = 0 PNG / 1 JPG / 2 WebP |
-| `snapforge_copy_to_clipboard(ptr, len, w, h)` | `c_int` | RGBA, no premultiplied alpha |
-
-### Permissions / display
+### Permissions / display / paths (primitive)
 
 | Function | Returns | Notes |
 |----------|---------|-------|
@@ -49,31 +48,20 @@ Two surfaces ship side by side as of Phase 2C:
 | `snapforge_display_at_point(x, y)` | `c_int` | Returns display index or -1 |
 | `snapforge_display_scale_factor()` | `f64` | DPR of primary display |
 | `snapforge_default_save_path()` | `*mut c_char` | `~/Pictures/Snapforge` or platform equivalent. Free with `snapforge_free_string` |
-| `snapforge_free_string(ptr)` | void | |
+| `snapforge_free_string(ptr)` | void | Universal string free |
 
-### Recording
-
-| Function | Returns | Notes |
-|----------|---------|-------|
-| `snapforge_start_recording(config_json)` | `*mut c_void` (handle) | JSON keys: `display, region{x,y,width,height}, output_path, format, fps, quality, ffmpeg_path`. NULL on error → check `snapforge_last_recording_error` |
-| `snapforge_stop_recording(handle)` | `c_int` | Waits for ffmpeg flush |
-| `snapforge_pause_recording(handle)` | `c_int` | |
-| `snapforge_resume_recording(handle)` | `c_int` | |
-| `snapforge_is_recording(handle)` | `c_int` (1/0) | |
-| `snapforge_last_recording_error()` | `*mut c_char` | Owned. Reading does not clear — successful start_recording does. |
-| `snapforge_free_recording_handle(handle)` | void | Must be called even after stop |
-
-### History
+### History (primitive)
 
 | Function | Returns | Notes |
 |----------|---------|-------|
 | `snapforge_history_list()` | `*mut c_char` | JSON array string |
-| `snapforge_history_add(path)` | `c_int` | |
 | `snapforge_history_delete(path)` | `c_int` | |
 | `snapforge_history_clear()` | `c_int` | |
 | `snapforge_is_incomplete_mp4(path)` | `c_int` (1/0) | Used by history view to flag dead recordings |
 
-### Config
+`snapforge_history_add` was removed; indexing is now handled inside `snapforge_save_prerendered` (via `add_to_history`) and `snapforge_record_start` (via `add_to_history_on_stop`).
+
+### Config (primitive)
 
 | Function | Returns | Notes |
 |----------|---------|-------|
@@ -82,12 +70,11 @@ Two surfaces ship side by side as of Phase 2C:
 
 ### Use-case surface (snapforge-app)
 
-These wrap the high-level workflows. Errors are surfaced via a single shared `snapforge_app_last_error()` instead of one error fn per domain.
-
 | Function | Returns | Notes |
 |----------|---------|-------|
-| `snapforge_screenshot(req_json)` | `*mut c_char` | JSON `{"saved_path":"..."}` on success; NULL on error. Request JSON: `display, region{x,y,w,h}?, output_path, format, quality, copy_to_clipboard, add_to_history`. Currently unused by Qt — see "Phase 2C screenshot exception" above. |
-| `snapforge_record_start(req_json)` | `*mut c_void` (handle) | Same JSON as `snapforge_start_recording` plus `add_to_history_on_stop`. Indexes the finished file on successful stop. |
+| `snapforge_screenshot(req_json)` | `*mut c_char` | JSON `{"saved_path":"..."}` on success; NULL on error. Request JSON: `display, region{x,y,w,h}?, output_path, format, quality, copy_to_clipboard, add_to_history`. Captures internally. |
+| `snapforge_save_prerendered(rgba, rgba_len, w, h, req_json)` | `*mut c_char` | JSON `{"saved_path":"..."\|null}` on success. Request JSON: `output_path?, format?, quality?, copy_to_clipboard?, add_to_history?`. With `output_path` omitted = clipboard-only. Buffer is read-only; caller retains ownership. |
+| `snapforge_record_start(req_json)` | `*mut c_void` (handle) | JSON: `display, region?, output_path, format, fps, quality, ffmpeg_path?, add_to_history_on_stop`. Indexes the finished file on successful stop. |
 | `snapforge_record_stop(handle)` | `c_int` | |
 | `snapforge_record_pause(handle)` | `c_int` | |
 | `snapforge_record_resume(handle)` | `c_int` | |
@@ -95,7 +82,7 @@ These wrap the high-level workflows. Errors are surfaced via a single shared `sn
 | `snapforge_clicks_start(cb, user_data)` | `*mut c_void` (handle) | `cb` fires on a Rust-owned thread; Qt must dispatch to its main thread (see `ClickTap::onClickStatic`). NULL on failure (typically missing Input Monitoring grant). |
 | `snapforge_clicks_stop(handle)` | `c_int` | |
 | `snapforge_clicks_free_handle(handle)` | void | |
-| `snapforge_app_last_error()` | `*mut c_char` | Shared error string for screenshot / record / clicks. Owned. |
+| `snapforge_app_last_error()` | `*mut c_char` | Shared error string for every use case. Owned. |
 
 ## Lifetime ownership table
 
@@ -103,22 +90,24 @@ These wrap the high-level workflows. Errors are surfaced via a single shared `sn
 |--------|-----------|-------|----------|
 | `CapturedImage.data` | Rust | Qt → `snapforge_free_buffer` | `BUFFER_REGISTRY` |
 | Strings returned by FFI | Rust | Qt → `snapforge_free_string` | none — caller must not mismatch |
-| Recording handle | Rust | Qt → `snapforge_free_recording_handle` | `HANDLE_REGISTRY` (rejects unknown) |
+| Recording handle | Rust | Qt → `snapforge_record_free_handle` | `HANDLE_REGISTRY` (rejects unknown) |
+| Click handle | Rust | Qt → `snapforge_clicks_free_handle` | `HANDLE_REGISTRY` |
 | JSON inputs | Qt | Qt (Rust copies) | none |
+| `rgba` to `snapforge_save_prerendered` | Qt | Qt (Rust copies internally) | none |
 
 ## Error contracts at a glance
 
 ```
-Capture failure:   CapturedImage with data=NULL, len=0, w=0, h=0
-Save/copy failure: -1 (no detail surfaced; check Rust logs)
-Recording failure: NULL handle (start) or -1 (others); detail in snapforge_last_recording_error()
-Config failure:    NULL (load) or -1 (save)
+Capture failure:    CapturedImage with data=NULL, len=0, w=0, h=0
+Use-case failure:   NULL (string return) or -1 (c_int return); detail in snapforge_app_last_error()
+Config failure:     NULL (load) or -1 (save)
 ```
 
 ## When adding a new FFI fn
 
 1. Add `#[no_mangle] pub extern "C" fn snapforge_<name>(...)` in `crates/snapforge-ffi/src/lib.rs`.
-2. Regenerate header (cbindgen) if used, or declare in the Qt source manually.
-3. Match the conventions above — return codes, ownership, registry tracking.
-4. Add a smoke test in `crates/snapforge-ffi/tests/abi.rs`.
-5. Update this doc's tables.
+2. Mirror the declaration in `crates/snapforge-ffi/snapforge_ffi.h` (hand-maintained).
+3. Prefer the use-case surface: take a JSON request, return a JSON string or opaque handle, surface errors via `snapforge_app_last_error()`. Add the underlying logic to `crates/snapforge-app`.
+4. Match the conventions above — registry tracking for any opaque handle, NUL-safe strings, length-checked buffers.
+5. Add a smoke test in `crates/snapforge-ffi/tests/abi.rs`.
+6. Update this doc's tables.

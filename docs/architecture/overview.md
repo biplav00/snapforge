@@ -45,15 +45,18 @@
 
 ```
 hotkey ─► OverlayWindow.activate()
-       ─► user drags region
+       ─► snapforge_capture_region(display, rect) ──► CapturedImage (RGBA buf, raw backdrop)
+       ─► user drags region + annotates on top in Qt (AnnotationCanvas / Renderer)
        ─► main.cpp builds path + format from PreferencesWindow
-       ─► snapforge_capture_region(display, rect) ──► CapturedImage (RGBA buf)
-       ─► snapforge_save_image(buf, path, format, quality) ──► file on disk
-       ─► snapforge_copy_to_clipboard(buf)  (optional)
-       ─► snapforge_history_add(path)
+       ─► snapforge_save_prerendered(composited_rgba, len, w, h, req_json)
+              req_json: {output_path, format, quality, add_to_history:true}
+            └─► encodes file, indexes history
+       ─► copyImage(composited) ──► snapforge_save_prerendered(... output_path omitted, copy_to_clipboard:true)
        ─► snapforge_free_buffer(buf, len)
        ─► tray banner "Screenshot saved"
 ```
+
+Plain fullscreen / region screenshots that never enter the annotation flow can use `snapforge_screenshot(req_json)` instead — it captures, saves, copies, and indexes in one FFI call.
 
 ## Data flow — recording
 
@@ -67,7 +70,7 @@ See [recording-pipeline.md](recording-pipeline.md) for the full sequence.
 | ScreenCaptureKit callbacks | SCK worker → bridged to record worker |
 | ffmpeg stdin writes | Record worker |
 | `snapforge_capture_*` FFI calls | Caller thread (Qt main usually) — blocking, fast |
-| `snapforge_start_recording` | Caller thread — blocks until ffmpeg spawned |
+| `snapforge_record_start` | Caller thread — blocks until ffmpeg spawned |
 | Click tap callback | CFRunLoop thread — must `dispatch_async` to main before touching Qt |
 
 ## Why Qt + Rust split
