@@ -1,12 +1,10 @@
 #include "RecordingController.h"
 
+#include "ClickIndicatorOverlay.h"
+#include "ClickTap.h"
+#include "PreferencesWindow.h"
 #include "RecordingManager.h"
 #include "TrayIcon.h"
-#include "ClickIndicatorOverlay.h"
-#include "PreferencesWindow.h"
-#ifdef Q_OS_MACOS
-#include "ClickEventTap.h"
-#endif
 
 #include <QApplication>
 #include <QClipboard>
@@ -22,18 +20,14 @@
 RecordingController::RecordingController(RecordingManager      *recording,
                                          TrayIcon              *tray,
                                          ClickIndicatorOverlay *clickOverlay,
-#ifdef Q_OS_MACOS
-                                         ClickEventTap         *clickTap,
-#endif
+                                         ClickTap              *clickTap,
                                          PreferencesWindow     *prefs,
                                          QObject               *parent)
     : QObject(parent),
       m_recording(recording),
       m_tray(tray),
       m_clickOverlay(clickOverlay),
-#ifdef Q_OS_MACOS
       m_clickTap(clickTap),
-#endif
       m_prefs(prefs) {
     QObject::connect(m_recording, &RecordingManager::recordingStarted,
                      this, &RecordingController::onStarted);
@@ -54,7 +48,6 @@ void RecordingController::onStarted(const QString & /*path*/) {
 
     if (m_prefs && m_prefs->showClicksEnabled()) {
         m_clickOverlay->showOverlay();
-#ifdef Q_OS_MACOS
         if (m_clickTap && !m_clickTap->start()) {
             m_tray->showMessage(
                 "Snapforge — Click indicator unavailable",
@@ -63,16 +56,13 @@ void RecordingController::onStarted(const QString & /*path*/) {
                 QSystemTrayIcon::Warning, 5000);
             m_clickOverlay->hideOverlay();
         }
-#endif
     }
 }
 
 void RecordingController::onStopped(const QString &path) {
     m_tray->leaveRecordingState();
 
-#ifdef Q_OS_MACOS
     if (m_clickTap) m_clickTap->stop();
-#endif
     m_clickOverlay->hideOverlay();
 
     // Copy the finished recording file to the clipboard as a file URL so the
@@ -103,9 +93,7 @@ void RecordingController::onError(const QString &message) {
     // a start-failure makes Stop/Pause clickable for a recording that never
     // began, which then no-ops confusingly.
     m_tray->leaveRecordingState();
-#ifdef Q_OS_MACOS
     if (m_clickTap) m_clickTap->stop();
-#endif
     m_clickOverlay->hideOverlay();
     m_tray->showMessage("Snapforge — Recording Failed", message,
                         QSystemTrayIcon::Warning, 5000);

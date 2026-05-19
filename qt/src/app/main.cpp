@@ -13,9 +13,7 @@
 #include "ClickIndicatorOverlay.h"
 #include "TrayIcon.h"
 #include "RecordingController.h"
-#ifdef Q_OS_MACOS
-#include "ClickEventTap.h"
-#endif
+#include "ClickTap.h"
 #include "Logger.h"
 #include "snapforge_ffi.h"
 #ifdef Q_OS_MAC
@@ -413,12 +411,12 @@ int main(int argc, char *argv[]) {
     // Click visualizer: ripple overlay + global mouse-down tap.
     // Tap is only started while recording AND the pref is on. Permission
     // failure surfaces as a tray banner; the recording itself continues.
+    // ClickTap wraps the snapforge_clicks_* use-case FFI — the platform tap
+    // lives in Rust now, so this works on every platform Snapforge ships.
     ClickIndicatorOverlay clickOverlay;
-#ifdef Q_OS_MACOS
-    ClickEventTap clickTap;
-    QObject::connect(&clickTap, &ClickEventTap::clicked,
+    ClickTap clickTap;
+    QObject::connect(&clickTap, &ClickTap::clicked,
                      &clickOverlay, &ClickIndicatorOverlay::addRipple);
-#endif
 
     // Sync prefs → overlay
     auto syncPrefsToOverlay = [&]() {
@@ -481,9 +479,7 @@ int main(int argc, char *argv[]) {
     RecordingController recordingController(&recording,
                                             &tray,
                                             &clickOverlay,
-#ifdef Q_OS_MACOS
                                             &clickTap,
-#endif
                                             &prefs,
                                             &app);
     Q_UNUSED(recordingController);

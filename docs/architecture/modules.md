@@ -53,7 +53,7 @@ Grouped subfolders. Restructure Phase 1 + Phase 1 part 2 (tray + recording contr
 | File | Purpose |
 |------|---------|
 | `ui/overlay/OverlayWindow.{h,cpp}` | Region picker — full-screen translucent window with drag-to-select. Also entry for fullscreen capture and recording start. |
-| `capture/RecordingManager.{h,cpp}` | Wraps `snapforge_start/stop/pause/resume_recording` FFI. Emits Qt signals (`recordingStarted/Stopped/Paused/Resumed/Error/elapsedChanged`). Reads prefs via `reloadPrefs()`. |
+| `capture/RecordingManager.{h,cpp}` | Wraps the `snapforge_record_*` use-case FFI (start/stop/pause/resume/free_handle). Emits Qt signals (`recordingStarted/Stopped/Paused/Resumed/Error/elapsedChanged`). Reads prefs via `reloadPrefs()`. Passes `add_to_history_on_stop=true` so the Rust side indexes the finished file. |
 
 ### Windows (`src/ui/windows/`)
 
@@ -87,15 +87,16 @@ Self-contained. Used after a screenshot before save.
 
 | File | Purpose |
 |------|---------|
-| `controllers/RecordingController.{h,cpp}` | Wires `RecordingManager`'s `recordingStarted/Stopped/Paused/Resumed/Error/elapsedChanged` signals to tray state, click overlay + macOS click-tap toggling, clipboard-copy-on-stop of the finished file URL, and the deferred `QMessageBox` error modal. Constructed in main with refs to `RecordingManager`, `TrayIcon`, `ClickIndicatorOverlay`, `ClickEventTap` (mac-only), and `PreferencesWindow`. |
+| `controllers/RecordingController.{h,cpp}` | Wires `RecordingManager`'s `recordingStarted/Stopped/Paused/Resumed/Error/elapsedChanged` signals to tray state, click overlay + click-tap toggling, clipboard-copy-on-stop of the finished file URL, and the deferred `QMessageBox` error modal. Constructed in main with refs to `RecordingManager`, `TrayIcon`, `ClickIndicatorOverlay`, `ClickTap` (all platforms), and `PreferencesWindow`. |
+| `controllers/ClickTap.{h,cpp}` | Platform-agnostic global mouse-down listener. Thin wrapper around the `snapforge_clicks_*` use-case FFI — the platform tap lives in `snapforge-app`/`snapforge-core`. Re-dispatches the FFI callback (Rust-owned thread) to the Qt main thread via `QMetaObject::invokeMethod`. Emits `clicked(QPoint, bool rightClick)`. Replaces the previous macOS-only `ClickEventTap.{h,mm}` (Phase 2C). |
 
-### Click visualizer (`src/ui/overlay/`, `src/platform/macos/`)
+### Click visualizer (`src/ui/overlay/`, `src/controllers/`)
 
 | File | Purpose |
 |------|---------|
 | `ui/overlay/ClickIndicatorOverlay.{h,cpp}` | Transparent click-through Qt window spanning virtual desktop. Draws ~500ms expanding ring per click (red=left, blue=right). |
 | `ui/overlay/ClickIndicatorOverlayMac.mm` | macOS-only window-level + Space behaviour (`NSScreenSaverWindowLevel`, ignores mouse, joins all Spaces). |
-| `platform/macos/ClickEventTap.{h,mm}` | macOS `CGEventTap` listening for left/right mouse-down globally. **Duplicates `clicks.rs` in core** — see [future-direction.md](future-direction.md). |
+| `controllers/ClickTap.{h,cpp}` | Wraps `snapforge_clicks_start/stop/free_handle`. Platform-agnostic — the macOS `CGEventTap` lives in `snapforge-core::clicks` now, removing the Qt/Core duplication that existed pre-Phase-2C. |
 
 ### Platform observers (`src/platform/macos/`)
 
