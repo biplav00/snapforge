@@ -1085,6 +1085,127 @@ pub unsafe extern "C" fn snapforge_screenshot(req_json: *const c_char) -> *mut c
     }
 }
 
+/// Save (and optionally clipboard / index) a caller-supplied RGBA bitmap.
+///
+/// `rgba` must point to `rgba_len` bytes of raw RGBA8 pixel data and
+/// `rgba_len` must equal `width * height * 4`. The buffer is read-only from
+/// Rust's perspective and the caller retains ownership — Rust copies the
+/// bytes internally before encoding.
+///
+/// `req_json` is a null-terminated UTF-8 JSON string with fields:
+///   output_path (optional string; omit for clipboard-only),
+///   format ("png" / "jpg" / "webp"; default "png"; ignored when no path),
+///   quality (u8 1..=100; default 90),
+///   copy_to_clipboard (bool; default false),
+///   add_to_history (bool; default false; ignored when no path).
+///
+/// Returns a heap-allocated JSON string `{"saved_path": "..." | null}` on
+/// success, NULL on error. Read details via `snapforge_app_last_error`.
+/// Caller must free the returned string via `snapforge_free_string`.
+///
+/// # Safety
+///
+/// `rgba` must be valid for reads of `rgba_len` bytes for the duration of
+/// the call. `req_json` must be a valid null-terminated UTF-8 string.
+#[no_mangle]
+pub unsafe extern "C" fn snapforge_save_prerendered(
+    rgba: *const u8,
+    rgba_len: usize,
+    width: u32,
+    height: u32,
+    req_json: *const c_char,
+) -> *mut c_char {
+    if rgba.is_null() || req_json.is_null() {
+        set_app_error("internal: null rgba or req_json");
+        return ptr::null_mut();
+    }
+    let Ok(json_str) = CStr::from_ptr(req_json).to_str() else {
+        set_app_error("internal: req_json is not valid UTF-8");
+        return ptr::null_mut();
+    };
+    let v = match serde_json::from_str::<serde_json::Value>(json_str) {
+        Ok(v) => v,
+        Err(e) => {
+            set_app_error(format!("invalid request JSON: {}", e));
+            return ptr::null_mut();
+        }
+    };
+
+    let expected = match (width as usize)
+        .checked_mul(height as usize)
+        .and_then(|n| n.checked_mul(4))
+    {
+        Some(n) => n,
+        None => {
+            set_app_error("width*height*4 overflows");
+            return ptr::null_mut();
+        }
+    };
+    if rgba_len != expected {
+        set_app_error(format!(
+            "rgba_len {} does not match width*height*4 ({})",
+            rgba_len, expected
+        ));
+        return ptr::null_mut();
+    }
+    // Copy the caller's bytes into an owned Vec so the use-case can hand the
+    // buffer to the `image` crate. The caller keeps ownership of `rgba`.
+    let bytes = std::slice::from_raw_parts(rgba, rgba_len).to_vec();
+
+    let output_path = v["output_path"].as_str().and_then(|s| {
+        if s.is_empty() {
+            None
+        } else {
+            Some(PathBuf::from(s))
+        }
+    });
+    let format = match v["format"].as_str().unwrap_or("png") {
+        "jpg" | "jpeg" => CaptureFormat::Jpg,
+        "webp" => CaptureFormat::WebP,
+        _ => CaptureFormat::Png,
+    };
+    let quality = v["quality"].as_u64().unwrap_or(90).clamp(1, 100) as u8;
+    let copy_to_clipboard = v["copy_to_clipboard"].as_bool().unwrap_or(false);
+    let add_to_history = v["add_to_history"].as_bool().unwrap_or(false);
+
+    let req = app_screenshot::SavePrerenderedRequest {
+        rgba: bytes,
+        width,
+        height,
+        output_path,
+        format,
+        quality,
+        copy_to_clipboard,
+        add_to_history,
+    };
+    match app_screenshot::save_prerendered(req) {
+        Ok(result) => {
+            clear_app_error();
+            let body = serde_json::json!({
+                "saved_path": result
+                    .saved_path
+                    .as_ref()
+                    .map(|p| p.to_string_lossy().into_owned()),
+            });
+            let serialized = match serde_json::to_string(&body) {
+                Ok(s) => s,
+                Err(e) => {
+                    set_app_error(format!("failed to serialize result: {}", e));
+                    return ptr::null_mut();
+                }
+            };
+            match cstring_sanitized(&serialized) {
+                Ok(cs) => cs.into_raw(),
+                Err(_) => ptr::null_mut(),
+            }
+        }
+        Err(e) => {
+            set_app_error(e.to_string());
+            ptr::null_mut()
+        }
+    }
+}
+
 // --- Recording (use-case) ---------------------------------------------------
 
 const APP_RECORDING_MAGIC_ALIVE: u64 = 0x534E_4150_5245_4348; // "SNAPRECH"

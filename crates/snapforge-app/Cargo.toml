@@ -8,6 +8,7 @@ snapforge-domain = { path = "../snapforge-domain" }
 snapforge-capture = { path = "../snapforge-capture" }
 snapforge-encode = { path = "../snapforge-encode" }
 snapforge-storage = { path = "../snapforge-storage" }
+image = { version = "0.25", default-features = false }
 thiserror = "2"
 
 [lints]

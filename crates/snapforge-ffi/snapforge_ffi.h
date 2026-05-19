@@ -134,8 +134,28 @@ char *snapforge_app_last_error(void);
  * snapforge_free_string. */
 char *snapforge_screenshot(const char *req_json);
 
+/* Save (and optionally clipboard / index) a caller-supplied RGBA bitmap.
+ *
+ * `rgba` points to `rgba_len` bytes of RGBA8 pixels; `rgba_len` must equal
+ * width*height*4. The buffer is read-only and ownership stays with the
+ * caller (Rust copies it internally).
+ *
+ * req_json fields:
+ *   output_path (optional string; omit/empty for clipboard-only),
+ *   format ("png"/"jpg"/"webp", default "png"; ignored when no path),
+ *   quality (u8 1..=100, default 90),
+ *   copy_to_clipboard (bool, default false),
+ *   add_to_history (bool, default false; ignored when no path).
+ *
+ * Returns a JSON string {"saved_path": "..." | null} on success, NULL on
+ * error (call snapforge_app_last_error). Caller frees via
+ * snapforge_free_string. */
+char *snapforge_save_prerendered(const uint8_t *rgba, size_t rgba_len,
+                                 uint32_t width, uint32_t height,
+                                 const char *req_json);
+
 /* Start recording via the use-case surface. Same JSON as
- * snapforge_start_recording plus add_to_history_on_stop (bool). Returns an
+ * snapforge_record_start plus add_to_history_on_stop (bool). Returns an
  * opaque handle, or NULL on error (call snapforge_app_last_error). The handle
  * must be stopped via snapforge_record_stop and freed via
  * snapforge_record_free_handle. */
