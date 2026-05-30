@@ -2,6 +2,7 @@
 
 #include <QApplication>
 #include <QFileDialog>
+#include <QTextStream>
 #include <QFrame>
 #include <QHBoxLayout>
 #include <QJsonDocument>
@@ -175,14 +176,16 @@ static QString pillStyle(bool selected) {
 // Badge widget for displaying a shortcut (e.g. "⌘ ⇧ S")
 static QWidget *makeBadges(const QString &shortcut, QWidget *parent) {
     QString badgeStyle = QStringLiteral(
-        "QLabel { background: %1; border: 1px solid %2; border-radius: 3px; padding: 0px 4px;"
+        "QLabel { background: %1; border: 1px solid %2; border-radius: 3px; padding: 0px 5px;"
         "  font-size: 10px; font-family: 'JetBrains Mono', Menlo, monospace; color: %3;"
-        "  min-height: 16px; max-height: 16px; }"
+        "  min-width: 12px; }"
     ).arg(g_theme.bgCard, g_theme.border, g_theme.textSec);
 
     auto *container = new QWidget(parent);
     container->setAttribute(Qt::WA_TransparentForMouseEvents);
     container->setContentsMargins(0, 0, 0, 0);
+    container->setFixedHeight(22);
+    container->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
     auto *row = new QHBoxLayout(container);
     row->setContentsMargins(8, 0, 0, 0);
     row->setSpacing(3);
@@ -190,7 +193,7 @@ static QWidget *makeBadges(const QString &shortcut, QWidget *parent) {
     if (shortcut.isEmpty()) {
         auto *empty = new QLabel(QStringLiteral("—"), container);
         empty->setStyleSheet("QLabel { color: #555; font-size: 12px; background: none; }");
-        row->addWidget(empty);
+        row->addWidget(empty, 0, Qt::AlignVCenter);
     } else {
         // Split "Cmd+Shift+S" → ["Cmd","Shift","S"] and render each token
         QStringList tokens = shortcut.split('+', Qt::SkipEmptyParts);
@@ -211,7 +214,9 @@ static QWidget *makeBadges(const QString &shortcut, QWidget *parent) {
                 display = QStringLiteral("⌃");
             auto *badge = new QLabel(display, container);
             badge->setStyleSheet(badgeStyle);
-            row->addWidget(badge);
+            badge->setFixedHeight(20);
+            badge->setAlignment(Qt::AlignCenter);
+            row->addWidget(badge, 0, Qt::AlignVCenter);
         }
     }
     return container;
@@ -747,7 +752,7 @@ QWidget *PreferencesWindow::buildHotkeysTab()
         row.changeBtn = changeBtn;
 
         rowLayout->addWidget(nameLabel);
-        rowLayout->addWidget(row.badgeWidget);
+        rowLayout->addWidget(row.badgeWidget, 0, Qt::AlignVCenter);
         rowLayout->addStretch(1);
         rowLayout->addWidget(changeBtn);
 
@@ -1475,6 +1480,17 @@ QWidget *PreferencesWindow::buildLogsTab()
     ).arg(g_theme.text));
     ctrlRow->addWidget(m_logAutoScroll);
 
+    m_logSearch = new QLineEdit(w);
+    m_logSearch->setPlaceholderText(QStringLiteral("Filter text…"));
+    m_logSearch->setClearButtonEnabled(true);
+    m_logSearch->setStyleSheet(QStringLiteral(
+        "QLineEdit { background: %1; color: %2; border: 1px solid %3; "
+        "border-radius: 6px; padding: 4px 8px; font-size: 12px; min-width: 160px; }"
+    ).arg(g_theme.bgInput, g_theme.text, g_theme.border));
+    ctrlRow->addWidget(m_logSearch);
+    connect(m_logSearch, &QLineEdit::textChanged,
+            this, [this](const QString &){ reloadLogBuffer(); });
+
     ctrlRow->addStretch();
 
     auto *copyBtn = new QPushButton(QStringLiteral("Copy"), w);
@@ -1499,6 +1515,27 @@ QWidget *PreferencesWindow::buildLogsTab()
         }
     });
     ctrlRow->addWidget(revealBtn);
+
+    auto *saveBtn = new QPushButton(QStringLiteral("Save…"), w);
+    saveBtn->setStyleSheet(defaultBtnStyle());
+    connect(saveBtn, &QPushButton::clicked, this, [this]() {
+        const QString dest = QFileDialog::getSaveFileName(
+            this, QStringLiteral("Export Logs"),
+            QStringLiteral("snapforge-log.txt"),
+            QStringLiteral("Text files (*.txt *.log)"));
+        if (dest.isEmpty()) return;
+        QFile out(dest);
+        if (!out.open(QIODevice::WriteOnly | QIODevice::Text)) {
+            m_statusLabel->setText(QStringLiteral("Export failed."));
+            return;
+        }
+        QTextStream ts(&out);
+        for (const auto &e : Logger::instance()->recent())
+            ts << e.formatted() << '\n';
+        m_statusLabel->setText(QStringLiteral("Logs exported."));
+        QTimer::singleShot(2000, this, [this]() { m_statusLabel->clear(); });
+    });
+    ctrlRow->addWidget(saveBtn);
 
     auto *clearBtn = new QPushButton(QStringLiteral("Clear"), w);
     clearBtn->setStyleSheet(defaultBtnStyle());
@@ -1525,7 +1562,10 @@ QWidget *PreferencesWindow::buildLogsTab()
     connect(logger, &Logger::entryAdded, this, [this](const LogEntry &e) {
         const int filter = m_logLevelFilter->currentData().toInt();
         if (filter >= 0 && (int)e.level < filter) return;
-        appendLogLine(e.formatted());
+        const QString needle = m_logSearch ? m_logSearch->text().trimmed() : QString();
+        if (!needle.isEmpty() && !e.formatted().contains(needle, Qt::CaseInsensitive))
+            return;
+        appendLogLine(e.formatted(), e.level);
     });
     connect(logger, &Logger::cleared, this, [this]() {
         if (m_logView) m_logView->clear();
@@ -1535,10 +1575,24 @@ QWidget *PreferencesWindow::buildLogsTab()
     return w;
 }
 
-void PreferencesWindow::appendLogLine(const QString &line)
+// Color per level so errors/warnings jump out while developing.
+static QString logLevelColor(QtMsgType level)
+{
+    switch (level) {
+        case QtCriticalMsg:
+        case QtFatalMsg:   return QStringLiteral("#ff6b6b"); // red
+        case QtWarningMsg: return QStringLiteral("#ffb454"); // amber
+        case QtInfoMsg:    return QStringLiteral("#6ab0f3"); // blue
+        case QtDebugMsg:   return g_theme.textMuted;          // dim
+    }
+    return g_theme.text;
+}
+
+void PreferencesWindow::appendLogLine(const QString &line, QtMsgType level)
 {
     if (!m_logView) return;
-    m_logView->appendPlainText(line);
+    m_logView->appendHtml(QStringLiteral("<span style=\"color:%1;\">%2</span>")
+                              .arg(logLevelColor(level), line.toHtmlEscaped()));
     if (m_logAutoScroll && m_logAutoScroll->isChecked()) {
         auto *bar = m_logView->verticalScrollBar();
         bar->setValue(bar->maximum());
@@ -1550,12 +1604,11 @@ void PreferencesWindow::reloadLogBuffer()
     if (!m_logView) return;
     m_logView->clear();
     const int filter = m_logLevelFilter ? m_logLevelFilter->currentData().toInt() : -1;
+    const QString needle = m_logSearch ? m_logSearch->text().trimmed() : QString();
     for (const auto &e : Logger::instance()->recent()) {
         if (filter >= 0 && (int)e.level < filter) continue;
-        m_logView->appendPlainText(e.formatted());
-    }
-    if (m_logAutoScroll && m_logAutoScroll->isChecked()) {
-        auto *bar = m_logView->verticalScrollBar();
-        bar->setValue(bar->maximum());
+        if (!needle.isEmpty() && !e.formatted().contains(needle, Qt::CaseInsensitive))
+            continue;
+        appendLogLine(e.formatted(), e.level);
     }
 }

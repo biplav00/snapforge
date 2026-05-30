@@ -22,10 +22,11 @@ else()
 endif()
 set(FFI_HEADER_DIR "${CMAKE_SOURCE_DIR}/../crates/snapforge-ffi")
 
+set(SNAPFORGE_VERSION "1.3.11")
 set(MACOSX_BUNDLE_BUNDLE_NAME "Snapforge")
 set(MACOSX_BUNDLE_GUI_IDENTIFIER "com.snapforge.app")
-set(MACOSX_BUNDLE_BUNDLE_VERSION "1.3.11")
-set(MACOSX_BUNDLE_SHORT_VERSION_STRING "1.3.11")
+set(MACOSX_BUNDLE_BUNDLE_VERSION "${SNAPFORGE_VERSION}")
+set(MACOSX_BUNDLE_SHORT_VERSION_STRING "${SNAPFORGE_VERSION}")
 set(MACOSX_BUNDLE_INFO_STRING "Snapforge Screenshot Tool")
 set(MACOSX_BUNDLE_ICON_FILE "AppIcon.icns")
 
@@ -43,6 +44,7 @@ qt_add_resources(SNAPFORGE_QRC_FILES
 set(SNAPFORGE_SOURCES
     src/app/main.cpp
     src/infra/Logger.cpp
+    src/infra/LogCategories.cpp
     src/ui/overlay/OverlayWindow.cpp
     src/ui/annotation/AnnotationState.cpp
     src/ui/annotation/AnnotationRenderer.cpp
@@ -91,6 +93,10 @@ target_include_directories(snapforge-qt PRIVATE
     src/capture
     src/infra
     src/platform/macos
+)
+
+target_compile_definitions(snapforge-qt PRIVATE
+    SNAPFORGE_VERSION="${SNAPFORGE_VERSION}"
 )
 
 target_link_libraries(snapforge-qt PRIVATE
