@@ -15,9 +15,14 @@ lto = "thin"
 codegen-units = 1
 opt-level = 3
 strip = true
+# A Rust panic unwinding across the extern "C" FFI boundary into Qt is UB.
+# Abort instead of unwind so a panic terminates cleanly rather than corrupting the C++ stack.
+# Cargo forces unwind for test/bench builds regardless, so the test suite is unaffected.
+panic = "abort"
 
 [profile.dev]
 opt-level = 1
+panic = "abort"
 
 [workspace.lints.rust]
 unsafe_code = "allow"

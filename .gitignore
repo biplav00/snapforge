@@ -24,3 +24,5 @@ lcov-rust.info
 
 # Build artifacts
 qt/build/
+.claude/settings.local.json
+.mcp.json

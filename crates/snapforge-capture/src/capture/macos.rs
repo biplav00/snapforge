@@ -72,18 +72,16 @@ fn ensure_display_reconfig_registered() {
     // back to its TTL-based invalidation. That's acceptable — the TTL exists
     // precisely for this case.
     static REGISTERED: OnceLock<()> = OnceLock::new();
-    REGISTERED.get_or_init(|| {
-        unsafe {
-            let err = CGDisplayRegisterReconfigurationCallback(
-                display_reconfig_callback,
-                std::ptr::null_mut(),
+    REGISTERED.get_or_init(|| unsafe {
+        let err = CGDisplayRegisterReconfigurationCallback(
+            display_reconfig_callback,
+            std::ptr::null_mut(),
+        );
+        if err != 0 {
+            eprintln!(
+                "[snapforge] CGDisplayRegisterReconfigurationCallback failed: {}",
+                err
             );
-            if err != 0 {
-                eprintln!(
-                    "[snapforge] CGDisplayRegisterReconfigurationCallback failed: {}",
-                    err
-                );
-            }
         }
     });
 }
@@ -425,10 +423,7 @@ fn is_all_zero(img: &RgbaImage) -> bool {
         .all(|p| p[0] == 0 && p[1] == 0 && p[2] == 0)
 }
 
-fn capture_fullscreen_via_sck(
-    display: usize,
-    target_id: u32,
-) -> Result<RgbaImage, CaptureError> {
+fn capture_fullscreen_via_sck(display: usize, target_id: u32) -> Result<RgbaImage, CaptureError> {
     let displays = get_shareable_displays().ok_or(CaptureError::CaptureFailed)?;
     let mut sc_display_opt = None;
     for i in 0..displays.len() {
@@ -828,5 +823,53 @@ mod tests {
         if let Some(displays) = displays {
             assert!(displays.len() > 0);
         }
+    }
+
+    #[test]
+    fn compute_output_size_invalid_display_errors() {
+        // Display index past the end must be NoDisplay, never a panic or a
+        // bogus (0,0) that the recorder would then reject downstream.
+        let result = compute_recording_output_size(99, Some(1920));
+        assert!(matches!(
+            result,
+            Err(CaptureError::NoDisplay(99) | CaptureError::CaptureFailed)
+        ));
+    }
+
+    #[test]
+    fn compute_output_size_native_dimensions_are_even() {
+        // libx264 yuv420p needs even dimensions; the `& !1` masking must hold
+        // for the no-cap (native) path. Skips if no display / no permission.
+        let Ok((w, h)) = compute_recording_output_size(0, None) else {
+            return;
+        };
+        assert_eq!(w & 1, 0, "native width must be even, got {w}");
+        assert_eq!(h & 1, 0, "native height must be even, got {h}");
+    }
+
+    #[test]
+    fn compute_output_size_respects_max_dimension_cap() {
+        // With a small cap, neither dimension may exceed it, and both stay even.
+        let cap = 640u32;
+        let Ok((w, h)) = compute_recording_output_size(0, Some(cap)) else {
+            return;
+        };
+        assert!(w <= cap, "width {w} exceeded cap {cap}");
+        assert!(h <= cap, "height {h} exceeded cap {cap}");
+        assert_eq!(w & 1, 0);
+        assert_eq!(h & 1, 0);
+    }
+
+    #[test]
+    fn compute_output_size_huge_cap_does_not_upscale() {
+        // A cap larger than the native size must clamp the scale to 1.0 (no
+        // upscaling) — output should equal the native (even-masked) path.
+        let Ok((capped_w, capped_h)) = compute_recording_output_size(0, Some(100_000)) else {
+            return;
+        };
+        let Ok((native_w, native_h)) = compute_recording_output_size(0, None) else {
+            return;
+        };
+        assert_eq!((capped_w, capped_h), (native_w, native_h));
     }
 }

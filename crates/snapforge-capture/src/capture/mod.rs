@@ -4,8 +4,8 @@ pub mod macos;
 #[cfg(not(target_os = "macos"))]
 pub mod xcap_impl;
 
-use snapforge_domain::Rect;
 use image::RgbaImage;
+use snapforge_domain::Rect;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -161,5 +161,71 @@ mod tests {
     fn test_capture_invalid_display() {
         let result = capture_fullscreen(99);
         assert!(result.is_err(), "invalid display index should fail");
+    }
+
+    #[test]
+    fn capture_region_invalid_display_errors() {
+        // A region request against a nonexistent display must error, not panic,
+        // and must not silently fall back to display 0.
+        let region = snapforge_domain::Rect {
+            x: 0,
+            y: 0,
+            width: 100,
+            height: 100,
+        };
+        let result = capture_region(99, region);
+        assert!(
+            result.is_err(),
+            "region capture on invalid display should fail"
+        );
+    }
+
+    #[test]
+    fn capture_region_oversized_clamps_to_display_bounds() {
+        // Region far larger than any real display: the implementation clamps
+        // width/height to the display, so the result (if capture succeeds) must
+        // never exceed the full-frame size. Skips cleanly in headless CI.
+        let Ok(full) = capture_fullscreen(0) else {
+            return;
+        };
+        let huge = snapforge_domain::Rect {
+            x: 0,
+            y: 0,
+            width: u32::MAX,
+            height: u32::MAX,
+        };
+        if let Ok(img) = capture_region(0, huge) {
+            assert!(img.width() <= full.width());
+            assert!(img.height() <= full.height());
+            assert!(img.width() > 0 && img.height() > 0);
+        }
+    }
+
+    #[test]
+    fn capture_region_origin_past_display_errors() {
+        // An origin beyond the display extent leaves a zero-size window, which
+        // must surface as an error rather than a 0x0 image or a panic.
+        let Ok(full) = capture_fullscreen(0) else {
+            return;
+        };
+        let off = snapforge_domain::Rect {
+            x: full.width() as i32 + 1000,
+            y: full.height() as i32 + 1000,
+            width: 100,
+            height: 100,
+        };
+        assert!(capture_region(0, off).is_err());
+    }
+
+    #[test]
+    fn display_at_point_far_offscreen_is_none_or_valid_index() {
+        // Coordinates no display can contain must yield None (honoring the
+        // C -1 contract) rather than snapping to display 0. If a virtual
+        // desktop somehow contains it, the index must be in range.
+        let count = display_count();
+        match display_at_point(i32::MIN / 2, i32::MIN / 2) {
+            None => {}
+            Some(idx) => assert!(idx < count.max(1)),
+        }
     }
 }

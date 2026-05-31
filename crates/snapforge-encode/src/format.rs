@@ -1,5 +1,5 @@
-use snapforge_domain::CaptureFormat;
 use image::RgbaImage;
+use snapforge_domain::CaptureFormat;
 use std::io::Cursor;
 use std::path::Path;
 use thiserror::Error;
@@ -149,5 +149,61 @@ mod tests {
             size_high > size_low,
             "higher quality should produce larger file"
         );
+    }
+
+    #[test]
+    fn encode_single_pixel_png_succeeds() {
+        let img = RgbaImage::from_pixel(1, 1, image::Rgba([1, 2, 3, 255]));
+        let bytes = encode_image(&img, CaptureFormat::Png, 90).unwrap();
+        assert_eq!(&bytes[0..4], &[0x89, b'P', b'N', b'G']);
+    }
+
+    #[test]
+    fn encode_odd_dimension_jpg_succeeds() {
+        // JPEG/RGB packing walks pixels manually; an odd width (3x1) exercises
+        // the non-even path that the recorder pipeline normally crops away.
+        let img = RgbaImage::from_pixel(3, 1, image::Rgba([10, 20, 30, 255]));
+        let bytes = encode_image(&img, CaptureFormat::Jpg, 80).unwrap();
+        assert_eq!(&bytes[0..2], &[0xFF, 0xD8]);
+    }
+
+    #[test]
+    fn encode_zero_width_image_errors_not_panics() {
+        // A zero-sized frame must surface an EncodeFailed error rather than
+        // panic or emit a bogus file. RgbaImage permits 0xN buffers.
+        let img = RgbaImage::new(0, 10);
+        let result = encode_image(&img, CaptureFormat::Png, 90);
+        assert!(matches!(result, Err(FormatError::EncodeFailed(_))));
+    }
+
+    #[test]
+    fn encode_zero_height_jpg_errors_not_panics() {
+        let img = RgbaImage::new(10, 0);
+        let result = encode_image(&img, CaptureFormat::Jpg, 90);
+        assert!(matches!(result, Err(FormatError::EncodeFailed(_))));
+    }
+
+    #[test]
+    fn encode_quality_zero_clamps_and_succeeds() {
+        // quality is clamped to [1,100]; 0 must not divide-by-zero or reject.
+        let img = RgbaImage::from_pixel(8, 8, image::Rgba([200, 100, 50, 255]));
+        let bytes = encode_image(&img, CaptureFormat::Jpg, 0).unwrap();
+        assert_eq!(&bytes[0..2], &[0xFF, 0xD8]);
+    }
+
+    #[test]
+    fn encode_quality_above_max_clamps_and_succeeds() {
+        let img = RgbaImage::from_pixel(8, 8, image::Rgba([200, 100, 50, 255]));
+        let bytes = encode_image(&img, CaptureFormat::Jpg, 255).unwrap();
+        assert_eq!(&bytes[0..2], &[0xFF, 0xD8]);
+    }
+
+    #[test]
+    fn encode_jpg_drops_alpha_without_error() {
+        // A semi-transparent source still encodes (alpha is flattened, with a
+        // warning logged); the JPEG magic must be intact.
+        let img = RgbaImage::from_pixel(4, 4, image::Rgba([255, 0, 0, 0]));
+        let bytes = encode_image(&img, CaptureFormat::Jpg, 90).unwrap();
+        assert_eq!(&bytes[0..2], &[0xFF, 0xD8]);
     }
 }
