@@ -179,7 +179,9 @@ fn start_recording_rgba(
 
         if let Err(e) = writer.write_all(last_frame.as_raw()) {
             if e.kind() == std::io::ErrorKind::BrokenPipe {
-                return Err(RecordError::WriteFailed("ffmpeg stdin closed (broken pipe)".into()));
+                return Err(RecordError::WriteFailed(
+                    "ffmpeg stdin closed (broken pipe)".into(),
+                ));
             }
             return Err(RecordError::WriteFailed(e.to_string()));
         }
@@ -221,8 +223,10 @@ fn start_recording_rgba(
                 capture::capture_fullscreen(display)
             };
 
-            let effective_elapsed =
-                start.elapsed().checked_sub(paused_accum).unwrap_or_default();
+            let effective_elapsed = start
+                .elapsed()
+                .checked_sub(paused_accum)
+                .unwrap_or_default();
             let elapsed_frames =
                 (effective_elapsed.as_secs_f64() / frame_interval.as_secs_f64()) as u64;
             let frames_to_write = elapsed_frames.saturating_sub(frame_count - 1).max(1);
@@ -469,8 +473,10 @@ fn start_recording_macos_bgra(
             // duplicated frames written below.
             click_tracker.recent_into(CLICK_LIFETIME_MS, &mut click_snapshot);
 
-            let effective_elapsed =
-                start.elapsed().checked_sub(paused_accum).unwrap_or_default();
+            let effective_elapsed = start
+                .elapsed()
+                .checked_sub(paused_accum)
+                .unwrap_or_default();
             let elapsed_frames =
                 (effective_elapsed.as_secs_f64() / frame_interval.as_secs_f64()) as u64;
             let frames_to_write = elapsed_frames.saturating_sub(frame_count - 1).max(1);
@@ -864,6 +870,79 @@ mod tests {
         assert!(flag.load(Ordering::SeqCst));
     }
 
+    /// Build a RecordingHandle with no backing thread so the state-machine
+    /// methods (pause/resume/is_running) can be exercised without ffmpeg or a
+    /// display. `thread: None` means stop()/drop() are no-ops.
+    fn detached_handle() -> RecordingHandle {
+        RecordingHandle {
+            stop_flag: Arc::new(AtomicBool::new(false)),
+            state: Arc::new(AtomicU8::new(STATE_RUNNING)),
+            thread: None,
+        }
+    }
+
+    #[test]
+    fn handle_starts_running_not_paused() {
+        let h = detached_handle();
+        assert!(h.is_running());
+        assert!(!h.is_paused());
+    }
+
+    #[test]
+    fn handle_pause_then_resume_round_trips_state() {
+        let h = detached_handle();
+        h.pause();
+        assert!(h.is_paused());
+        assert!(!h.is_running());
+        h.resume();
+        assert!(h.is_running());
+        assert!(!h.is_paused());
+    }
+
+    #[test]
+    fn handle_stop_sets_flag_and_clears_running() {
+        let h = detached_handle();
+        let flag = h.stop_flag.clone();
+        let state = h.state.clone();
+        assert!(h.stop().is_ok());
+        assert!(flag.load(Ordering::SeqCst), "stop must raise the stop flag");
+        assert_eq!(
+            state.load(Ordering::SeqCst),
+            STATE_STOPPED,
+            "stop must move state to STOPPED"
+        );
+    }
+
+    #[test]
+    fn handle_drop_raises_stop_flag() {
+        // Dropping a handle without calling stop() must still signal the
+        // capture thread to exit (prevents a runaway recording on early return).
+        let h = detached_handle();
+        let flag = h.stop_flag.clone();
+        drop(h);
+        assert!(flag.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn validate_ffmpeg_rejects_non_ffmpeg_binary() {
+        // Pointing at a real, runnable binary that isn't ffmpeg must produce a
+        // spawn/identity error — not a false "ok" that later corrupts output.
+        // `/bin/echo -version` prints "-version" and contains no "ffmpeg version".
+        let echo = Path::new("/bin/echo");
+        if !echo.exists() {
+            return; // unusual platform; skip rather than assert on env
+        }
+        let result = validate_ffmpeg(echo);
+        assert!(matches!(result, Err(RecordError::FfmpegSpawnFailed(_))));
+    }
+
+    #[test]
+    fn validate_ffmpeg_unexecutable_path_errors() {
+        // A path that can't be executed must surface FfmpegSpawnFailed.
+        let result = validate_ffmpeg(Path::new("/nonexistent/definitely/not/ffmpeg"));
+        assert!(matches!(result, Err(RecordError::FfmpegSpawnFailed(_))));
+    }
+
     #[test]
     fn test_start_recording_no_ffmpeg() {
         // If ffmpeg is not present, start_recording should return an error, not panic
@@ -887,7 +966,7 @@ mod tests {
         if super::super::find_ffmpeg(None).is_err() {
             return;
         }
-        if crate::capture::capture_fullscreen(0).is_err() {
+        if snapforge_capture::capture::capture_fullscreen(0).is_err() {
             return;
         }
 
@@ -904,6 +983,244 @@ mod tests {
                 // Capture or ffmpeg may fail in CI
             }
         }
+    }
+
+    // --- blend_u8: pure integer alpha-blend correctness ---
+
+    #[test]
+    fn blend_u8_alpha_zero_keeps_destination() {
+        // alpha = 0 means the source contributes nothing.
+        assert_eq!(blend_u8(255, 17, 0), 17);
+        assert_eq!(blend_u8(0, 200, 0), 200);
+    }
+
+    #[test]
+    fn blend_u8_alpha_full_takes_source() {
+        // alpha = 255 means the source fully replaces the destination.
+        assert_eq!(blend_u8(200, 0, 255), 200);
+        assert_eq!(blend_u8(0, 255, 255), 0);
+    }
+
+    #[test]
+    fn blend_u8_half_alpha_is_midpoint_within_one_ulp() {
+        // alpha = 128 (~0.5): result should sit within 1 of the exact average.
+        let out = blend_u8(255, 0, 128);
+        assert!(
+            (127..=128).contains(&out),
+            "expected ~128, got {} (drifted >1 ULP)",
+            out
+        );
+    }
+
+    #[test]
+    fn blend_u8_never_drifts_more_than_one_from_exact() {
+        // Exhaustively confirm the shift-based approximation stays within 1 ULP
+        // of the exact round-to-nearest divide for every input combination.
+        for src in 0u16..=255 {
+            for dst in 0u16..=255 {
+                for alpha in 0u16..=255 {
+                    let exact = ((src * alpha + dst * (255 - alpha)) + 127) / 255;
+                    let got = blend_u8(src as u8, dst as u8, alpha as u8) as u16;
+                    let diff = exact.abs_diff(got);
+                    assert!(
+                        diff <= 1,
+                        "blend_u8({src},{dst},{alpha}) = {got}, exact {exact}, diff {diff}"
+                    );
+                }
+            }
+        }
+    }
+
+    // --- crop_bgra_to_region_into: stride / resize / zero / huge handling ---
+
+    #[cfg(target_os = "macos")]
+    fn solid_bgra(w: u32, h: u32, byte: u8) -> Vec<u8> {
+        vec![byte; (w as usize) * (h as usize) * 4]
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn crop_no_region_same_size_is_exact_copy() {
+        let src = solid_bgra(4, 3, 0xAB);
+        let mut dst = vec![0u8; 4 * 3 * 4];
+        crop_bgra_to_region_into(&src, 4, 3, None, 4, 3, &mut dst);
+        assert_eq!(dst, src);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn crop_no_region_source_larger_than_dst_zeroes_uncovered_rows() {
+        // Source resized DOWN mid-session: dst smaller than src. Only the
+        // top-left dst-sized window is copied; the rest stays zero.
+        let src = solid_bgra(6, 6, 0xFF);
+        let mut dst = vec![0x11u8; 4 * 4 * 4];
+        crop_bgra_to_region_into(&src, 6, 6, None, 4, 4, &mut dst);
+        // Every dst pixel should have been overwritten from the (larger) src.
+        assert!(
+            dst.iter().all(|&b| b == 0xFF),
+            "dst not fully filled from src"
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn crop_no_region_source_smaller_than_dst_pads_with_zero() {
+        // Source resized UP relative to dst: src smaller than dst. Uncovered
+        // dst region must be zeroed, not left as stale bytes.
+        let src = solid_bgra(2, 2, 0xFF);
+        let mut dst = vec![0x55u8; 4 * 4 * 4];
+        crop_bgra_to_region_into(&src, 2, 2, None, 4, 4, &mut dst);
+        let dst_stride = 4 * 4;
+        // Top-left 2x2 copied from src.
+        for y in 0..2usize {
+            for x in 0..2usize {
+                let off = y * dst_stride + x * 4;
+                assert_eq!(&dst[off..off + 4], &[0xFF; 4], "covered pixel wrong");
+            }
+        }
+        // A pixel outside the covered window must be zero.
+        let outside = 3 * dst_stride + 3 * 4;
+        assert_eq!(
+            &dst[outside..outside + 4],
+            &[0u8; 4],
+            "uncovered pixel not zeroed"
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn crop_region_copies_offset_window() {
+        // 4x4 source where each pixel's blue byte encodes y*4+x; crop a 2x2
+        // window at (1,1) and verify the right pixels land at dst origin.
+        let (sw, sh) = (4u32, 4u32);
+        let mut src = vec![0u8; (sw * sh * 4) as usize];
+        for y in 0..sh as usize {
+            for x in 0..sw as usize {
+                let off = (y * sw as usize + x) * 4;
+                src[off] = (y * 4 + x) as u8; // B channel = positional id
+                src[off + 3] = 255;
+            }
+        }
+        let region = snapforge_domain::Rect {
+            x: 1,
+            y: 1,
+            width: 2,
+            height: 2,
+        };
+        let mut dst = vec![0u8; 2 * 2 * 4];
+        crop_bgra_to_region_into(&src, sw, sh, Some(&region), 2, 2, &mut dst);
+        // dst(0,0) == src(1,1) -> id = 1*4+1 = 5
+        assert_eq!(dst[0], 5);
+        // dst(1,1) == src(2,2) -> id = 2*4+2 = 10
+        let off = (1 * 2 + 1) * 4;
+        assert_eq!(dst[off], 10);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn crop_region_partially_outside_source_zeroes_margin() {
+        // Region extends past the source bounds (e.g. display shrank mid
+        // recording). The out-of-bounds margin must be zero, not a panic and
+        // not leaked previous-frame data.
+        let src = solid_bgra(4, 4, 0xFF);
+        let region = snapforge_domain::Rect {
+            x: 2,
+            y: 2,
+            width: 4,
+            height: 4,
+        };
+        let mut dst = vec![0x33u8; 4 * 4 * 4];
+        crop_bgra_to_region_into(&src, 4, 4, Some(&region), 4, 4, &mut dst);
+        // Only the top-left 2x2 of dst is covered by src[2..4, 2..4].
+        let dst_stride = 4 * 4;
+        let covered = 0; // dst(0,0)
+        assert_eq!(&dst[covered..covered + 4], &[0xFF; 4]);
+        let margin = 3 * dst_stride + 3 * 4; // dst(3,3) — outside source
+        assert_eq!(&dst[margin..margin + 4], &[0u8; 4], "margin not zeroed");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn crop_region_negative_origin_clamps_to_zero() {
+        // A negative region origin must clamp to 0 rather than wrap or panic.
+        let src = solid_bgra(4, 4, 0xFF);
+        let region = snapforge_domain::Rect {
+            x: -5,
+            y: -5,
+            width: 2,
+            height: 2,
+        };
+        let mut dst = vec![0u8; 2 * 2 * 4];
+        // Must not panic; clamped origin (0,0) copies real source bytes.
+        crop_bgra_to_region_into(&src, 4, 4, Some(&region), 2, 2, &mut dst);
+        assert_eq!(&dst[0..4], &[0xFF; 4]);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn crop_region_fully_outside_source_yields_all_zero() {
+        // Region entirely past the source: nothing to copy, all-zero output.
+        let src = solid_bgra(4, 4, 0xFF);
+        let region = snapforge_domain::Rect {
+            x: 10,
+            y: 10,
+            width: 4,
+            height: 4,
+        };
+        let mut dst = vec![0x99u8; 4 * 4 * 4];
+        crop_bgra_to_region_into(&src, 4, 4, Some(&region), 4, 4, &mut dst);
+        assert!(dst.iter().all(|&b| b == 0), "expected all-zero dst");
+    }
+
+    // --- fill_circle_bgra / draw_ring_bgra: bounds & no-op guards ---
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn fill_circle_zero_alpha_is_noop() {
+        let mut buf = solid_bgra(8, 8, 0x10);
+        let before = buf.clone();
+        fill_circle_bgra(&mut buf, 8, 8, 4.0, 4.0, 3.0, (255, 255, 255), 0);
+        assert_eq!(buf, before, "alpha=0 should not modify the buffer");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn fill_circle_offscreen_center_does_not_panic_or_write() {
+        // Center far off-screen with a small radius: clamped bounds are empty,
+        // so nothing is drawn and indexing must stay in range.
+        let mut buf = solid_bgra(8, 8, 0x10);
+        let before = buf.clone();
+        fill_circle_bgra(&mut buf, 8, 8, 1000.0, 1000.0, 3.0, (255, 0, 0), 200);
+        assert_eq!(buf, before, "off-screen circle should be a no-op");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn fill_circle_center_pixel_is_blended() {
+        // A full-alpha white dot at the center must overwrite the center pixel.
+        let mut buf = solid_bgra(8, 8, 0x00);
+        fill_circle_bgra(&mut buf, 8, 8, 4.0, 4.0, 2.0, (255, 255, 255), 255);
+        let stride = 8 * 4;
+        let center = 4 * stride + 4 * 4;
+        assert_eq!(&buf[center..center + 4], &[255, 255, 255, 255]);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn draw_ring_zero_thickness_is_noop() {
+        let mut buf = solid_bgra(8, 8, 0x10);
+        let before = buf.clone();
+        draw_ring_bgra(&mut buf, 8, 8, 4.0, 4.0, 3.0, 0.0, (255, 0, 0), 200);
+        assert_eq!(buf, before, "zero-thickness ring should be a no-op");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn draw_clicks_empty_slice_is_noop() {
+        let mut buf = solid_bgra(8, 8, 0x10);
+        let before = buf.clone();
+        draw_clicks_bgra(&mut buf, 8, 8, &[], None, 1.0, 1.0);
+        assert_eq!(buf, before, "no clicks should leave the frame untouched");
     }
 }
 

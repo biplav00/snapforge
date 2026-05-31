@@ -112,6 +112,50 @@ mod tests {
         assert!(r[0].right_click);
     }
 
+    #[test]
+    fn tracker_bounds_queue_at_64_under_flood() {
+        // Backpressure guard: a flood of clicks must not grow the queue without
+        // bound — only the most recent 64 are retained.
+        let t = ClickTracker::new();
+        for i in 0..500 {
+            t.add(i as f64, 0.0, false);
+        }
+        let r = t.recent(u64::MAX);
+        assert_eq!(r.len(), 64, "queue must be capped at 64 entries");
+        // The retained window must be the newest clicks (x = 436..=499).
+        assert_eq!(r.first().unwrap().x, 436.0);
+        assert_eq!(r.last().unwrap().x, 499.0);
+    }
+
+    #[test]
+    fn tracker_recent_zero_age_excludes_past_clicks() {
+        // A 0ms age window means a click added a moment ago is already stale.
+        let t = ClickTracker::new();
+        t.add(1.0, 1.0, false);
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        assert!(
+            t.recent(0).is_empty(),
+            "0ms window should exclude a 2ms-old click"
+        );
+    }
+
+    #[test]
+    fn tracker_recent_into_reuses_and_clears_buffer() {
+        // recent_into must clear the caller's buffer first so stale entries
+        // from a previous frame don't accumulate on the recording hot loop.
+        let t = ClickTracker::new();
+        t.add(7.0, 8.0, false);
+        let mut buf = vec![ClickEvent {
+            x: -1.0,
+            y: -1.0,
+            right_click: false,
+            timestamp: Instant::now(),
+        }];
+        t.recent_into(10_000, &mut buf);
+        assert_eq!(buf.len(), 1);
+        assert_eq!(buf[0].x, 7.0, "stale entry should have been cleared");
+    }
+
     // Tap creation requires Accessibility permission and a live CGSession;
     // skip in CI / sandbox by default.
     #[cfg(target_os = "macos")]
@@ -123,7 +167,6 @@ mod tests {
         drop(h);
     }
 }
-
 
 #[cfg(target_os = "macos")]
 mod macos_tap {
@@ -170,7 +213,6 @@ mod macos_tap {
         event: CGEventRef,
         user_info: *mut c_void,
     ) -> CGEventRef;
-
 
     extern "C" {
         fn CGEventTapCreate(
@@ -344,8 +386,7 @@ mod macos_tap {
             // the tap to re-enable it.
             data.tap.store(tap, std::sync::atomic::Ordering::SeqCst);
 
-            let source =
-                unsafe { CFMachPortCreateRunLoopSource(ptr::null(), tap, 0) };
+            let source = unsafe { CFMachPortCreateRunLoopSource(ptr::null(), tap, 0) };
             let current_rl = unsafe { CFRunLoopGetCurrent() };
             unsafe {
                 CFRunLoopAddSource(current_rl, source, kCFRunLoopCommonModes);

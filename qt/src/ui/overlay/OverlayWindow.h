@@ -63,6 +63,9 @@ private:
     void handleCopy();
     void handleSaveAndCopy();
     void hideOverlay();
+    // Reset overlay + capture state after a failed/stalled async capture so
+    // isBusy() can't latch true forever and wedge the hotkey gate.
+    void handleCaptureFailure(const char *reason);
     ResizeEdge edgeAt(QPoint pos) const;
     void beginResize(ResizeEdge edge);
     void applyResize(QPoint pos);
@@ -85,6 +88,14 @@ private:
     QPoint m_lastStartPos;
     QPoint m_lastEndPos;
     QImage m_screenshot;
+    // True from the moment an async fullscreen capture is launched until its
+    // completion handler runs (success OR failure) or the watchdog fires.
+    // Drives isBusy(): a pending capture is busy, a resolved one is not — even
+    // if it failed — so one failed capture can't poison every later hotkey.
+    bool m_captureInFlight = false;
+    // Bumped once per activation. Guards stale completion/watchdog callbacks:
+    // a later activation supersedes earlier ones, which must not touch state.
+    quint64 m_captureSeq = 0;
     Mode m_mode = Select;
     Purpose m_purpose = Screenshot;
     int m_displayIndex = 0; // which display this overlay captures from

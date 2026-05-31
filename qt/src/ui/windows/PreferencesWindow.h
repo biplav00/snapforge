@@ -76,7 +76,7 @@ private:
     QWidget *buildPermissionsTab();
     QWidget *buildLogsTab();
     void refreshPermissionStatus();
-    void appendLogLine(const QString &line);
+    void appendLogLine(const QString &line, QtMsgType level);
     void reloadLogBuffer();
 
     void loadConfig();
@@ -141,6 +141,7 @@ private:
     QComboBox      *m_logLevelFilter = nullptr;
     QCheckBox      *m_logAutoScroll  = nullptr;
     QLabel         *m_logPathLabel   = nullptr;
+    QLineEdit      *m_logSearch      = nullptr;
 };
 
 #endif // PREFERENCESWINDOW_H

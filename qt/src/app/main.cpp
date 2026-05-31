@@ -347,7 +347,10 @@ int main(int argc, char *argv[]) {
 
     QApplication app(argc, argv);
     app.setApplicationName("Snapforge");
-    qInfo("Snapforge starting");
+#ifdef SNAPFORGE_VERSION
+    app.setApplicationVersion(QStringLiteral(SNAPFORGE_VERSION));
+#endif
+    Logger::instance()->logBanner();
     app.setQuitOnLastWindowClosed(false);
 
     // App-wide icon used by Dock, task switcher, and any generic windows.

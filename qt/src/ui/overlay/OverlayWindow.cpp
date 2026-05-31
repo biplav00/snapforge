@@ -97,6 +97,8 @@ void OverlayWindow::activateInternal() {
     // silently reuse the last activation's image (which would show the
     // wrong window when switching apps between screenshots).
     m_screenshot = QImage();
+    m_captureInFlight = true;
+    const quint64 captureSeq = ++m_captureSeq;
 
     // Size overlay to the cursor's screen (not primary).
     if (screen) {
@@ -111,17 +113,27 @@ void OverlayWindow::activateInternal() {
     int displayIndex = m_displayIndex;
     QPointer<OverlayWindow> self(this);
     auto *watcher = new QFutureWatcher<QImage>(this);
-    connect(watcher, &QFutureWatcher<QImage>::finished, this, [self, watcher, displayIndex]() {
+    connect(watcher, &QFutureWatcher<QImage>::finished, this, [self, watcher, displayIndex, captureSeq]() {
         QImage img = watcher->result();
         watcher->deleteLater();
         if (!self) return;
+        // Superseded by a newer activation: that activation owns
+        // m_captureInFlight now, so leave all state untouched.
+        if (self->m_captureSeq != captureSeq) return;
+        // This is the in-flight capture resolving — clear the gate regardless
+        // of outcome so a failure can't leave isBusy() stuck true.
+        self->m_captureInFlight = false;
         // Discard stale completions: user dismissed overlay or switched display
         // (Space change) before capture finished. Without these guards we'd
         // paint the prior Space's screenshot into the current overlay.
         if (!self->isVisible()) return;
         if (self->m_displayIndex != displayIndex) return;
         if (img.isNull()) {
-            qWarning("Overlay: snapforge_capture_fullscreen failed");
+            // Capture failed (SCK timeout, CGDisplayCreateImage null/all-zero,
+            // or revoked Screen Recording permission). Recover the overlay
+            // instead of leaving a dim crosshair that never resolves and wedges
+            // the hotkey gate until the app is restarted.
+            self->handleCaptureFailure("snapforge_capture_fullscreen returned null");
             return;
         }
         self->m_screenshot = img;
@@ -139,6 +151,20 @@ void OverlayWindow::activateInternal() {
         return copy;
     });
     watcher->setFuture(future);
+
+    // Watchdog. The worker carries its own SCK/CGDisplay timeouts (~5s), so the
+    // finished handler normally fires within ~6s even on failure. But if the
+    // worker thread itself wedges (capture daemon deadlock) the handler may
+    // never run, leaving m_captureInFlight stuck true and the hotkey gate dead.
+    // Force recovery past that window. Guarded by captureSeq so a later
+    // activation isn't torn down, and by m_captureInFlight so a capture that
+    // already resolved is a no-op.
+    QTimer::singleShot(8000, this, [self, captureSeq]() {
+        if (!self) return;
+        if (self->m_captureSeq != captureSeq) return; // superseded by newer activation
+        if (!self->m_captureInFlight) return;         // already resolved (success or fail)
+        self->handleCaptureFailure("capture watchdog timeout (worker stalled)");
+    });
 
     show();
     activateWindow();
@@ -568,8 +594,28 @@ bool OverlayWindow::isBusy() const {
     // our back. Allow the hotkey to recover by re-entering activate().
     if (m_drawing || m_hasRegion) return true;
     if (m_mode == Annotate || m_mode == RecordSelect) return true;
-    if (m_screenshot.isNull()) return true; // async capture still in flight
+    // Busy only while a capture is genuinely pending. A *failed* capture clears
+    // this flag (via handleCaptureFailure) instead of leaving m_screenshot null
+    // forever — the old `m_screenshot.isNull()` test latched busy permanently
+    // after any capture failure and killed the hotkey until app restart.
+    if (m_captureInFlight) return true;
     return false;
+}
+
+void OverlayWindow::handleCaptureFailure(const char *reason) {
+    qWarning("Overlay: %s — resetting overlay so the hotkey gate recovers", reason);
+    m_captureInFlight = false;
+    m_screenshot = QImage();
+    m_drawing = false;
+    m_hasRegion = false;
+    exitAnnotateMode();
+    exitRecordSelectMode();
+    m_mode = Select;
+    hideOverlay();
+    emit regionInvalid(
+        QStringLiteral("Screen capture failed. If this keeps happening, check "
+                       "System Settings → Privacy & Security → Screen "
+                       "Recording, then try again."));
 }
 
 void OverlayWindow::handleSave() {
