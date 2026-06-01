@@ -1,4 +1,5 @@
 #include "TrayIcon.h"
+#include "Shortcuts.h"
 
 #include <QApplication>
 #include <QMenu>
@@ -248,44 +249,61 @@ QIcon TrayIcon::makeRecordingPillIcon(double alpha, bool paused, int seconds) co
     return icon;
 }
 
+// Build "Name\t⌘⇧S": the part after the tab lands in the menu's right-aligned
+// shortcut column on macOS. Glyphs come from the shared config, so a rebind in
+// Preferences shows here after refreshMenu() — no hardcoded chord strings.
+static QString trayLabel(const QString &name, const char *actionKey) {
+    const QString g = shortcuts::glyphs(shortcuts::chord(QString::fromLatin1(actionKey)));
+    return g.isEmpty() ? name : name + QLatin1Char('\t') + g;
+}
+
 void TrayIcon::buildNormalMenu() {
     m_menu->clear();
 
-    m_menu->addAction("Screenshot (Cmd+Shift+S)", this, &TrayIcon::actionScreenshot);
-    m_menu->addAction("Capture Fullscreen (Cmd+Shift+F)", this, &TrayIcon::actionFullscreen);
-    m_menu->addAction("Record (Cmd+Shift+R)", this, &TrayIcon::actionRecordToggle);
+    m_menu->addAction(trayLabel(QStringLiteral("Screenshot"), "screenshot"), this, &TrayIcon::actionScreenshot);
+    m_menu->addAction(trayLabel(QStringLiteral("Capture Fullscreen"), "fullscreen"), this, &TrayIcon::actionFullscreen);
+    m_menu->addAction(trayLabel(QStringLiteral("Record"), "record"), this, &TrayIcon::actionRecordToggle);
 
     m_menu->addSeparator();
 
-    m_menu->addAction("History (Cmd+Shift+H)", this, &TrayIcon::actionHistory);
-    m_menu->addAction("Preferences", this, &TrayIcon::actionPreferences);
+    m_menu->addAction(trayLabel(QStringLiteral("History"), "history"), this, &TrayIcon::actionHistory);
+    m_menu->addAction(QStringLiteral("Preferences"), this, &TrayIcon::actionPreferences);
 
     m_menu->addSeparator();
 
-    m_menu->addAction("Quit", this, &TrayIcon::actionQuit);
+    m_menu->addAction(QStringLiteral("Quit"), this, &TrayIcon::actionQuit);
 }
 
 void TrayIcon::buildRecordingMenu() {
     m_menu->clear();
 
     QAction *recordingLabel = m_menu->addAction(
-        m_paused ? "⏸ Paused" : "● Recording...");
+        m_paused ? QStringLiteral("⏸ Paused") : QStringLiteral("● Recording..."));
     recordingLabel->setEnabled(false);
 
     if (m_paused) {
-        m_menu->addAction("▶ Resume Recording", this, &TrayIcon::actionResumeRecording);
+        m_menu->addAction(QStringLiteral("▶ Resume Recording"), this, &TrayIcon::actionResumeRecording);
     } else {
-        m_menu->addAction("⏸ Pause Recording", this, &TrayIcon::actionPauseRecording);
+        m_menu->addAction(QStringLiteral("⏸ Pause Recording"), this, &TrayIcon::actionPauseRecording);
     }
 
-    m_menu->addAction("■ Stop Recording (Cmd+Shift+R)", this, &TrayIcon::actionStopRecording);
+    m_menu->addAction(trayLabel(QStringLiteral("■ Stop Recording"), "record"), this, &TrayIcon::actionStopRecording);
 
     m_menu->addSeparator();
 
-    m_menu->addAction("History (Cmd+Shift+H)", this, &TrayIcon::actionHistory);
-    m_menu->addAction("Preferences", this, &TrayIcon::actionPreferences);
+    m_menu->addAction(trayLabel(QStringLiteral("History"), "history"), this, &TrayIcon::actionHistory);
+    m_menu->addAction(QStringLiteral("Preferences"), this, &TrayIcon::actionPreferences);
 
     m_menu->addSeparator();
 
-    m_menu->addAction("Quit", this, &TrayIcon::actionQuit);
+    m_menu->addAction(QStringLiteral("Quit"), this, &TrayIcon::actionQuit);
+}
+
+void TrayIcon::refreshMenu() {
+    // Rebuild the menu currently shown (normal vs recording) so updated chord
+    // glyphs take effect after a Preferences rebind.
+    if (m_inRecordingState)
+        buildRecordingMenu();
+    else
+        buildNormalMenu();
 }

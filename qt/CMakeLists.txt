@@ -45,6 +45,7 @@ set(SNAPFORGE_SOURCES
     src/app/main.cpp
     src/infra/Logger.cpp
     src/infra/LogCategories.cpp
+    src/infra/Shortcuts.cpp
     src/ui/overlay/OverlayWindow.cpp
     src/ui/annotation/AnnotationState.cpp
     src/ui/annotation/AnnotationRenderer.cpp

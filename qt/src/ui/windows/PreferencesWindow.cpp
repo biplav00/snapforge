@@ -626,10 +626,11 @@ QWidget *PreferencesWindow::buildHotkeysTab()
     };
     static const HotkeyDef defs[] = {
         // Global
-        {"global", "screenshot",  "Screenshot",   "Cmd+Shift+S"},
-        {"global", "record",      "Record",        "Cmd+Shift+R"},
-        {"global", "history",     "History",       "Cmd+Shift+H"},
-        {"global", "preferences", "Preferences",   "Cmd+,"},
+        {"global", "screenshot",  "Screenshot",        "Cmd+Shift+S"},
+        {"global", "fullscreen",  "Capture Fullscreen", "Cmd+Shift+F"},
+        {"global", "record",      "Record",            "Cmd+Shift+R"},
+        {"global", "history",     "History",           "Cmd+Shift+H"},
+        {"global", "preferences", "Preferences",       "Cmd+,"},
         // Tools
         {"tools", "arrow",        "Arrow",          "A"},
         {"tools", "rect",         "Rectangle",      "R"},
@@ -1147,6 +1148,7 @@ void PreferencesWindow::onResetHotkeys()
 {
     static const struct { const char *section; const char *key; const char *shortcut; } defaults[] = {
         {"global", "screenshot",  "Cmd+Shift+S"},
+        {"global", "fullscreen",  "Cmd+Shift+F"},
         {"global", "record",      "Cmd+Shift+R"},
         {"global", "history",     "Cmd+Shift+H"},
         {"global", "preferences", "Cmd+,"},
