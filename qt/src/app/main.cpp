@@ -17,6 +17,7 @@
 #include "RecordingController.h"
 #include "ClickTap.h"
 #include "Logger.h"
+#include "Shortcuts.h"
 #include "snapforge_ffi.h"
 #ifdef Q_OS_MAC
 #include "WorkspaceSleepObserver.h"
@@ -157,31 +158,49 @@ static void registerHotkeyChecked(unsigned int virtualKey,
     }
 }
 
+static UInt32 hotkeyIdFor(const QString &actionKey) {
+    if (actionKey == QLatin1String("screenshot")) return kHotkeyIDScreenshot;
+    if (actionKey == QLatin1String("record"))     return kHotkeyIDRecord;
+    if (actionKey == QLatin1String("history"))     return kHotkeyIDHistory;
+    if (actionKey == QLatin1String("fullscreen"))  return kHotkeyIDFullscreen;
+    return 0;
+}
+
+// Register every global chord from the shared config (shortcuts::chord), parsed
+// into Carbon vk+mods. g_hotkeys[i] mirrors shortcuts::kGlobalActions[i] so
+// unregisterGlobalHotkeys can release them all. An unparseable or in-use chord
+// is logged and left null — the rest still register.
+static void registerAllChords() {
+    EventHotKeyID hotKeyID;
+    hotKeyID.signature = 'SNPF';
+
+    int i = 0;
+    for (const auto &action : shortcuts::kGlobalActions) {
+        const QString key = QString::fromLatin1(action.actionKey);
+        const QString chord = shortcuts::chord(key);
+        uint32_t vk = 0, mods = 0;
+        hotKeyID.id = hotkeyIdFor(key);
+        if (shortcuts::toCarbon(chord, &vk, &mods)) {
+            const QByteArray name = QStringLiteral("%1 (%2)").arg(chord, key).toUtf8();
+            registerHotkeyChecked(vk, mods, hotKeyID, &g_hotkeys[i], name.constData());
+        } else {
+            qWarning("Hotkey '%s' has unparseable chord \"%s\" — not registered",
+                     action.actionKey, qPrintable(chord));
+            g_hotkeys[i] = nullptr;
+        }
+        ++i;
+    }
+}
+
 void registerGlobalHotkey() {
     EventTypeSpec eventType;
     eventType.eventClass = kEventClassKeyboard;
     eventType.eventKind  = kEventHotKeyPressed;
 
+    // Install the dispatch handler exactly once; chords are (re)bound separately.
     InstallApplicationEventHandler(&hotkeyHandler, 1, &eventType, nullptr, nullptr);
 
-    EventHotKeyID  hotKeyID;
-    hotKeyID.signature = 'SNPF';
-
-    // Cmd+Shift+S — Screenshot (kVK_ANSI_S = 0x01)
-    hotKeyID.id = kHotkeyIDScreenshot;
-    registerHotkeyChecked(0x01, cmdKey | shiftKey, hotKeyID, &g_hotkeys[0], "Cmd+Shift+S (screenshot)");
-
-    // Cmd+Shift+R — Record (kVK_ANSI_R = 0x0F)
-    hotKeyID.id = kHotkeyIDRecord;
-    registerHotkeyChecked(0x0F, cmdKey | shiftKey, hotKeyID, &g_hotkeys[1], "Cmd+Shift+R (record)");
-
-    // Cmd+Shift+H — History (kVK_ANSI_H = 0x04)
-    hotKeyID.id = kHotkeyIDHistory;
-    registerHotkeyChecked(0x04, cmdKey | shiftKey, hotKeyID, &g_hotkeys[2], "Cmd+Shift+H (history)");
-
-    // Cmd+Shift+F — Fullscreen capture (kVK_ANSI_F = 0x03)
-    hotKeyID.id = kHotkeyIDFullscreen;
-    registerHotkeyChecked(0x03, cmdKey | shiftKey, hotKeyID, &g_hotkeys[3], "Cmd+Shift+F (fullscreen)");
+    registerAllChords();
 }
 
 void unregisterGlobalHotkeys() {
@@ -191,6 +210,14 @@ void unregisterGlobalHotkeys() {
             ref = nullptr;
         }
     }
+}
+
+// Re-read chords from config and rebind. Called after Preferences saves new
+// hotkeys so the live global shortcuts follow without an app restart. The
+// dispatch handler installed in registerGlobalHotkey stays put.
+void reloadGlobalHotkeys() {
+    unregisterGlobalHotkeys();
+    registerAllChords();
 }
 #endif
 
@@ -479,6 +506,14 @@ int main(int argc, char *argv[]) {
     // inline menu lambdas used to invoke directly.
     TrayIcon tray;
     tray.initialize();
+
+    // A hotkey rebind in Preferences must reach all three encoders of a chord:
+    // the live Carbon hotkeys, the tray menu glyphs, and (already handled) the
+    // prefs badges. Re-register + rebuild the menu on save so nothing drifts.
+    QObject::connect(&prefs, &PreferencesWindow::configSaved, &tray, &TrayIcon::refreshMenu);
+#ifdef Q_OS_MAC
+    QObject::connect(&prefs, &PreferencesWindow::configSaved, &tray, []() { reloadGlobalHotkeys(); });
+#endif
 
     QObject::connect(&tray, &TrayIcon::actionScreenshot,
                      &overlay, &OverlayWindow::activate);
