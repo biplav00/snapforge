@@ -34,6 +34,22 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-
 
+      # --- Quality gates ---------------------------------------------------
+      # Run formatting + lint checks first: they're cheap and catch the most
+      # common issues before we pay for the full test + Qt build below.
+      - name: rustfmt (check)
+        run: cargo fmt --all --check
+
+      - name: clippy (deny warnings)
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Install cargo-deny
+        run: cargo install cargo-deny --locked
+
+      - name: cargo-deny (advisories, licenses, bans, sources)
+        run: cargo deny check
+
+      # --- Build & test ----------------------------------------------------
       - name: cargo test
         run: cargo test --workspace --all-targets
 
