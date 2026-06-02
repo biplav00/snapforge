@@ -166,6 +166,16 @@ void OverlayWindow::activateInternal() {
         self->handleCaptureFailure("capture watchdog timeout (worker stalled)");
     });
 
+    // Set the cursor for the CURRENT initial state explicitly, rather than
+    // relying on the one-time constructor setCursor() or a later mouseMoveEvent.
+    // After exitAnnotateMode()/exitRecordSelectMode() above, m_mode == Select and
+    // m_hasRegion == false, so the region-select crosshair is the correct cursor
+    // here. (activateFullscreen()/remembered-region switch to Annotate AFTER this,
+    // and their first mouseMoveEvent applies the arrow cursor.)
+    if (m_mode == Select && !m_hasRegion) {
+        setCursor(Qt::CrossCursor);
+    }
+
     show();
     activateWindow();
     raise();
@@ -209,6 +219,40 @@ void OverlayWindow::activateInternal() {
                 }
             }
             ((void (*)(id, SEL))objc_msgSend)(nsWindow, sel_registerName("makeKeyWindow"));
+
+            // CURSOR FIX: On macOS the app-requested QCursor is only honored once
+            // the window is key AND AppKit re-evaluates its cursor rects (a
+            // cursorUpdate). The show()/activateWindow() above run BEFORE
+            // makeKeyWindow, so the constructor's CrossCursor isn't applied yet,
+            // and with a stationary mouse no mouseMoveEvent ever fires to re-set
+            // it — leaving the default arrow. Now that the window IS key, force a
+            // re-evaluation so the crosshair renders immediately, no mouse move
+            // required.
+            if (m_mode == Select && !m_hasRegion) {
+                // 1. Bounce the Qt cursor so Qt re-pushes its NSCursor to AppKit
+                //    now that the window is key.
+                unsetCursor();
+                setCursor(Qt::CrossCursor);
+                // 2. Invalidate the NSWindow's cursor rects for its content view,
+                //    forcing AppKit to issue a cursorUpdate for the view under the
+                //    pointer without waiting for mouse movement.
+                id contentView = ((id (*)(id, SEL))objc_msgSend)(
+                    nsWindow, sel_registerName("contentView"));
+                if (contentView) {
+                    ((void (*)(id, SEL, id))objc_msgSend)(
+                        nsWindow, sel_registerName("invalidateCursorRectsForView:"),
+                        contentView);
+                }
+                // 3. As a belt-and-suspenders fallback for the stationary-mouse
+                //    case, set the crosshair directly on the AppKit cursor stack.
+                //    The dynamic mouseMoveEvent logic still overrides this the
+                //    instant the pointer moves.
+                id crosshair = ((id (*)(id, SEL))objc_msgSend)(
+                    (id)objc_getClass("NSCursor"), sel_registerName("crosshairCursor"));
+                if (crosshair) {
+                    ((void (*)(id, SEL))objc_msgSend)(crosshair, sel_registerName("set"));
+                }
+            }
         }
     }
 #endif
