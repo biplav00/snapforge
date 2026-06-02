@@ -90,10 +90,65 @@ Resolved (kept here for changelog context):
 
 Still outstanding:
 - **No tests on the Qt side.** Controllers now exist and are testable via QTest; nothing written yet.
-- **`ffmpeg` is arm64-only.** Intel build needs a second binary + universal dylibs. Blocks shipping a universal `.dmg`.
+- **`ffmpeg` is arm64-only by default.** The build is now universal-*ready* (see [Universal binary](#universal-binary-arm64--x86_64) below): `SNAPFORGE_UNIVERSAL=1` produces a fat app + lipo'd Rust staticlib, and `bundle-ffmpeg.sh` fat-merges ffmpeg + dylibs when an x86_64 Homebrew is present. The maintainer must still supply the x86_64 Rust target (`rustup target add x86_64-apple-darwin`) and an x86_64 Homebrew ffmpeg; absent those, the default arm64-only `.dmg` is unchanged. A true universal `.dmg` is gated on a CI runner that has both.
 - **App is not notarized.** Users see Gatekeeper warning on first launch. Needs an Apple Developer ID + `notarytool` step in `packaging/macos/`.
 - **`snapforge-core` facade is still in the dep graph.** It re-exports everything from the leaf crates plus convenience helpers (`screenshot_fullscreen`, `screenshot_region`) so older internal call sites keep compiling. Once nothing depends on it the facade can be deleted; until then it's a thin layer.
 - **Phase 3 (second client) is the next milestone.** Layout is ready; no client yet.
+
+## Universal binary (arm64 + x86_64)
+
+The build is universal-**ready**: the default path is unchanged (single host-arch
+build, arm64 ffmpeg bundle — byte-for-byte what CI ships today), and a universal
+build is produced only when the maintainer opts in *and* supplies the x86_64
+toolchain + Homebrew artifacts. There are no fabricated x86_64 binaries anywhere.
+
+### How to produce a universal build
+
+```sh
+SNAPFORGE_UNIVERSAL=1 ./qt/build.sh
+# or for the DMG:
+SNAPFORGE_UNIVERSAL=1 ./packaging/macos/build_dmg.sh
+```
+
+`SNAPFORGE_UNIVERSAL=1` flows through three layers:
+
+1. **Rust staticlib (`qt/build.sh`).** Builds `aarch64-apple-darwin` *and*
+   `x86_64-apple-darwin` separately, then `lipo -create`s the two
+   `libsnapforge_ffi.a` slices into `target/<profile>/libsnapforge_ffi.a` — the
+   exact path CMake already links, so CMake needs no path change.
+2. **CMake (`qt/CMakeLists.txt`).** The `-DSNAPFORGE_UNIVERSAL=ON` option (set by
+   `build.sh`, also honoured via the env var) forces
+   `CMAKE_OSX_ARCHITECTURES="arm64;x86_64"` so the app + test Mach-Os are fat and
+   can link the universal staticlib. When off, `CMAKE_OSX_ARCHITECTURES` is left
+   empty (host arch).
+3. **ffmpeg bundle (`packaging/macos/bundle-ffmpeg.sh`).** Detects the app
+   binary's arches with `lipo -archs`. If the app is fat it bundles the host
+   ffmpeg + dylibs as usual (dylibbundler), then lipo-merges the *other* arch's
+   slices from a second Homebrew prefix onto each bundled Mach-O.
+
+### What the maintainer must supply (not automated)
+
+- **x86_64 Rust std.** Homebrew Rust ships only the host target. Install the
+  cross target with rustup: `rustup target add x86_64-apple-darwin` (and
+  `aarch64-apple-darwin`). Without it, `SNAPFORGE_UNIVERSAL=1 ./qt/build.sh`
+  fails loudly with this exact instruction — it does not silently fall back.
+- **An x86_64 Homebrew with ffmpeg + its dylibs.** `bundle-ffmpeg.sh` looks for
+  the other arch under `/usr/local` (Intel Homebrew default) when running on
+  arm64, or `/opt/homebrew` when running on x86_64. Override with
+  `SNAPFORGE_X86_BREW_PREFIX` / `SNAPFORGE_ARM_BREW_PREFIX`. If the other-arch
+  ffmpeg is absent, the script prints a `WARNING` and ships an **arch-limited**
+  bundle (the app code is fat, but ffmpeg only runs on the build host's arch).
+
+### Current limitations
+
+- Producing a real universal `.dmg` requires a machine with both: the x86_64
+  rustup target and an x86_64 Homebrew ffmpeg install. Neither is fabricated.
+- CI does not yet provision the x86_64 toolchain, so released DMGs stay
+  arm64-only until a universal CI runner is added.
+- Qt itself must be universal for a fully universal app; Homebrew's `qt` is
+  arm64-only on Apple Silicon. A universal app therefore also needs a universal
+  Qt (e.g. the official Qt installer's universal build) — out of scope for this
+  scaffolding, which only makes Snapforge's own code + ffmpeg universal-ready.
 
 ## What NOT to do
 

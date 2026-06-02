@@ -1,4 +1,23 @@
 cmake_minimum_required(VERSION 3.20)
+
+# Universal (arm64 + x86_64) build, opt-in only. Enable with
+# -DSNAPFORGE_UNIVERSAL=ON or the SNAPFORGE_UNIVERSAL=1 env var (qt/build.sh
+# forwards the flag). When OFF (the default) nothing here runs and the build
+# stays host-arch — byte-for-byte the existing behaviour. Must be set before
+# project() so CMAKE_OSX_ARCHITECTURES is picked up by the C/CXX compiler
+# probes. The matching universal Rust staticlib + fat ffmpeg dylibs are
+# produced by qt/build.sh and packaging/macos/bundle-ffmpeg.sh respectively.
+option(SNAPFORGE_UNIVERSAL "Build a universal arm64 + x86_64 binary" OFF)
+if(NOT SNAPFORGE_UNIVERSAL AND DEFINED ENV{SNAPFORGE_UNIVERSAL}
+   AND "$ENV{SNAPFORGE_UNIVERSAL}" STREQUAL "1")
+    set(SNAPFORGE_UNIVERSAL ON)
+endif()
+if(SNAPFORGE_UNIVERSAL)
+    set(CMAKE_OSX_ARCHITECTURES "arm64;x86_64" CACHE STRING
+        "Universal binary architectures" FORCE)
+    message(STATUS "SNAPFORGE_UNIVERSAL: building for arm64;x86_64")
+endif()
+
 project(snapforge-qt LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
@@ -45,6 +64,7 @@ set(SNAPFORGE_SOURCES
     src/app/main.cpp
     src/infra/Logger.cpp
     src/infra/LogCategories.cpp
+    src/infra/Shortcuts.cpp
     src/ui/overlay/OverlayWindow.cpp
     src/ui/annotation/AnnotationState.cpp
     src/ui/annotation/AnnotationRenderer.cpp
@@ -165,8 +185,85 @@ if(APPLE AND MACDEPLOYQT)
     )
 endif()
 
-add_custom_target(dmg
-    DEPENDS snapforge-qt
-    COMMAND ${MACDEPLOYQT} "$<TARGET_BUNDLE_DIR:snapforge-qt>" -dmg
-    COMMENT "Creating DMG..."
-)
+# DMG packaging lives in packaging/macos/build_dmg.sh (single source of truth,
+# used by both local builds and CI). Don't add a competing cmake dmg target —
+# it drifts from the script (no /Applications symlink, no versioned volname).
+
+# ---------------------------------------------------------------------------
+# Tests (QTest)
+#
+# Built only under BUILD_TESTING (CTest's default-ON variable), so the normal
+# `cmake --build` of the app never compiles or links the test executables.
+# Each test links the specific logic units it exercises (not the whole app) so
+# the suite stays headless: no widgets, no tray, no capture. The Rust staticlib
+# + macOS frameworks are linked the same way the app does because the units
+# under test call into the FFI (config load/save, record start/stop).
+# ---------------------------------------------------------------------------
+include(CTest) # defines BUILD_TESTING (default ON) and calls enable_testing()
+
+if(BUILD_TESTING)
+    # Qt6::Test is only needed for the suite, so resolve it here rather than in
+    # the top-level find_package — the app build never pulls it in.
+    find_package(Qt6 REQUIRED COMPONENTS Test)
+
+    # Frameworks + staticlib that the FFI-touching units need at link time.
+    # Factored out so each test target lists the same dependency block.
+    set(SNAPFORGE_TEST_FFI_LIBS "${RUST_TARGET_DIR}/libsnapforge_ffi.a")
+    if(APPLE)
+        list(APPEND SNAPFORGE_TEST_FFI_LIBS
+            "-framework ScreenCaptureKit"
+            "-framework CoreGraphics"
+            "-framework CoreMedia"
+            "-framework CoreFoundation"
+            "-framework Foundation"
+            "-framework AppKit"
+            "-framework IOKit"
+            "-framework IOSurface"
+            "-framework Security"
+            "-framework Carbon"
+        )
+    endif()
+
+    # Include dirs the units under test expect (FFI header + their own folders).
+    set(SNAPFORGE_TEST_INCLUDES
+        ${FFI_HEADER_DIR}
+        src/infra
+        src/capture
+    )
+
+    # name = test target/ctest name, remaining args = extra .cpp sources to
+    # compile into that test alongside the test driver itself.
+    function(snapforge_add_test name)
+        add_executable(${name} ${ARGN})
+        target_include_directories(${name} PRIVATE ${SNAPFORGE_TEST_INCLUDES})
+        target_link_libraries(${name} PRIVATE
+            Qt6::Test
+            Qt6::Core
+            Qt6::Gui
+            ${SNAPFORGE_TEST_FFI_LIBS}
+        )
+        add_test(NAME ${name} COMMAND ${name})
+    endfunction()
+
+    # Pure chord parsing/formatting (the dynamic-hotkeys feature). GUILESS.
+    snapforge_add_test(tst_shortcuts
+        tests/tst_shortcuts.cpp
+        src/infra/Shortcuts.cpp
+    )
+
+    # RecordingManager state machine + timing + prefs parsing. GUILESS; FFI
+    # calls are exercised only on paths that fail safely without capture.
+    snapforge_add_test(tst_recordingmanager
+        tests/tst_recordingmanager.cpp
+        src/capture/RecordingManager.cpp
+    )
+
+    # Integration-ish smoke: construct the manager, round-trip config-derived
+    # prefs, and a display-gated capture probe that QSKIPs when
+    # SNAPFORGE_REQUIRE_DISPLAY is unset (mirrors the Rust integration gating).
+    snapforge_add_test(tst_smoke
+        tests/tst_smoke.cpp
+        src/capture/RecordingManager.cpp
+        src/infra/Shortcuts.cpp
+    )
+endif()

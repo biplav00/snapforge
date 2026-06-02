@@ -32,7 +32,7 @@ fn thumbnail_tx() -> &'static Mutex<Option<mpsc::Sender<ThumbJob>>> {
                         }
                     }));
                     if result.is_err() {
-                        eprintln!(
+                        tracing::error!(
                             "[history] thumbnail worker caught panic for {}",
                             job.image_path
                         );
@@ -191,8 +191,7 @@ pub fn is_incomplete_mp4(path: &str) -> bool {
     let ext_is_mp4 = p
         .extension()
         .and_then(|e| e.to_str())
-        .map(|s| s.eq_ignore_ascii_case("mp4"))
-        .unwrap_or(false);
+        .is_some_and(|s| s.eq_ignore_ascii_case("mp4"));
     if !ext_is_mp4 {
         return false;
     }
@@ -223,7 +222,10 @@ pub fn is_incomplete_mp4(path: &str) -> bool {
     // moov atom at the end of the file when it finalizes; an abruptly killed
     // ffmpeg never gets there.
     let tail_len = std::cmp::min(size, 64 * 1024);
-    if f.seek(SeekFrom::End(-(tail_len as i64))).is_err() {
+    // tail_len is clamped to <= 64KiB, so the i64 cast can never wrap.
+    #[allow(clippy::cast_possible_wrap)]
+    let tail_off = -(tail_len as i64);
+    if f.seek(SeekFrom::End(tail_off)).is_err() {
         return false;
     }
     let mut tail = vec![0u8; tail_len as usize];

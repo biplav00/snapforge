@@ -1,5 +1,5 @@
-use snapforge_domain::Rect;
 use image::RgbaImage;
+use snapforge_domain::Rect;
 
 use super::CaptureError;
 

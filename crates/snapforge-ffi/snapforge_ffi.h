@@ -88,6 +88,51 @@ int snapforge_config_save(const char *json);
  * Covers screenshot, recording, and click tracking use cases. */
 char *snapforge_app_last_error(void);
 
+/* Stable category of the last use-case error, alongside the human-readable
+ * string from snapforge_app_last_error. Values mirror Rust's
+ * SnapforgeErrorCode; only ever appended to, never renumbered. Returns
+ * SNAPFORGE_ERR_NONE (0) when the last call succeeded, or
+ * SNAPFORGE_ERR_INTERNAL if the internal error-state lock is poisoned. */
+typedef enum {
+    SNAPFORGE_ERR_NONE              = 0,
+    SNAPFORGE_ERR_INVALID_INPUT     = 1,
+    SNAPFORGE_ERR_PERMISSION_DENIED = 2,
+    SNAPFORGE_ERR_NOT_FOUND         = 3,
+    SNAPFORGE_ERR_IO                = 4,
+    SNAPFORGE_ERR_ENCODE            = 5,
+    SNAPFORGE_ERR_CAPTURE           = 6,
+    SNAPFORGE_ERR_CONFIG            = 7,
+    SNAPFORGE_ERR_INTERNAL          = 8
+} SnapforgeErrorCode;
+
+int snapforge_app_last_error_code(void);
+
+/* --- Logging bridge --- */
+
+/* Severity passed to a SnapforgeLogCallback; mirrors Rust's SnapforgeLogLevel
+ * and lines up with severity so callers can map onto their own log levels. */
+typedef enum {
+    SNAPFORGE_LOG_TRACE = 0,
+    SNAPFORGE_LOG_DEBUG = 1,
+    SNAPFORGE_LOG_INFO  = 2,
+    SNAPFORGE_LOG_WARN  = 3,
+    SNAPFORGE_LOG_ERROR = 4
+} SnapforgeLogLevel;
+
+/* Callback invoked for every Rust log record once registered via
+ * snapforge_set_log_callback. `level` is a SnapforgeLogLevel; `msg` is a
+ * NUL-terminated UTF-8 string owned by Rust and valid ONLY for the duration of
+ * the call — copy it, do not retain the pointer. May fire from arbitrary Rust
+ * threads, so the callback must be thread-safe. It must not throw/unwind. */
+typedef void (*SnapforgeLogCallback)(int level, const char *msg);
+
+/* Register the callback that receives formatted Rust log records and install
+ * the logging subscriber (once). Call once at startup to route Rust
+ * diagnostics into the host log; until then Rust logs go to stderr. Calling
+ * again replaces the callback. `callback` must stay valid for the process
+ * lifetime. */
+void snapforge_set_log_callback(SnapforgeLogCallback callback);
+
 /* Take a screenshot end-to-end (capture + save + optional clipboard + optional
  * history). req_json fields:
  *   display (u32), region (optional {x,y,width,height}),

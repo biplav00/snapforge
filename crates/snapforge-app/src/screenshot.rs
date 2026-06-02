@@ -98,17 +98,13 @@ pub struct SavePrerenderedResult {
 /// image (Qt annotation flow) — re-capturing inside Rust would drop the
 /// annotations, so we accept the bytes as-is. If `output_path` is `None` the
 /// function is clipboard-only and no file is touched.
-pub fn save_prerendered(
-    req: SavePrerenderedRequest,
-) -> Result<SavePrerenderedResult, AppError> {
+pub fn save_prerendered(req: SavePrerenderedRequest) -> Result<SavePrerenderedResult, AppError> {
     let expected = (req.width as usize)
         .checked_mul(req.height as usize)
         .and_then(|n| n.checked_mul(4))
         .ok_or_else(|| AppError::InvalidRequest("width*height*4 overflows".into()))?;
     if req.width == 0 || req.height == 0 {
-        return Err(AppError::InvalidRequest(
-            "width or height is zero".into(),
-        ));
+        return Err(AppError::InvalidRequest("width or height is zero".into()));
     }
     if req.rgba.len() != expected {
         return Err(AppError::InvalidRequest(format!(
@@ -180,9 +176,7 @@ mod tests {
         assert!(matches!(err, AppError::InvalidRequest(_)));
     }
 
-    // Happy-path screenshot needs a real display + Screen Recording permission,
-    // so it's gated behind `#[ignore]` for CI but useful as a manual smoke test.
-    #[ignore]
+    #[ignore = "needs a real display + Screen Recording permission; manual smoke test only"]
     #[test]
     fn happy_path_fullscreen_writes_file() {
         let dir = tempfile::tempdir().unwrap();

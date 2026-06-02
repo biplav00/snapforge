@@ -18,8 +18,7 @@ use snapforge_ffi::*;
 
 fn require_display() -> bool {
     std::env::var("SNAPFORGE_REQUIRE_DISPLAY")
-        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-        .unwrap_or(false)
+        .is_ok_and(|v| v == "1" || v.eq_ignore_ascii_case("true"))
 }
 
 /// Skip the body of a test that needs a real display, unless the env gate
@@ -96,40 +95,28 @@ fn capture_fullscreen_free_with_wrong_len_is_refused() {
 #[test]
 fn save_prerendered_null_inputs_return_null() {
     let req = CString::new(r#"{"copy_to_clipboard":false}"#).unwrap();
-    let res = unsafe {
-        snapforge_save_prerendered(ptr::null(), 0, 1, 1, req.as_ptr())
-    };
+    let res = unsafe { snapforge_save_prerendered(ptr::null(), 0, 1, 1, req.as_ptr()) };
     assert!(res.is_null());
 
-    let buf = vec![0u8; 4];
-    let res = unsafe {
-        snapforge_save_prerendered(buf.as_ptr(), buf.len(), 1, 1, ptr::null())
-    };
+    let buf = [0u8; 4];
+    let res = unsafe { snapforge_save_prerendered(buf.as_ptr(), buf.len(), 1, 1, ptr::null()) };
     assert!(res.is_null());
 }
 
 #[test]
 fn save_prerendered_length_mismatch_returns_null() {
-    let buf = vec![0u8; 10];
-    let req = CString::new(r#"{}"#).unwrap();
-    let res = unsafe {
-        snapforge_save_prerendered(buf.as_ptr(), buf.len(), 4, 4, req.as_ptr())
-    };
+    let buf = [0u8; 10];
+    let req = CString::new("{}").unwrap();
+    let res = unsafe { snapforge_save_prerendered(buf.as_ptr(), buf.len(), 4, 4, req.as_ptr()) };
     assert!(res.is_null());
 }
 
 #[test]
 fn save_prerendered_overflow_dims_returns_null() {
-    let buf = vec![0u8; 4];
-    let req = CString::new(r#"{}"#).unwrap();
+    let buf = [0u8; 4];
+    let req = CString::new("{}").unwrap();
     let res = unsafe {
-        snapforge_save_prerendered(
-            buf.as_ptr(),
-            buf.len(),
-            u32::MAX,
-            u32::MAX,
-            req.as_ptr(),
-        )
+        snapforge_save_prerendered(buf.as_ptr(), buf.len(), u32::MAX, u32::MAX, req.as_ptr())
     };
     assert!(res.is_null());
 }
@@ -138,16 +125,17 @@ fn save_prerendered_overflow_dims_returns_null() {
 fn save_prerendered_writes_png() {
     let tmp = tempfile::tempdir().unwrap();
     let target = tmp.path().join("ok.png");
-    let buf = vec![255u8; 4 * 4 * 4]; // 4x4 RGBA all-white
+    let buf = [255u8; 4 * 4 * 4]; // 4x4 RGBA all-white
     let req_json = format!(
         r#"{{"output_path":"{}","format":"png","quality":90}}"#,
         target.to_str().unwrap()
     );
     let creq = CString::new(req_json).unwrap();
-    let res = unsafe {
-        snapforge_save_prerendered(buf.as_ptr(), buf.len(), 4, 4, creq.as_ptr())
-    };
-    assert!(!res.is_null(), "save_prerendered should return JSON, not NULL");
+    let res = unsafe { snapforge_save_prerendered(buf.as_ptr(), buf.len(), 4, 4, creq.as_ptr()) };
+    assert!(
+        !res.is_null(),
+        "save_prerendered should return JSON, not NULL"
+    );
     unsafe { snapforge_free_string(res) };
 
     assert!(target.exists());
@@ -186,7 +174,11 @@ fn history_list_is_well_formed() {
     let txt = cstr.to_str().unwrap().to_owned();
     unsafe { snapforge_free_string(s) };
     // Must be a JSON array (possibly empty).
-    assert!(txt.starts_with('['), "history list must be a JSON array, got: {}", &txt[..txt.len().min(64)]);
+    assert!(
+        txt.starts_with('['),
+        "history list must be a JSON array, got: {}",
+        &txt[..txt.len().min(64)]
+    );
 }
 
 #[test]

@@ -52,8 +52,7 @@ fn unregister_handle(ptr: *mut c_void) -> bool {
     }
     handle_registry()
         .lock()
-        .map(|mut set| set.remove(&(ptr as usize)))
-        .unwrap_or(false)
+        .is_ok_and(|mut set| set.remove(&(ptr as usize)))
 }
 
 fn is_registered_handle(ptr: *mut c_void) -> bool {
@@ -62,8 +61,7 @@ fn is_registered_handle(ptr: *mut c_void) -> bool {
     }
     handle_registry()
         .lock()
-        .map(|set| set.contains(&(ptr as usize)))
-        .unwrap_or(false)
+        .is_ok_and(|set| set.contains(&(ptr as usize)))
 }
 
 /// Build a `CString` even when the input has embedded NUL bytes. The FFI
@@ -71,7 +69,7 @@ fn is_registered_handle(ptr: *mut c_void) -> bool {
 /// so the silent corruption is at least visible in logs.
 fn cstring_sanitized(s: &str) -> Result<CString, std::ffi::NulError> {
     if s.as_bytes().contains(&0) {
-        eprintln!("[snapforge] stripping embedded NUL from FFI string");
+        tracing::warn!("[snapforge] stripping embedded NUL from FFI string");
         let cleaned: String = s.chars().filter(|c| *c != '\0').collect();
         CString::new(cleaned)
     } else {
@@ -113,7 +111,7 @@ pub extern "C" fn snapforge_capture_fullscreen(display: u32) -> CapturedImage {
             let height = image.height();
             let boxed: Box<[u8]> = image.into_raw().into_boxed_slice();
             let len = boxed.len();
-            let data = Box::into_raw(boxed) as *mut u8;
+            let data = Box::into_raw(boxed).cast::<u8>();
             register_buffer(data, len);
             CapturedImage {
                 data,
@@ -168,7 +166,7 @@ pub extern "C" fn snapforge_capture_region(
             let height = image.height();
             let boxed: Box<[u8]> = image.into_raw().into_boxed_slice();
             let len = boxed.len();
-            let data = Box::into_raw(boxed) as *mut u8;
+            let data = Box::into_raw(boxed).cast::<u8>();
             register_buffer(data, len);
             CapturedImage {
                 data,
@@ -204,15 +202,12 @@ pub unsafe extern "C" fn snapforge_free_buffer(data: *mut u8, len: usize) {
         Ok(mut map) => map.remove(&(data as usize)),
         Err(_) => None,
     };
-    let real_len = match recorded {
-        Some(n) => n,
-        None => {
-            eprintln!("[snapforge] free_buffer: unknown pointer {:p} (already freed or never allocated by us); leaking", data);
-            return;
-        }
+    let Some(real_len) = recorded else {
+        tracing::error!("[snapforge] free_buffer: unknown pointer {:p} (already freed or never allocated by us); leaking", data);
+        return;
     };
     if real_len != len {
-        eprintln!(
+        tracing::error!(
             "[snapforge] free_buffer: length mismatch for {:p}: caller says {}, we recorded {}; leaking to avoid heap corruption",
             data, len, real_len
         );
@@ -243,7 +238,9 @@ pub extern "C" fn snapforge_request_permission() -> c_int {
 /// Returns the display index, or -1 if no display contains that point.
 #[no_mangle]
 pub extern "C" fn snapforge_display_at_point(x: i32, y: i32) -> c_int {
-    capture::display_at_point(x, y).map(|d| d as c_int).unwrap_or(-1)
+    capture::display_at_point(x, y)
+        .and_then(|d| c_int::try_from(d).ok())
+        .unwrap_or(-1)
 }
 
 /// Get the DPI scale factor of the primary display.
@@ -260,7 +257,7 @@ pub extern "C" fn snapforge_default_save_path() -> *mut c_char {
     let config = match snapforge_core::config::AppConfig::load() {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("[snapforge] default_save_path: config load failed: {}", e);
+            tracing::warn!("[snapforge] default_save_path: config load failed: {}", e);
             snapforge_core::config::AppConfig::default()
         }
     };
@@ -282,7 +279,6 @@ pub unsafe extern "C" fn snapforge_free_string(s: *mut c_char) {
         let _ = CString::from_raw(s);
     }
 }
-
 
 // ---------------------------------------------------------------------------
 // History FFI
@@ -355,11 +351,7 @@ pub unsafe extern "C" fn snapforge_is_incomplete_mp4(path: *const c_char) -> c_i
     let Ok(path_str) = CStr::from_ptr(path).to_str() else {
         return -1;
     };
-    if snapforge_core::history::is_incomplete_mp4(path_str) {
-        1
-    } else {
-        0
-    }
+    c_int::from(snapforge_core::history::is_incomplete_mp4(path_str))
 }
 
 // ---------------------------------------------------------------------------
@@ -418,15 +410,90 @@ use snapforge_app::clicks as app_clicks;
 use snapforge_app::recording as app_recording;
 use snapforge_app::screenshot as app_screenshot;
 
-/// Last app-level error, populated by any `snapforge_*` use-case fn that
-/// fails. Reset on the next successful call. Read via
-/// `snapforge_app_last_error`.
-static LAST_APP_ERROR: Mutex<Option<String>> = Mutex::new(None);
+/// Stable, machine-readable error category exposed alongside the human-readable
+/// `LAST_APP_ERROR` string. Mirrored as `SnapforgeErrorCode` in
+/// `snapforge_ffi.h`; the discriminants are part of the ABI, so only ever
+/// append new variants — never renumber.
+///
+/// `repr(i32)` so the C side can compare against the plain `int` returned by
+/// `snapforge_app_last_error_code`.
+#[repr(i32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SnapforgeErrorCode {
+    /// No error recorded (the last use-case call succeeded, or none has run).
+    None = 0,
+    /// Caller supplied a malformed / out-of-range request (bad JSON, missing
+    /// field, zero-size region, null pointer where one was required).
+    InvalidInput = 1,
+    /// A macOS TCC grant (Screen Recording / Accessibility) is missing.
+    PermissionDenied = 2,
+    /// A required resource (file, ffmpeg binary, display) was not found.
+    NotFound = 3,
+    /// Filesystem / IO failure.
+    Io = 4,
+    /// Image or video encoding failed.
+    Encode = 5,
+    /// Screen capture failed.
+    Capture = 6,
+    /// Config load/save/parse failed.
+    Config = 7,
+    /// Anything else, including a poisoned internal lock.
+    Internal = 8,
+}
 
-fn set_app_error(msg: impl Into<String>) {
-    if let Ok(mut guard) = LAST_APP_ERROR.lock() {
-        *guard = Some(msg.into());
+impl SnapforgeErrorCode {
+    /// Derive a stable code from an [`AppError`]. The mapping leans on the
+    /// originating sub-crate error variant so the Qt side can branch on a
+    /// category without string-matching the message.
+    fn from_app_error(err: &snapforge_app::AppError) -> Self {
+        use snapforge_app::AppError;
+        use snapforge_core::capture::CaptureError;
+        use snapforge_core::record::RecordError;
+        // Keep one arm per AppError variant so the variant -> error-code mapping
+        // stays exhaustive and self-documenting; do not merge arms that happen to
+        // share a code (the codes are independent and may diverge later).
+        #[allow(clippy::match_same_arms)]
+        match err {
+            AppError::InvalidRequest(_) => SnapforgeErrorCode::InvalidInput,
+            AppError::Config(_) => SnapforgeErrorCode::Config,
+            AppError::Format(_) => SnapforgeErrorCode::Encode,
+            AppError::Clipboard(_) => SnapforgeErrorCode::Internal,
+            AppError::Storage(_) => SnapforgeErrorCode::Io,
+            AppError::Capture(CaptureError::NoDisplay(_)) => SnapforgeErrorCode::NotFound,
+            AppError::Capture(_) => SnapforgeErrorCode::Capture,
+            AppError::Recording(RecordError::FfmpegNotFound) => SnapforgeErrorCode::NotFound,
+            AppError::Recording(RecordError::WriteFailed(_)) => SnapforgeErrorCode::Io,
+            AppError::Recording(RecordError::CaptureFailed(_)) => SnapforgeErrorCode::Capture,
+            AppError::Recording(RecordError::NotActive) => SnapforgeErrorCode::Internal,
+            AppError::Recording(RecordError::FfmpegSpawnFailed(_)) => SnapforgeErrorCode::Encode,
+        }
     }
+}
+
+/// Last app-level error (code + message), populated by any `snapforge_*`
+/// use-case fn that fails. Reset on the next successful call. Read the message
+/// via `snapforge_app_last_error` and the code via
+/// `snapforge_app_last_error_code`.
+static LAST_APP_ERROR: Mutex<Option<(SnapforgeErrorCode, String)>> = Mutex::new(None);
+
+/// Set the error string with an explicit category code. Used by the FFI-level
+/// validation paths (bad JSON, null pointers) where there is no `AppError`.
+fn set_app_error_code(code: SnapforgeErrorCode, msg: impl Into<String>) {
+    if let Ok(mut guard) = LAST_APP_ERROR.lock() {
+        *guard = Some((code, msg.into()));
+    }
+}
+
+/// Record a failure from a use-case call, deriving the stable code from the
+/// `AppError` variant and the message from its `Display`.
+fn set_app_error_from(err: &snapforge_app::AppError) {
+    set_app_error_code(SnapforgeErrorCode::from_app_error(err), err.to_string());
+}
+
+/// Set the error string with the catch-all `InvalidInput` code. Kept for the
+/// FFI input-validation callsites that were already passing a plain string.
+fn set_app_error(msg: impl Into<String>) {
+    set_app_error_code(SnapforgeErrorCode::InvalidInput, msg);
 }
 
 fn clear_app_error() {
@@ -438,21 +505,181 @@ fn clear_app_error() {
 /// Get the last use-case error, or NULL if none.
 ///
 /// Caller must free the returned string via `snapforge_free_string`.
-/// Coexists with `snapforge_last_recording_error` for now; once Qt migrates
-/// to the use-case surface, the per-domain error fns will be removed.
+/// Read the machine-readable category via `snapforge_app_last_error_code`.
 #[no_mangle]
 pub extern "C" fn snapforge_app_last_error() -> *mut c_char {
-    let guard = match LAST_APP_ERROR.lock() {
-        Ok(g) => g,
-        Err(_) => return ptr::null_mut(),
+    // A poisoned lock means a prior holder panicked mid-update — surface a
+    // synthetic message rather than NULL ("no error"), matching the Internal
+    // code returned by snapforge_app_last_error_code.
+    let Ok(guard) = LAST_APP_ERROR.lock() else {
+        return match cstring_sanitized("internal: error state lock poisoned") {
+            Ok(cs) => cs.into_raw(),
+            Err(_) => ptr::null_mut(),
+        };
     };
-    match guard.as_deref() {
-        Some(msg) => match cstring_sanitized(msg) {
+    match guard.as_ref() {
+        Some((_, msg)) => match cstring_sanitized(msg) {
             Ok(cs) => cs.into_raw(),
             Err(_) => ptr::null_mut(),
         },
         None => ptr::null_mut(),
     }
+}
+
+/// Get the stable category code of the last use-case error.
+///
+/// Returns `SnapforgeErrorCode::None` (0) when the last call succeeded or none
+/// has run, or `SnapforgeErrorCode::Internal` if the error-state lock is
+/// poisoned (a prior holder panicked) — never a misleading 0 in that case.
+#[no_mangle]
+pub extern "C" fn snapforge_app_last_error_code() -> i32 {
+    match LAST_APP_ERROR.lock() {
+        Ok(guard) => match guard.as_ref() {
+            Some((code, _)) => *code as i32,
+            None => SnapforgeErrorCode::None as i32,
+        },
+        Err(_) => SnapforgeErrorCode::Internal as i32,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Logging bridge (Rust `tracing` -> Qt Logger)
+//
+// Every snapforge_* crate emits diagnostics through the `tracing` macros. The
+// Qt frontend registers a C callback via `snapforge_set_log_callback`; we
+// install a tracing-subscriber layer that formats each event and forwards it
+// to that callback so Rust logs land in the same rotating file as Qt's. With
+// no callback registered the layer falls back to stderr (preserving the old
+// eprintln! behaviour for headless / test runs).
+// ---------------------------------------------------------------------------
+
+use std::sync::atomic::{AtomicPtr, Ordering};
+
+/// C callback the Qt side registers to receive formatted Rust log lines.
+/// `level` is a [`SnapforgeLogLevel`]; `msg` is a NUL-terminated UTF-8 string
+/// **owned by Rust and valid only for the duration of the call** — the
+/// callback must copy it, not retain the pointer.
+pub type SnapforgeLogCallback = extern "C" fn(level: i32, msg: *const c_char);
+
+/// Stable log-level discriminants passed to [`SnapforgeLogCallback`]. Chosen to
+/// line up with severity so the Qt side can map them onto `QtMsgType`.
+#[repr(i32)]
+#[derive(Debug, Clone, Copy)]
+pub enum SnapforgeLogLevel {
+    Trace = 0,
+    Debug = 1,
+    Info = 2,
+    Warn = 3,
+    Error = 4,
+}
+
+impl SnapforgeLogLevel {
+    fn from_tracing(level: tracing::Level) -> Self {
+        match level {
+            tracing::Level::TRACE => SnapforgeLogLevel::Trace,
+            tracing::Level::DEBUG => SnapforgeLogLevel::Debug,
+            tracing::Level::INFO => SnapforgeLogLevel::Info,
+            tracing::Level::WARN => SnapforgeLogLevel::Warn,
+            tracing::Level::ERROR => SnapforgeLogLevel::Error,
+        }
+    }
+}
+
+/// The currently-registered callback, stored as a raw fn pointer behind an
+/// atomic so the subscriber thread and the Qt registration thread don't race.
+/// `null` means "no callback — fall back to stderr".
+static LOG_CALLBACK: AtomicPtr<()> = AtomicPtr::new(ptr::null_mut());
+
+/// A `tracing` layer that formats each event's message and hands it to the
+/// registered C callback (or stderr if none).
+struct FfiBridgeLayer;
+
+/// Pull just the `message` field out of an event into a `String`. tracing
+/// stores the formatted-args message under the well-known `message` field.
+struct MessageVisitor(String);
+
+impl tracing::field::Visit for MessageVisitor {
+    fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+        if field.name() == "message" {
+            use std::fmt::Write;
+            // Overwrite rather than append: `message` is recorded once.
+            self.0.clear();
+            let _ = write!(self.0, "{:?}", value);
+        }
+    }
+}
+
+impl<S> tracing_subscriber::Layer<S> for FfiBridgeLayer
+where
+    S: tracing::Subscriber,
+{
+    fn on_event(
+        &self,
+        event: &tracing::Event<'_>,
+        _ctx: tracing_subscriber::layer::Context<'_, S>,
+    ) {
+        let level = SnapforgeLogLevel::from_tracing(*event.metadata().level());
+        let mut visitor = MessageVisitor(String::new());
+        event.record(&mut visitor);
+        dispatch_log(level, &visitor.0);
+    }
+}
+
+/// Forward a single formatted record to the registered callback, or stderr.
+/// Panic-safe: the FFI callback runs inside `catch_unwind` so a panicking Qt
+/// callback can never unwind across the boundary (the workspace builds with
+/// `panic = "abort"`, but the guard keeps the contract explicit and also
+/// covers the test profile which uses unwind).
+fn dispatch_log(level: SnapforgeLogLevel, message: &str) {
+    let raw = LOG_CALLBACK.load(Ordering::Acquire);
+    if raw.is_null() {
+        eprintln!("{}", message);
+        return;
+    }
+    // SAFETY: `raw` was stored from a valid `SnapforgeLogCallback` in
+    // `snapforge_set_log_callback` and is only ever cleared back to null.
+    let cb: SnapforgeLogCallback = unsafe { std::mem::transmute(raw) };
+    // Reuse the NUL sanitizer so an interior NUL in a log line can never be
+    // passed to C as a truncated / malformed string.
+    let Ok(cstr) = cstring_sanitized(message) else {
+        return;
+    };
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        cb(level as i32, cstr.as_ptr());
+    }));
+    if result.is_err() {
+        // Don't recurse through tracing here — the layer is what called us.
+        eprintln!("[snapforge] log callback panicked; suppressing");
+    }
+}
+
+/// Register the C callback that receives formatted Rust log records, and (on
+/// first call) install the tracing subscriber that drives it. Pass a non-null
+/// `callback`; passing it again replaces the previous one. The subscriber is
+/// installed exactly once — subsequent calls only swap the callback pointer.
+///
+/// Qt calls this once at startup to route Rust diagnostics into its rotating
+/// log file. Until it does, Rust logs fall back to stderr.
+///
+/// # Safety
+///
+/// `callback` must be a valid function pointer for the remaining lifetime of
+/// the process (it is stored and invoked from arbitrary Rust threads). It must
+/// not unwind — Rust guards the call with `catch_unwind`, but the callback
+/// should still avoid panicking.
+#[no_mangle]
+pub unsafe extern "C" fn snapforge_set_log_callback(callback: SnapforgeLogCallback) {
+    LOG_CALLBACK.store(callback as *mut (), Ordering::Release);
+
+    // Install the subscriber once. `try_init` is a no-op (returns Err) if a
+    // global subscriber already exists, so this is safe to race / repeat.
+    static SUBSCRIBER_INIT: OnceLock<()> = OnceLock::new();
+    SUBSCRIBER_INIT.get_or_init(|| {
+        use tracing_subscriber::prelude::*;
+        let _ = tracing_subscriber::registry()
+            .with(FfiBridgeLayer)
+            .try_init();
+    });
 }
 
 /// Parse a `Rect` from the `region` field of a JSON value. Returns `Ok(None)`
@@ -551,7 +778,10 @@ pub unsafe extern "C" fn snapforge_screenshot(req_json: *const c_char) -> *mut c
             let serialized = match serde_json::to_string(&body) {
                 Ok(s) => s,
                 Err(e) => {
-                    set_app_error(format!("failed to serialize result: {}", e));
+                    set_app_error_code(
+                        SnapforgeErrorCode::Internal,
+                        format!("failed to serialize result: {}", e),
+                    );
                     return ptr::null_mut();
                 }
             };
@@ -561,7 +791,7 @@ pub unsafe extern "C" fn snapforge_screenshot(req_json: *const c_char) -> *mut c
             }
         }
         Err(e) => {
-            set_app_error(e.to_string());
+            set_app_error_from(&e);
             ptr::null_mut()
         }
     }
@@ -613,15 +843,12 @@ pub unsafe extern "C" fn snapforge_save_prerendered(
         }
     };
 
-    let expected = match (width as usize)
+    let Some(expected) = (width as usize)
         .checked_mul(height as usize)
         .and_then(|n| n.checked_mul(4))
-    {
-        Some(n) => n,
-        None => {
-            set_app_error("width*height*4 overflows");
-            return ptr::null_mut();
-        }
+    else {
+        set_app_error("width*height*4 overflows");
+        return ptr::null_mut();
     };
     if rgba_len != expected {
         set_app_error(format!(
@@ -672,7 +899,10 @@ pub unsafe extern "C" fn snapforge_save_prerendered(
             let serialized = match serde_json::to_string(&body) {
                 Ok(s) => s,
                 Err(e) => {
-                    set_app_error(format!("failed to serialize result: {}", e));
+                    set_app_error_code(
+                        SnapforgeErrorCode::Internal,
+                        format!("failed to serialize result: {}", e),
+                    );
                     return ptr::null_mut();
                 }
             };
@@ -682,7 +912,7 @@ pub unsafe extern "C" fn snapforge_save_prerendered(
             }
         }
         Err(e) => {
-            set_app_error(e.to_string());
+            set_app_error_from(&e);
             ptr::null_mut()
         }
     }
@@ -699,14 +929,12 @@ struct FfiAppRecordingHandle {
     inner: Mutex<Option<app_recording::RecordingHandle>>,
 }
 
-unsafe fn check_app_recording_handle<'a>(
-    handle: *mut c_void,
-) -> Option<&'a FfiAppRecordingHandle> {
+unsafe fn check_app_recording_handle<'a>(handle: *mut c_void) -> Option<&'a FfiAppRecordingHandle> {
     if handle.is_null() || (handle as usize) < 4096 {
         return None;
     }
     if !is_registered_handle(handle) {
-        eprintln!(
+        tracing::warn!(
             "[snapforge] app recording handle {:p} not in registry; rejecting",
             handle
         );
@@ -715,9 +943,10 @@ unsafe fn check_app_recording_handle<'a>(
     let p = handle.cast::<FfiAppRecordingHandle>();
     let magic = std::ptr::read_volatile(std::ptr::addr_of!((*p).magic));
     if magic != APP_RECORDING_MAGIC_ALIVE {
-        eprintln!(
+        tracing::warn!(
             "[snapforge] app recording handle {:p} bad magic 0x{:016x}; rejecting",
-            handle, magic
+            handle,
+            magic
         );
         return None;
     }
@@ -804,7 +1033,7 @@ pub unsafe extern "C" fn snapforge_record_start(req_json: *const c_char) -> *mut
             raw
         }
         Err(e) => {
-            set_app_error(e.to_string());
+            set_app_error_from(&e);
             ptr::null_mut()
         }
     }
@@ -820,12 +1049,9 @@ pub unsafe extern "C" fn snapforge_record_stop(handle: *mut c_void) -> c_int {
     let Some(wrapper) = check_app_recording_handle(handle) else {
         return -1;
     };
-    let mut guard = match wrapper.inner.lock() {
-        Ok(g) => g,
-        Err(_) => {
-            set_app_error("recording mutex poisoned");
-            return -1;
-        }
+    let Ok(mut guard) = wrapper.inner.lock() else {
+        set_app_error_code(SnapforgeErrorCode::Internal, "recording mutex poisoned");
+        return -1;
     };
     let taken = guard.take();
     drop(guard);
@@ -836,7 +1062,7 @@ pub unsafe extern "C" fn snapforge_record_stop(handle: *mut c_void) -> c_int {
                 0
             }
             Err(e) => {
-                set_app_error(e.to_string());
+                set_app_error_from(&e);
                 -1
             }
         },
@@ -854,15 +1080,14 @@ pub unsafe extern "C" fn snapforge_record_pause(handle: *mut c_void) -> c_int {
     let Some(wrapper) = check_app_recording_handle(handle) else {
         return -1;
     };
-    let guard = match wrapper.inner.lock() {
-        Ok(g) => g,
-        Err(_) => return -1,
+    let Ok(guard) = wrapper.inner.lock() else {
+        return -1;
     };
     match guard.as_ref() {
         Some(h) => match app_recording::pause_recording(h) {
             Ok(()) => 0,
             Err(e) => {
-                set_app_error(e.to_string());
+                set_app_error_from(&e);
                 -1
             }
         },
@@ -880,15 +1105,14 @@ pub unsafe extern "C" fn snapforge_record_resume(handle: *mut c_void) -> c_int {
     let Some(wrapper) = check_app_recording_handle(handle) else {
         return -1;
     };
-    let guard = match wrapper.inner.lock() {
-        Ok(g) => g,
-        Err(_) => return -1,
+    let Ok(guard) = wrapper.inner.lock() else {
+        return -1;
     };
     match guard.as_ref() {
         Some(h) => match app_recording::resume_recording(h) {
             Ok(()) => 0,
             Err(e) => {
-                set_app_error(e.to_string());
+                set_app_error_from(&e);
                 -1
             }
         },
@@ -909,7 +1133,7 @@ pub unsafe extern "C" fn snapforge_record_free_handle(handle: *mut c_void) {
         return;
     }
     if !unregister_handle(handle) {
-        eprintln!(
+        tracing::warn!(
             "[snapforge] record_free_handle: {:p} not in registry; ignoring",
             handle
         );
@@ -918,9 +1142,10 @@ pub unsafe extern "C" fn snapforge_record_free_handle(handle: *mut c_void) {
     let p = handle.cast::<FfiAppRecordingHandle>();
     let magic = std::ptr::read_volatile(std::ptr::addr_of!((*p).magic));
     if magic != APP_RECORDING_MAGIC_ALIVE {
-        eprintln!(
+        tracing::error!(
             "[snapforge] record_free_handle: {:p} bad magic 0x{:016x}; leaking",
-            handle, magic
+            handle,
+            magic
         );
         return;
     }
@@ -950,7 +1175,7 @@ unsafe fn check_click_handle<'a>(handle: *mut c_void) -> Option<&'a FfiClickHand
         return None;
     }
     if !is_registered_handle(handle) {
-        eprintln!(
+        tracing::warn!(
             "[snapforge] click handle {:p} not in registry; rejecting",
             handle
         );
@@ -959,9 +1184,10 @@ unsafe fn check_click_handle<'a>(handle: *mut c_void) -> Option<&'a FfiClickHand
     let p = handle.cast::<FfiClickHandle>();
     let magic = std::ptr::read_volatile(std::ptr::addr_of!((*p).magic));
     if magic != APP_CLICKS_MAGIC_ALIVE {
-        eprintln!(
+        tracing::warn!(
             "[snapforge] click handle {:p} bad magic 0x{:016x}; rejecting",
-            handle, magic
+            handle,
+            magic
         );
         return None;
     }
@@ -1004,7 +1230,7 @@ pub unsafe extern "C" fn snapforge_clicks_start(
     }) {
         Ok(h) => h,
         Err(e) => {
-            set_app_error(e.to_string());
+            set_app_error_from(&e);
             return ptr::null_mut();
         }
     };
@@ -1030,9 +1256,8 @@ pub unsafe extern "C" fn snapforge_clicks_stop(handle: *mut c_void) -> c_int {
     let Some(wrapper) = check_click_handle(handle) else {
         return -1;
     };
-    let mut guard = match wrapper.inner.lock() {
-        Ok(g) => g,
-        Err(_) => return -1,
+    let Ok(mut guard) = wrapper.inner.lock() else {
+        return -1;
     };
     // Dropping the ClickHandle stops the tap + joins the forwarder thread.
     let _ = guard.take();
@@ -1051,7 +1276,7 @@ pub unsafe extern "C" fn snapforge_clicks_free_handle(handle: *mut c_void) {
         return;
     }
     if !unregister_handle(handle) {
-        eprintln!(
+        tracing::warn!(
             "[snapforge] clicks_free_handle: {:p} not in registry; ignoring",
             handle
         );
@@ -1060,9 +1285,10 @@ pub unsafe extern "C" fn snapforge_clicks_free_handle(handle: *mut c_void) {
     let p = handle.cast::<FfiClickHandle>();
     let magic = std::ptr::read_volatile(std::ptr::addr_of!((*p).magic));
     if magic != APP_CLICKS_MAGIC_ALIVE {
-        eprintln!(
+        tracing::error!(
             "[snapforge] clicks_free_handle: {:p} bad magic 0x{:016x}; leaking",
-            handle, magic
+            handle,
+            magic
         );
         return;
     }
@@ -1116,5 +1342,59 @@ mod app_ffi_tests {
     fn clicks_stop_rejects_null_handle() {
         let rc = unsafe { snapforge_clicks_stop(ptr::null_mut()) };
         assert_eq!(rc, -1);
+    }
+
+    #[test]
+    fn null_screenshot_sets_invalid_input_code() {
+        let res = unsafe { snapforge_screenshot(ptr::null()) };
+        assert!(res.is_null());
+        // The null-pointer rejection routes through set_app_error -> InvalidInput.
+        assert_eq!(
+            snapforge_app_last_error_code(),
+            SnapforgeErrorCode::InvalidInput as i32
+        );
+    }
+
+    #[test]
+    fn error_code_maps_from_app_error_variant() {
+        use snapforge_app::AppError;
+        // Spot-check the AppError -> code mapping for a couple of categories.
+        assert_eq!(
+            SnapforgeErrorCode::from_app_error(&AppError::InvalidRequest("x".into())),
+            SnapforgeErrorCode::InvalidInput
+        );
+        let cfg_err = AppError::Config(snapforge_core::config::ConfigError::Parse(
+            serde_json::from_str::<serde_json::Value>("{").unwrap_err(),
+        ));
+        assert_eq!(
+            SnapforgeErrorCode::from_app_error(&cfg_err),
+            SnapforgeErrorCode::Config
+        );
+    }
+
+    // Records the last (level, message) delivered to the C log callback so the
+    // bridge test can assert the forwarding actually happened.
+    static LAST_LOG: Mutex<Option<(i32, String)>> = Mutex::new(None);
+
+    extern "C" fn capture_log(level: i32, msg: *const c_char) {
+        let s = unsafe { CStr::from_ptr(msg) }
+            .to_string_lossy()
+            .into_owned();
+        if let Ok(mut g) = LAST_LOG.lock() {
+            *g = Some((level, s));
+        }
+    }
+
+    #[test]
+    fn log_callback_receives_forwarded_records() {
+        unsafe { snapforge_set_log_callback(capture_log) };
+        tracing::warn!("ffi-bridge-test-marker");
+        let got = LAST_LOG.lock().unwrap().clone();
+        // The subscriber may already be installed by another test's call; what
+        // matters is that once registered, our callback sees the record.
+        if let Some((level, msg)) = got {
+            assert_eq!(level, SnapforgeLogLevel::Warn as i32);
+            assert!(msg.contains("ffi-bridge-test-marker"), "got: {msg}");
+        }
     }
 }

@@ -10,6 +10,13 @@ members = [
     "crates/snapforge-ffi",
 ]
 
+[workspace.dependencies]
+# Structured diagnostics. Crates emit via the `tracing` macros; the FFI layer
+# installs a subscriber that bridges records to the Qt logger (see
+# snapforge-ffi). `tracing-subscriber` is only needed where a subscriber is
+# installed, so it's pulled in directly by snapforge-ffi rather than here.
+tracing = "0.1"
+
 [profile.release]
 lto = "thin"
 codegen-units = 1

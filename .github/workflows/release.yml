@@ -89,8 +89,8 @@ jobs:
         with:
           ref: ${{ needs.release.outputs.tag }}
 
-      - name: Install Qt6
-        run: brew install qt
+      - name: Install Qt6 + bundling deps
+        run: brew install qt dylibbundler ffmpeg
 
       - name: Cache cargo registry & target
         uses: actions/cache@v4
@@ -103,19 +103,12 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-
 
-      - name: Build snapforge-ffi (release)
-        run: cargo build --release -p snapforge-ffi
-
-      - name: Configure Qt build
-        run: cmake -S qt -B qt/build -DCMAKE_PREFIX_PATH="$(brew --prefix qt)"
-
+      # Single source of truth: same script developers run locally. Builds
+      # release (cargo + cmake), bundles, signs, and packages the .dmg.
       - name: Build .dmg
-        run: cmake --build qt/build --parallel --target dmg
-
-      - name: Rename .dmg
-        run: mv qt/build/Snapforge.dmg "qt/build/Snapforge-${TAG_NAME}.dmg"
+        run: packaging/macos/build_dmg.sh
 
       - name: Upload to Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release upload "$TAG_NAME" qt/build/Snapforge-*.dmg --clobber --repo "$GITHUB_REPOSITORY"
+        run: gh release upload "$TAG_NAME" qt/build/dist/Snapforge-*.dmg --clobber --repo "$GITHUB_REPOSITORY"

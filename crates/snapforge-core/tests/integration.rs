@@ -5,8 +5,7 @@ use snapforge_core::types::{CaptureFormat, Rect};
 /// any CI matrix entry with a graphics session; unset on headless runners.
 fn require_display() -> bool {
     std::env::var("SNAPFORGE_REQUIRE_DISPLAY")
-        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-        .unwrap_or(false)
+        .is_ok_and(|v| v == "1" || v.eq_ignore_ascii_case("true"))
 }
 
 /// Either unwrap (display required) or return None (headless). Replaces the
@@ -16,9 +15,12 @@ fn assert_or_skip<T>(name: &str, result: Result<T, impl std::fmt::Debug>) -> Opt
     match result {
         Ok(v) => Some(v),
         Err(e) => {
-            if require_display() {
-                panic!("{}: capture failed but SNAPFORGE_REQUIRE_DISPLAY=1: {:?}", name, e);
-            }
+            assert!(
+                !require_display(),
+                "{}: capture failed but SNAPFORGE_REQUIRE_DISPLAY=1: {:?}",
+                name,
+                e
+            );
             eprintln!(
                 "[integration] skipping {}: capture unavailable on this runner: {:?}",
                 name, e

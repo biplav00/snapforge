@@ -2,6 +2,7 @@
 name = "snapforge-encode"
 version = "1.3.9"
 edition = "2021"
+publish = false
 
 [dependencies]
 snapforge-domain = { path = "../snapforge-domain" }
@@ -9,6 +10,7 @@ snapforge-capture = { path = "../snapforge-capture" }
 snapforge-storage = { path = "../snapforge-storage" }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "rayon"] }
 thiserror = "2"
+tracing = { workspace = true }
 
 [lints]
 workspace = true

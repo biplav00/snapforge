@@ -1,0 +1,65 @@
+# cargo-deny configuration for Snapforge.
+#
+# Run with: cargo deny check
+#
+# This project only ships on macOS (Qt6 + Rust screen recorder), so we restrict
+# the dependency graph to Apple targets. That prunes the Linux-only capture
+# backends (wayland / drm / x11rb / pipewire, etc.) pulled in transitively by
+# `xcap`, keeping the license/advisory surface to what we actually build & ship.
+[graph]
+targets = [
+    "aarch64-apple-darwin",
+    "x86_64-apple-darwin",
+]
+all-features = true
+
+[advisories]
+# Fail the build on any crate with a known security vulnerability (the default
+# severity behaviour in v2 is to deny advisories). Yanked crates are denied.
+version = 2
+yanked = "deny"
+# Scope of the "unmaintained" check. We limit it to first-party + direct deps
+# ("workspace") so a deep transitive crate going unmaintained doesn't block a
+# release, while still surfacing issues in deps we directly chose.
+unmaintained = "workspace"
+
+[licenses]
+version = 2
+# Permissive licenses present in the macOS dependency tree. Each entry below is
+# backed by at least one crate actually in the graph (verified via
+# `cargo metadata` / `cargo deny list`).
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "BSD-2-Clause", # zerocopy
+    "BSD-3-Clause", # bindgen, moxcms, pxfm
+    "Zlib",         # bytemuck, objc2-*
+    "Unicode-3.0",  # icu_* (via idna/url)
+    "MPL-2.0",      # option-ext (via dirs)
+    "Unlicense",    # byteorder-lite, memchr (dual-licensed)
+    "0BSD",         # adler2 (dual-licensed)
+]
+# MPL-2.0 is file-level copyleft; we only consume option-ext unmodified, so a
+# 0.0 confidence threshold isn't needed — keep the default 0.8 clarity gate.
+confidence-threshold = 0.8
+
+[licenses.private]
+# Our own workspace crates carry no `license` field (they are not published).
+# Don't fail the check on them.
+ignore = true
+
+[bans]
+# Duplicate versions of a crate bloat the binary and slow builds, but are
+# common in a large transitive tree — warn rather than fail.
+multiple-versions = "warn"
+# Intra-workspace crates depend on each other by `path` (which cargo records as
+# a `*` version requirement). Those are first-party and fine; only flag wildcard
+# requirements on real third-party crates.
+wildcards = "deny"
+allow-wildcard-paths = true
+
+[sources]
+# Only allow crates from the official registry; no git/unknown sources.
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

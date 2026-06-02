@@ -49,6 +49,9 @@ public slots:
                      QSystemTrayIcon::MessageIcon icon,
                      int msTimeout);
 
+    // Rebuild the active menu so updated hotkey glyphs show after a rebind.
+    void refreshMenu();
+
 signals:
     // Idle-menu actions
     void actionScreenshot();

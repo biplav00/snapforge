@@ -209,8 +209,8 @@ mod tests {
             return;
         };
         let off = snapforge_domain::Rect {
-            x: full.width() as i32 + 1000,
-            y: full.height() as i32 + 1000,
+            x: i32::try_from(full.width()).unwrap_or(i32::MAX - 1000) + 1000,
+            y: i32::try_from(full.height()).unwrap_or(i32::MAX - 1000) + 1000,
             width: 100,
             height: 100,
         };

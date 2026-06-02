@@ -82,7 +82,16 @@ These remain because they are the only way to obtain a raw desktop bitmap that t
 | `snapforge_clicks_start(cb, user_data)` | `*mut c_void` (handle) | `cb` fires on a Rust-owned thread; Qt must dispatch to its main thread (see `ClickTap::onClickStatic`). NULL on failure (typically missing Input Monitoring grant). |
 | `snapforge_clicks_stop(handle)` | `c_int` | |
 | `snapforge_clicks_free_handle(handle)` | void | |
-| `snapforge_app_last_error()` | `*mut c_char` | Shared error string for every use case. Owned. |
+| `snapforge_app_last_error()` | `*mut c_char` | Shared error string for every use case. Owned. Poisoned lock surfaces a synthetic "lock poisoned" string, not NULL. |
+| `snapforge_app_last_error_code()` | `c_int` | Stable `SnapforgeErrorCode` category of the last error (0 = none). Poisoned lock returns `Internal` (8), never a misleading 0. |
+
+### Logging bridge
+
+| Function | Returns | Notes |
+|----------|---------|-------|
+| `snapforge_set_log_callback(cb)` | void | Registers a `SnapforgeLogCallback(int level, const char *msg)` that receives formatted Rust `tracing` records, and installs the subscriber once. `level` is a `SnapforgeLogLevel`; `msg` is Rust-owned and valid only for the call (copy it). Fires from arbitrary Rust threads; callback must be thread-safe and must not unwind. With no callback registered, Rust logs go to stderr. |
+
+`SnapforgeErrorCode` (repr i32, append-only): `None=0, InvalidInput=1, PermissionDenied=2, NotFound=3, Io=4, Encode=5, Capture=6, Config=7, Internal=8`. Derived from `AppError`/sub-crate error variants.
 
 ## Lifetime ownership table
 
