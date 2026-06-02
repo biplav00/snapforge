@@ -89,8 +89,8 @@ jobs:
         with:
           ref: ${{ needs.release.outputs.tag }}
 
-      - name: Install Qt6
-        run: brew install qt
+      - name: Install Qt6 + bundling deps
+        run: brew install qt dylibbundler
 
       - name: Cache cargo registry & target
         uses: actions/cache@v4

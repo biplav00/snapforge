@@ -20,8 +20,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Qt6
-        run: brew install qt
+      - name: Install Qt6 + bundling deps
+        run: brew install qt dylibbundler
 
       - name: Cache cargo registry & target
         uses: actions/cache@v4
