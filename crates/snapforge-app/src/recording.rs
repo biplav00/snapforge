@@ -33,7 +33,9 @@ pub struct RecordingHandle {
 
 impl RecordingHandle {
     pub fn is_running(&self) -> bool {
-        self.inner.as_ref().map_or(false, |h| h.is_running())
+        self.inner
+            .as_ref()
+            .is_some_and(snapforge_encode::record::ffmpeg::RecordingHandle::is_running)
     }
 
     pub fn pause(&self) -> Result<(), AppError> {
@@ -133,9 +135,8 @@ mod tests {
             add_to_history_on_stop: false,
         };
         let res = start_recording(req);
-        let err = match res {
-            Ok(_) => panic!("expected InvalidRequest"),
-            Err(e) => e,
+        let Err(err) = res else {
+            panic!("expected InvalidRequest");
         };
         assert!(matches!(err, AppError::InvalidRequest(_)));
     }
@@ -158,9 +159,8 @@ mod tests {
             add_to_history_on_stop: false,
         };
         let res = start_recording(req);
-        let err = match res {
-            Ok(_) => panic!("expected InvalidRequest"),
-            Err(e) => e,
+        let Err(err) = res else {
+            panic!("expected InvalidRequest");
         };
         assert!(matches!(err, AppError::InvalidRequest(_)));
     }

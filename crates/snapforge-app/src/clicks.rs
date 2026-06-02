@@ -68,11 +68,11 @@ where
     let tracker = ClickTracker::new();
 
     #[cfg(target_os = "macos")]
-    let tap = tracker
-        .start_macos_tap()
-        .ok_or_else(|| AppError::InvalidRequest(
+    let tap = tracker.start_macos_tap().ok_or_else(|| {
+        AppError::InvalidRequest(
             "failed to start click event tap (Accessibility permission required)".into(),
-        ))?;
+        )
+    })?;
 
     let stop = Arc::new(AtomicBool::new(false));
     let stop_thread = Arc::clone(&stop);
@@ -91,8 +91,8 @@ where
                 // ones the tracker would drop anyway, and we only care about
                 // brand-new ones (filtered by `last_seen`).
                 tracker_thread.recent_into(1000, &mut buf);
-                for ev in buf.iter() {
-                    if last_seen.map_or(true, |t| ev.timestamp > t) {
+                for ev in &buf {
+                    if last_seen.is_none_or(|t| ev.timestamp > t) {
                         callback(ClickEvent {
                             x: ev.x,
                             y: ev.y,
@@ -119,8 +119,7 @@ mod tests {
     use super::*;
     use std::sync::Mutex;
 
-    // Real tap needs Accessibility permission; skip in CI / sandbox.
-    #[ignore]
+    #[ignore = "real event tap needs Accessibility permission; not available in CI/sandbox"]
     #[test]
     fn smoke_start_drop() {
         let received: Arc<Mutex<Vec<ClickEvent>>> = Arc::new(Mutex::new(Vec::new()));

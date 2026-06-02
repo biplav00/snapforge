@@ -153,12 +153,9 @@ fn start_recording_rgba(
     };
 
     let mut child = spawn_ffmpeg(&ffmpeg_path, &config, width, height, PixelFormat::Rgba)?;
-    let mut stdin = match child.stdin.take() {
-        Some(s) => s,
-        None => {
-            kill_and_reap(child);
-            return Err(RecordError::FfmpegSpawnFailed("no stdin".into()));
-        }
+    let Some(mut stdin) = child.stdin.take() else {
+        kill_and_reap(child);
+        return Err(RecordError::FfmpegSpawnFailed("no stdin".into()));
     };
     let stderr = child.stderr.take();
 
@@ -360,12 +357,9 @@ fn start_recording_macos_bgra(
     }
 
     let mut child = spawn_ffmpeg(&ffmpeg_path, &config, width, height, PixelFormat::Bgra)?;
-    let mut stdin = match child.stdin.take() {
-        Some(s) => s,
-        None => {
-            kill_and_reap(child);
-            return Err(RecordError::FfmpegSpawnFailed("no stdin".into()));
-        }
+    let Some(mut stdin) = child.stdin.take() else {
+        kill_and_reap(child);
+        return Err(RecordError::FfmpegSpawnFailed("no stdin".into()));
     };
     let stderr = child.stderr.take();
 
@@ -704,6 +698,9 @@ fn draw_clicks_bgra(
 /// with `(x + 128 + (x >> 8)) >> 8` so the divide is two shifts and an add,
 /// staying within 1 ULP of the exact result for u16 inputs. Massively faster
 /// than the previous f32 multiply path on the recording hot loop.
+// Forced inline: this is the per-pixel blend on the recording hot loop; the
+// call overhead is measurable, so we deliberately request always-inline.
+#[allow(clippy::inline_always)]
 #[inline(always)]
 fn blend_u8(src: u8, dst: u8, alpha: u8) -> u8 {
     let s = u16::from(src);
@@ -723,7 +720,8 @@ fn blend_u8(src: u8, dst: u8, alpha: u8) -> u8 {
     clippy::too_many_arguments,
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
-    clippy::cast_precision_loss
+    clippy::cast_precision_loss,
+    clippy::cast_possible_wrap
 )]
 fn fill_circle_bgra(
     buf: &mut [u8],
@@ -786,7 +784,8 @@ fn fill_circle_bgra(
     clippy::too_many_arguments,
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
-    clippy::cast_precision_loss
+    clippy::cast_precision_loss,
+    clippy::cast_possible_wrap
 )]
 fn draw_ring_bgra(
     buf: &mut [u8],
@@ -842,6 +841,80 @@ fn draw_ring_bgra(
             }
         }
     }
+}
+
+fn spawn_ffmpeg(
+    ffmpeg_path: &Path,
+    config: &RecordConfig,
+    width: u32,
+    height: u32,
+    pixel_format: PixelFormat,
+) -> Result<Child, RecordError> {
+    let crf = match config.quality {
+        RecordingQuality::Low => "28",
+        RecordingQuality::Medium => "23",
+        RecordingQuality::High => "18",
+    };
+
+    let size_arg = format!("{}x{}", width, height);
+    let fps_arg = config.fps.to_string();
+    let output_path = config.output_path.to_string_lossy().to_string();
+
+    if let Some(parent) = config.output_path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| RecordError::WriteFailed(format!("failed to create output dir: {}", e)))?;
+    }
+
+    let mut args: Vec<String> = vec![
+        "-y".into(),
+        "-f".into(),
+        "rawvideo".into(),
+        "-pix_fmt".into(),
+        pixel_format.ffmpeg_name().into(),
+        "-s".into(),
+        size_arg,
+        "-r".into(),
+        fps_arg,
+        "-i".into(),
+        "-".into(),
+        "-an".into(),
+    ];
+
+    match config.format {
+        RecordingFormat::Mp4 => {
+            args.extend([
+                "-c:v".into(),
+                "libx264".into(),
+                "-preset".into(),
+                "fast".into(),
+                "-crf".into(),
+                crf.into(),
+                "-pix_fmt".into(),
+                "yuv420p".into(),
+            ]);
+        }
+        RecordingFormat::Gif => {
+            args.extend([
+                "-vf".into(),
+                "split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse".into(),
+                "-loop".into(),
+                "0".into(),
+            ]);
+        }
+    }
+
+    // `--` ends ffmpeg's option parsing so `output_path` cannot be misread as a flag
+    // (e.g. a path beginning with `-`). The output path is user-controlled via config.
+    args.push("--".into());
+    args.push(output_path);
+
+    Command::new(ffmpeg_path)
+        .args(&args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped()) // Capture stderr for error diagnostics
+        .spawn()
+        .map_err(|e| RecordError::FfmpegSpawnFailed(e.to_string()))
 }
 
 #[cfg(test)]
@@ -973,15 +1046,11 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let config = test_config(&tmp.path().join("recording.mp4"));
 
-        match start_recording(config) {
-            Ok(handle) => {
-                assert!(handle.is_running());
-                std::thread::sleep(Duration::from_millis(500));
-                assert!(handle.stop().is_ok());
-            }
-            Err(_) => {
-                // Capture or ffmpeg may fail in CI
-            }
+        // Capture or ffmpeg may fail in CI; only assert when recording starts.
+        if let Ok(handle) = start_recording(config) {
+            assert!(handle.is_running());
+            std::thread::sleep(Duration::from_millis(500));
+            assert!(handle.stop().is_ok());
         }
     }
 
@@ -1112,7 +1181,9 @@ mod tests {
         // dst(0,0) == src(1,1) -> id = 1*4+1 = 5
         assert_eq!(dst[0], 5);
         // dst(1,1) == src(2,2) -> id = 2*4+2 = 10
-        let off = (1 * 2 + 1) * 4;
+        // byte offset of dst pixel (1,1) in a 2-wide RGBA buffer:
+        // (row*width + col)*4 = (1*2 + 1)*4 = 12
+        let off = 12;
         assert_eq!(dst[off], 10);
     }
 
@@ -1222,78 +1293,4 @@ mod tests {
         draw_clicks_bgra(&mut buf, 8, 8, &[], None, 1.0, 1.0);
         assert_eq!(buf, before, "no clicks should leave the frame untouched");
     }
-}
-
-fn spawn_ffmpeg(
-    ffmpeg_path: &Path,
-    config: &RecordConfig,
-    width: u32,
-    height: u32,
-    pixel_format: PixelFormat,
-) -> Result<Child, RecordError> {
-    let crf = match config.quality {
-        RecordingQuality::Low => "28",
-        RecordingQuality::Medium => "23",
-        RecordingQuality::High => "18",
-    };
-
-    let size_arg = format!("{}x{}", width, height);
-    let fps_arg = config.fps.to_string();
-    let output_path = config.output_path.to_string_lossy().to_string();
-
-    if let Some(parent) = config.output_path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| RecordError::WriteFailed(format!("failed to create output dir: {}", e)))?;
-    }
-
-    let mut args: Vec<String> = vec![
-        "-y".into(),
-        "-f".into(),
-        "rawvideo".into(),
-        "-pix_fmt".into(),
-        pixel_format.ffmpeg_name().into(),
-        "-s".into(),
-        size_arg,
-        "-r".into(),
-        fps_arg,
-        "-i".into(),
-        "-".into(),
-        "-an".into(),
-    ];
-
-    match config.format {
-        RecordingFormat::Mp4 => {
-            args.extend([
-                "-c:v".into(),
-                "libx264".into(),
-                "-preset".into(),
-                "fast".into(),
-                "-crf".into(),
-                crf.into(),
-                "-pix_fmt".into(),
-                "yuv420p".into(),
-            ]);
-        }
-        RecordingFormat::Gif => {
-            args.extend([
-                "-vf".into(),
-                "split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse".into(),
-                "-loop".into(),
-                "0".into(),
-            ]);
-        }
-    }
-
-    // `--` ends ffmpeg's option parsing so `output_path` cannot be misread as a flag
-    // (e.g. a path beginning with `-`). The output path is user-controlled via config.
-    args.push("--".into());
-    args.push(output_path);
-
-    Command::new(ffmpeg_path)
-        .args(&args)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped()) // Capture stderr for error diagnostics
-        .spawn()
-        .map_err(|e| RecordError::FfmpegSpawnFailed(e.to_string()))
 }

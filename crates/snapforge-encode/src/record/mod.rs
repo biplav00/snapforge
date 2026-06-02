@@ -44,7 +44,7 @@ pub fn find_ffmpeg(provided_path: Option<&PathBuf>) -> Result<PathBuf, RecordErr
     if let Some(path) = provided_path {
         if path.exists() {
             if !is_trusted_ffmpeg_location(path) {
-                eprintln!(
+                tracing::warn!(
                     "[snapforge] WARNING: using non-system ffmpeg path: {} \
                      (set via config; verify intent)",
                     path.display()
@@ -86,7 +86,6 @@ pub fn find_ffmpeg(provided_path: Option<&PathBuf>) -> Result<PathBuf, RecordErr
             if beside_exe.exists() {
                 return Ok(beside_exe);
             }
-
         }
     }
 
@@ -122,9 +121,8 @@ pub fn check_ffmpeg() -> Result<(), RecordError> {
 /// only to gate a warning log — not as an authorization boundary.
 fn is_trusted_ffmpeg_location(path: &Path) -> bool {
     use std::path::Component;
-    let abs = match path.canonicalize() {
-        Ok(p) => p,
-        Err(_) => return false,
+    let Ok(abs) = path.canonicalize() else {
+        return false;
     };
     // Adjacent to current executable (bundled in app)
     if let Ok(exe) = std::env::current_exe() {

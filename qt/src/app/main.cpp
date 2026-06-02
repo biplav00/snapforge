@@ -223,6 +223,26 @@ void reloadGlobalHotkeys() {
 
 static PreferencesWindow *g_prefsRef = nullptr;
 
+// Bridge Rust `tracing` records into the Qt Logger so Rust diagnostics land in
+// the same rotating log file as the C++ side. Registered with
+// snapforge_set_log_callback at startup. Fires from arbitrary Rust threads;
+// Logger::log is mutex-guarded so this is safe to call off the main thread.
+// Must not throw — keep it noexcept and trivial.
+static void rustLogCallback(int level, const char *msg) noexcept {
+    if (!msg) return;
+    QtMsgType qtLevel;
+    switch (level) {
+        case SNAPFORGE_LOG_TRACE:
+        case SNAPFORGE_LOG_DEBUG: qtLevel = QtDebugMsg;    break;
+        case SNAPFORGE_LOG_INFO:  qtLevel = QtInfoMsg;     break;
+        case SNAPFORGE_LOG_WARN:  qtLevel = QtWarningMsg;  break;
+        case SNAPFORGE_LOG_ERROR: qtLevel = QtCriticalMsg; break;
+        default:                  qtLevel = QtInfoMsg;     break;
+    }
+    Logger::instance()->log(qtLevel, QStringLiteral("rust"),
+                            QString::fromUtf8(msg));
+}
+
 static QString buildFilename(const QString &pattern, int fmt) {
     QString timestamp = QDateTime::currentDateTime().toString("yyyy-MM-dd_HH-mm-ss");
     const char *extensions[] = { "png", "jpg", "webp" };
@@ -371,6 +391,10 @@ int main(int argc, char *argv[]) {
     // Route qDebug/qWarning/qInfo/qCritical to the on-disk log + ring buffer
     // before any other init so startup messages get captured.
     Logger::install();
+
+    // Route Rust `tracing` diagnostics into the same log file. Done right after
+    // Logger::install so any Rust call below (permission check, etc.) is logged.
+    snapforge_set_log_callback(rustLogCallback);
 
     QApplication app(argc, argv);
     app.setApplicationName("Snapforge");

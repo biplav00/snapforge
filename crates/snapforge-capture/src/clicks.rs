@@ -83,6 +83,9 @@ impl ClickTracker {
 pub use macos_tap::MacOSClickTapHandle;
 
 #[cfg(test)]
+// Tests compare click coordinates against exact integer-valued f64 literals
+// (e.g. 10.0) that are stored verbatim — exact equality is correct here.
+#[allow(clippy::float_cmp)]
 mod tests {
     use super::*;
 
@@ -159,7 +162,7 @@ mod tests {
     // Tap creation requires Accessibility permission and a live CGSession;
     // skip in CI / sandbox by default.
     #[cfg(target_os = "macos")]
-    #[ignore]
+    #[ignore = "requires Accessibility permission and a live CGSession; not available in CI"]
     #[test]
     fn test_macos_tap_start_drop() {
         let t = ClickTracker::new();
@@ -303,15 +306,17 @@ mod macos_tap {
                     + 1;
                 if attempts <= MAX_REENABLE_ATTEMPTS {
                     CGEventTapEnable(tap, true);
-                    eprintln!(
+                    tracing::warn!(
                         "[clicks] event tap disabled (type 0x{:x}); re-enabled (attempt {})",
-                        event_type, attempts
+                        event_type,
+                        attempts
                     );
                 } else {
-                    eprintln!(
+                    tracing::error!(
                         "[clicks] event tap disabled (type 0x{:x}); giving up after {} attempts — \
                          Accessibility permission may have been revoked",
-                        event_type, attempts
+                        event_type,
+                        attempts
                     );
                 }
             }
@@ -371,7 +376,9 @@ mod macos_tap {
             };
 
             if tap.is_null() {
-                eprintln!("[clicks] CGEventTapCreate failed — accessibility permission required");
+                tracing::error!(
+                    "[clicks] CGEventTapCreate failed — accessibility permission required"
+                );
                 // Free the raw Arc pointer we created.
                 unsafe {
                     let _ = Box::from_raw(data_raw);
@@ -413,17 +420,16 @@ mod macos_tap {
         });
 
         // Block until the worker thread either reports the tap is live, or fails.
-        match rx.recv() {
-            Ok(SetupResult::Ok { run_loop, tap }) => Some(MacOSClickTapHandle {
+        if let Ok(SetupResult::Ok { run_loop, tap }) = rx.recv() {
+            Some(MacOSClickTapHandle {
                 run_loop,
                 tap,
                 thread: Some(thread),
-            }),
-            _ => {
-                // Worker thread failed or channel dropped — join it so we don't leak.
-                let _ = thread.join();
-                None
-            }
+            })
+        } else {
+            // Worker thread failed or channel dropped — join it so we don't leak.
+            let _ = thread.join();
+            None
         }
     }
 }

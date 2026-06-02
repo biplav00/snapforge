@@ -39,7 +39,7 @@ pub fn encode_image(
             // sizes — the cost is dominated by the encode anyway.
             let has_transparency = image.pixels().any(|p| p[3] < 255);
             if has_transparency {
-                eprintln!(
+                tracing::warn!(
                     "[snapforge] JPEG output drops the alpha channel; transparent \
                      pixels in the source will be flattened. Use PNG or WebP to \
                      preserve transparency."

@@ -78,7 +78,7 @@ fn ensure_display_reconfig_registered() {
             std::ptr::null_mut(),
         );
         if err != 0 {
-            eprintln!(
+            tracing::warn!(
                 "[snapforge] CGDisplayRegisterReconfigurationCallback failed: {}",
                 err
             );
@@ -315,9 +315,9 @@ pub fn display_count() -> usize {
         // revoked (SCK then stalls/refuses). Surface a specific hint so users
         // don't chase a ghost capture bug.
         if unsafe { !CGPreflightScreenCaptureAccess() } {
-            eprintln!("[capture] screen recording permission not granted");
+            tracing::warn!("[capture] screen recording permission not granted");
         } else {
-            eprintln!("[capture] display_count: no displays found (SCK query failed?)");
+            tracing::warn!("[capture] display_count: no displays found (SCK query failed?)");
         }
     }
     ids.len()
@@ -337,7 +337,7 @@ pub fn display_at_point(x: i32, y: i32) -> Option<usize> {
             },
             matches.len() as u32,
             matches.as_mut_ptr(),
-            &mut count,
+            &raw mut count,
         );
         if status != 0 || count == 0 {
             return None;
@@ -408,7 +408,9 @@ fn capture_via_cgdisplay(display_id: u32) -> Option<RgbaImage> {
     // SCK have a chance — a fullscreen DRM window can produce all-zero bytes
     // even from CGDisplayCreateImage, in which case SCK might do better.
     if is_all_zero(&rgba) {
-        eprintln!("[capture] CGDisplayCreateImage returned an all-zero frame; falling back to SCK");
+        tracing::debug!(
+            "[capture] CGDisplayCreateImage returned an all-zero frame; falling back to SCK"
+        );
         return None;
     }
     Some(rgba)
@@ -821,7 +823,7 @@ mod tests {
     fn test_get_shareable_displays() {
         let displays = get_shareable_displays();
         if let Some(displays) = displays {
-            assert!(displays.len() > 0);
+            assert!(!displays.is_empty());
         }
     }
 
