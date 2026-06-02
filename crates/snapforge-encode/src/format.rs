@@ -25,6 +25,10 @@ pub fn encode_image(
 
     match format {
         CaptureFormat::Png => {
+            // NOTE: PNG deflate (via the `png` crate) is single-threaded and
+            // cannot be parallelized without swapping the encoder, which would
+            // change output bytes and is out of scope here. The `image` rayon
+            // feature accelerates other codecs (e.g. JPEG) but not PNG deflate.
             let mut buf = Cursor::new(Vec::with_capacity(w * h * 4));
             image
                 .write_to(&mut buf, image::ImageFormat::Png)
@@ -37,7 +41,16 @@ pub fn encode_image(
             // Sample the corners + center first as a fast path; full scan
             // only if those look opaque but we want to be sure for arbitrary
             // sizes — the cost is dominated by the encode anyway.
-            let has_transparency = image.pixels().any(|p| p[3] < 255);
+            // Scan the alpha bytes (every 4th byte of the packed RGBA slice).
+            // Parallelized for large frames so the pre-encode pass doesn't add
+            // a serial walk over the full 4K buffer.
+            let alpha_src = image.as_raw();
+            let has_transparency = if w * h >= 256 * 256 {
+                use rayon::prelude::*;
+                alpha_src.par_chunks(4).any(|px| px[3] < 255)
+            } else {
+                alpha_src.chunks(4).any(|px| px[3] < 255)
+            };
             if has_transparency {
                 tracing::warn!(
                     "[snapforge] JPEG output drops the alpha channel; transparent \
@@ -46,12 +59,33 @@ pub fn encode_image(
                 );
             }
 
-            // Convert RGBA to RGB without cloning into DynamicImage
-            let mut rgb_buf = Vec::with_capacity(w * h * 3);
-            for pixel in image.pixels() {
-                rgb_buf.push(pixel[0]);
-                rgb_buf.push(pixel[1]);
-                rgb_buf.push(pixel[2]);
+            // Convert RGBA to RGB without cloning into DynamicImage. Rather than
+            // pushing 3 bytes per pixel through the pixels() iterator (which
+            // bounds-checks and reallocs), copy directly from the raw RGBA slice
+            // into an exactly-sized, uninitialized buffer in 4->3 byte chunks.
+            // For large frames (4K) the work is split across rayon threads.
+            let src = image.as_raw(); // &[u8], len == w*h*4, packed RGBA
+            let mut rgb_buf = vec![0u8; w * h * 3];
+
+            // Below this many pixels the rayon dispatch overhead outweighs the
+            // copy; do it inline on the calling thread.
+            const PAR_THRESHOLD: usize = 256 * 256;
+            if w * h >= PAR_THRESHOLD {
+                use rayon::prelude::*;
+                rgb_buf
+                    .par_chunks_mut(3)
+                    .zip(src.par_chunks(4))
+                    .for_each(|(dst, px)| {
+                        dst[0] = px[0];
+                        dst[1] = px[1];
+                        dst[2] = px[2];
+                    });
+            } else {
+                for (dst, px) in rgb_buf.chunks_mut(3).zip(src.chunks(4)) {
+                    dst[0] = px[0];
+                    dst[1] = px[1];
+                    dst[2] = px[2];
+                }
             }
 
             let mut buf = Cursor::new(Vec::with_capacity(w * h * 3));
@@ -196,6 +230,25 @@ mod tests {
         let img = RgbaImage::from_pixel(8, 8, image::Rgba([200, 100, 50, 255]));
         let bytes = encode_image(&img, CaptureFormat::Jpg, 255).unwrap();
         assert_eq!(&bytes[0..2], &[0xFF, 0xD8]);
+    }
+
+    #[test]
+    fn encode_jpg_large_image_roundtrips_dimensions_and_color() {
+        // Exercise the parallel RGBA->RGB chunked-copy path (>= 256*256 px) and
+        // verify the produced JPEG decodes back to the right dimensions and an
+        // approximately correct color (JPEG is lossy, so allow a small delta).
+        let (w, h) = (300u32, 300u32);
+        let img = RgbaImage::from_pixel(w, h, image::Rgba([200, 100, 50, 255]));
+        let bytes = encode_image(&img, CaptureFormat::Jpg, 95).unwrap();
+
+        let decoded = image::load_from_memory_with_format(&bytes, image::ImageFormat::Jpeg)
+            .unwrap()
+            .to_rgb8();
+        assert_eq!(decoded.dimensions(), (w, h));
+        let center = decoded.get_pixel(w / 2, h / 2);
+        assert!((center[0] as i32 - 200).abs() <= 6);
+        assert!((center[1] as i32 - 100).abs() <= 6);
+        assert!((center[2] as i32 - 50).abs() <= 6);
     }
 
     #[test]
