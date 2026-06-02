@@ -16,6 +16,8 @@ members = [
 # snapforge-ffi). `tracing-subscriber` is only needed where a subscriber is
 # installed, so it's pulled in directly by snapforge-ffi rather than here.
 tracing = "0.1"
+# Data-parallel pixel work (channel-swap, encode prep) on the screenshot path.
+rayon = "1"
 
 [profile.release]
 lto = "thin"

@@ -7,17 +7,71 @@
 
 use std::collections::{HashMap, HashSet};
 use std::ffi::{c_char, c_int, c_void, CStr, CString};
+use std::hash::{BuildHasherDefault, Hasher};
 use std::path::PathBuf;
 use std::ptr;
 use std::sync::{Mutex, OnceLock};
 
+/// A tiny deterministic hasher for `usize` keys that are already raw memory
+/// addresses (and therefore uniformly distributed by the allocator). The
+/// pointer-keyed registries below don't need SipHash's DoS resistance — the
+/// keys are our own heap pointers, never attacker-chosen — so we trade it for
+/// a single multiply, which removes SipHash's per-key cost from the per-frame
+/// capture/free path.
+///
+/// This is an FxHash-style multiplicative hash (the `0x517c_c1b7_2722_0a95`
+/// constant is the well-known 64-bit golden-ratio mixer used by rustc's
+/// `FxHasher`). It changes *only* the hash function used to bucket keys; the
+/// map contents, equality semantics, and every safety check that reads them
+/// are byte-for-byte unchanged. Implemented inline to avoid an external dep.
+#[derive(Default)]
+struct PtrHasher(u64);
+
+impl Hasher for PtrHasher {
+    #[inline]
+    fn finish(&self) -> u64 {
+        self.0
+    }
+
+    #[inline]
+    fn write_usize(&mut self, i: usize) {
+        // The only `write_*` the map ever calls for a `usize` key.
+        self.0 = (i as u64).wrapping_mul(0x517c_c1b7_2722_0a95);
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        // Defensive fallback: fold any byte stream through the same mixer so
+        // the hasher stays correct even if the key type ever changes. Not on
+        // the hot path (the registries are `usize`-keyed, which routes through
+        // `write_usize`).
+        for &b in bytes {
+            self.0 = (self.0 ^ u64::from(b)).wrapping_mul(0x517c_c1b7_2722_0a95);
+        }
+    }
+}
+
+type PtrBuildHasher = BuildHasherDefault<PtrHasher>;
+
+/// Expected number of simultaneously-live captured buffers. Qt holds a small,
+/// bounded set at once (typically one full-screen grab plus the odd region
+/// grab), so preallocating a handful of slots avoids the first few rehashes on
+/// the capture path without over-committing memory. This is a capacity hint
+/// only — the map still grows without bound if needed, so nothing is ever
+/// silently dropped (which would reintroduce the heap-corruption risk).
+const BUFFER_REGISTRY_PREALLOC: usize = 8;
+
 /// Tracks every live `(ptr, len)` returned by `snapforge_capture_*` so
 /// `snapforge_free_buffer` can detect a length mismatch (which would otherwise
 /// hand a wrong-layout `Box<[u8]>` to the global allocator and corrupt the heap).
-static BUFFER_REGISTRY: OnceLock<Mutex<HashMap<usize, usize>>> = OnceLock::new();
+static BUFFER_REGISTRY: OnceLock<Mutex<HashMap<usize, usize, PtrBuildHasher>>> = OnceLock::new();
 
-fn buffer_registry() -> &'static Mutex<HashMap<usize, usize>> {
-    BUFFER_REGISTRY.get_or_init(|| Mutex::new(HashMap::new()))
+fn buffer_registry() -> &'static Mutex<HashMap<usize, usize, PtrBuildHasher>> {
+    BUFFER_REGISTRY.get_or_init(|| {
+        Mutex::new(HashMap::with_capacity_and_hasher(
+            BUFFER_REGISTRY_PREALLOC,
+            PtrBuildHasher::default(),
+        ))
+    })
 }
 
 fn register_buffer(ptr: *mut u8, len: usize) {
@@ -32,10 +86,10 @@ fn register_buffer(ptr: *mut u8, len: usize) {
 /// caller-supplied pointer can be rejected without dereferencing it. This is
 /// the authoritative liveness check; the in-band magic word is a secondary
 /// defense against allocator reuse of a recently-freed slot.
-static HANDLE_REGISTRY: OnceLock<Mutex<HashSet<usize>>> = OnceLock::new();
+static HANDLE_REGISTRY: OnceLock<Mutex<HashSet<usize, PtrBuildHasher>>> = OnceLock::new();
 
-fn handle_registry() -> &'static Mutex<HashSet<usize>> {
-    HANDLE_REGISTRY.get_or_init(|| Mutex::new(HashSet::new()))
+fn handle_registry() -> &'static Mutex<HashSet<usize, PtrBuildHasher>> {
+    HANDLE_REGISTRY.get_or_init(|| Mutex::new(HashSet::default()))
 }
 
 fn register_handle(ptr: *mut c_void) {
@@ -1310,6 +1364,64 @@ mod app_ffi_tests {
         unsafe {
             let _ = CString::from_raw(err);
         }
+    }
+
+    // ---- Buffer registry (the hot-path optimization) --------------------
+    //
+    // These exercise the `register_buffer` / `snapforge_free_buffer` pairing
+    // directly against a genuinely heap-allocated `Box<[u8]>`, so the free
+    // path actually runs `Box::from_raw`. They pin the four safety
+    // properties that the custom `PtrHasher` + capacity prealloc must not
+    // weaken, and run without a display (unlike the capture round-trips in
+    // tests/abi.rs).
+
+    /// Allocate a real `Box<[u8]>` exactly as the capture path does and
+    /// register it. Returns the raw pointer + len the caller would free.
+    fn alloc_and_register(len: usize) -> (*mut u8, usize) {
+        let boxed: Box<[u8]> = vec![0u8; len].into_boxed_slice();
+        let data = Box::into_raw(boxed).cast::<u8>();
+        register_buffer(data, len);
+        (data, len)
+    }
+
+    #[test]
+    fn registry_correct_len_frees_once() {
+        let (data, len) = alloc_and_register(4096);
+        // Recorded, so the first correctly-sized free succeeds (frees the Box).
+        unsafe { snapforge_free_buffer(data, len) };
+        // Now unknown: a second free must be refused (double-free safe).
+        unsafe { snapforge_free_buffer(data, len) };
+    }
+
+    #[test]
+    fn registry_wrong_len_is_refused_then_correct_len_frees() {
+        let (data, len) = alloc_and_register(4096);
+        // Wrong len must be refused and the entry re-inserted...
+        unsafe { snapforge_free_buffer(data, len.wrapping_add(1)) };
+        // ...so the correctly-sized free still succeeds afterwards.
+        unsafe { snapforge_free_buffer(data, len) };
+    }
+
+    #[test]
+    fn registry_unknown_pointer_is_refused() {
+        // A pointer we never registered must never be handed to the
+        // allocator. Use a stack buffer so a stray free would be detectable
+        // under sanitizers; the test passes if nothing crashes.
+        let mut sham = [0u8; 32];
+        unsafe { snapforge_free_buffer(sham.as_mut_ptr(), 32) };
+    }
+
+    #[test]
+    fn registry_distinct_pointers_coexist_under_custom_hasher() {
+        // Two live registrations must not collide/alias in the map: freeing
+        // one with its own len must not affect the other. Guards against a
+        // broken custom hasher silently conflating distinct address keys.
+        let (a, alen) = alloc_and_register(1024);
+        let (b, blen) = alloc_and_register(2048);
+        assert_ne!(a as usize, b as usize);
+        unsafe { snapforge_free_buffer(a, alen) };
+        // `b` is still tracked with its own length and frees cleanly.
+        unsafe { snapforge_free_buffer(b, blen) };
     }
 
     #[test]

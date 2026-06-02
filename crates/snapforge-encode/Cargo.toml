@@ -9,6 +9,7 @@ snapforge-domain = { path = "../snapforge-domain" }
 snapforge-capture = { path = "../snapforge-capture" }
 snapforge-storage = { path = "../snapforge-storage" }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp", "rayon"] }
+rayon = { workspace = true }
 thiserror = "2"
 tracing = { workspace = true }
 

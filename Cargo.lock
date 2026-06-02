@@ -2470,6 +2470,7 @@ dependencies = [
  "objc2-core-graphics",
  "objc2-foundation",
  "objc2-screen-capture-kit",
+ "rayon",
  "snapforge-domain",
  "thiserror",
  "tracing",
@@ -2502,6 +2503,7 @@ name = "snapforge-encode"
 version = "1.3.9"
 dependencies = [
  "image",
+ "rayon",
  "snapforge-capture",
  "snapforge-domain",
  "snapforge-storage",

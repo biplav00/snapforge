@@ -14,6 +14,7 @@ void AnnotationState::commitAnnotation(const Annotation &a)
     m_redoStack.clear();
     m_annotations.append(a);
     m_active.reset();
+    ++m_committedRevision;
     emit changed();
 }
 
@@ -29,6 +30,7 @@ void AnnotationState::updateAnnotation(const QString &id, const Annotation &a)
             break;
         }
     }
+    ++m_committedRevision;
     emit changed();
 }
 
@@ -39,6 +41,7 @@ void AnnotationState::clearAnnotations()
     m_annotations.clear();
     m_active.reset();
     m_nextStep = 1;
+    ++m_committedRevision;
     emit changed();
 }
 
@@ -76,6 +79,7 @@ void AnnotationState::offsetAnnotations(double dx, double dy)
             }
         }, ann.data);
     }
+    ++m_committedRevision;
     emit changed();
 }
 
@@ -115,6 +119,7 @@ void AnnotationState::undo()
     m_redoStack.append(m_annotations);
     m_annotations = m_undoStack.takeLast();
     recalcNextStep();
+    ++m_committedRevision;
     emit changed();
 }
 
@@ -125,6 +130,7 @@ void AnnotationState::redo()
     m_undoStack.append(m_annotations);
     m_annotations = m_redoStack.takeLast();
     recalcNextStep();
+    ++m_committedRevision;
     emit changed();
 }
 
