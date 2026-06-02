@@ -10,7 +10,7 @@ Releases are **automated**. On push to `main`, `.github/workflows/release.yml`:
 1. Reads current version from `crates/snapforge-core/Cargo.toml` (the single source of truth).
 2. Computes next = **patch + 1**.
 3. Rewrites the version in `crates/snapforge-core/Cargo.toml` + the two `MACOSX_BUNDLE_*` fields in `qt/CMakeLists.txt`, syncs `Cargo.lock`, commits `chore(release): vX`, tags `vX`, pushes.
-4. Builds and uploads `Snapforge-vX.dmg` to the GitHub Release.
+4. Runs `packaging/macos/build_dmg.sh` (the same script used locally — single source of truth) and uploads `Snapforge-X.dmg` to the GitHub Release.
 
 Commits starting with `chore(release):` or containing `[skip release]` are skipped, so the bot doesn't loop.
 

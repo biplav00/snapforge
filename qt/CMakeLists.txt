@@ -166,8 +166,6 @@ if(APPLE AND MACDEPLOYQT)
     )
 endif()
 
-add_custom_target(dmg
-    DEPENDS snapforge-qt
-    COMMAND ${MACDEPLOYQT} "$<TARGET_BUNDLE_DIR:snapforge-qt>" -dmg
-    COMMENT "Creating DMG..."
-)
+# DMG packaging lives in packaging/macos/build_dmg.sh (single source of truth,
+# used by both local builds and CI). Don't add a competing cmake dmg target —
+# it drifts from the script (no /Applications symlink, no versioned volname).

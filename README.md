@@ -55,8 +55,8 @@ cargo build --release -p snapforge-ffi
 cmake -S qt -B qt/build -DCMAKE_PREFIX_PATH="$(brew --prefix qt)"
 cmake --build qt/build --parallel
 
-# Package as .dmg (macOS)
-cmake --build qt/build --target dmg
+# Package as .dmg (macOS) — same script CI runs
+packaging/macos/build_dmg.sh
 ```
 
 The built application is at `qt/build/Snapforge.app`.
