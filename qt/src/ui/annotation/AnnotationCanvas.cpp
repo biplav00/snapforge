@@ -4,6 +4,7 @@
 
 #include <QPainter>
 #include <QPaintEvent>
+#include <QResizeEvent>
 #include <QMouseEvent>
 #include <QKeyEvent>
 #include <QScreen>
@@ -56,10 +57,16 @@ AnnotationCanvas::AnnotationCanvas(AnnotationState *state,
 void AnnotationCanvas::setScreenshot(const QImage &screenshot) {
     m_fullScreenshot = screenshot;
     m_croppedScreenshot = QImage();
+    // Blur annotations sample the screenshot, so a new base invalidates the
+    // cached committed layer.
+    m_committedLayerValid = false;
 }
 
 void AnnotationCanvas::setRegion(int x, int y, int w, int h) {
     setGeometry(x, y, w, h);
+    // Geometry/crop changed → cached committed layer is stale (size and the
+    // screenshot region that Blur samples both change).
+    m_committedLayerValid = false;
 
     if (!m_fullScreenshot.isNull()) {
         double dpr = snapforge_display_scale_factor();
@@ -86,6 +93,63 @@ void AnnotationCanvas::setRegion(int x, int y, int w, int h) {
 }
 
 // ---------------------------------------------------------------------------
+// DPR helper
+// ---------------------------------------------------------------------------
+
+// Use the DPR of the screen this canvas is actually on, not the primary
+// display's DPR — otherwise compositing/caching on a secondary display with a
+// different DPR shifts annotations off-target. Falls back to the global helper
+// if the widget isn't yet attached to a screen.
+double AnnotationCanvas::effectiveDpr() const {
+    double dpr = 0.0;
+    if (auto *scr = this->screen()) {
+        dpr = scr->devicePixelRatio();
+    }
+    if (dpr <= 0.0) {
+        dpr = snapforge_display_scale_factor();
+    }
+    return dpr > 0.0 ? dpr : 1.0;
+}
+
+// ---------------------------------------------------------------------------
+// ensureCommittedLayer
+// ---------------------------------------------------------------------------
+
+void AnnotationCanvas::ensureCommittedLayer() const {
+    const double dpr = effectiveDpr();
+    const quint64 rev = m_state->committedRevision();
+
+    if (m_committedLayerValid
+        && m_committedLayerRevision == rev
+        && qFuzzyCompare(m_committedLayerDpr, dpr)
+        && !m_committedLayer.isNull()) {
+        return; // cache hit
+    }
+
+    const QSize logical = size();
+    QImage layer(QSize(static_cast<int>(std::ceil(logical.width() * dpr)),
+                       static_cast<int>(std::ceil(logical.height() * dpr))),
+                 QImage::Format_ARGB32_Premultiplied);
+    layer.setDevicePixelRatio(dpr);
+    layer.fill(Qt::transparent);
+
+    if (logical.width() > 0 && logical.height() > 0) {
+        QPainter p(&layer);
+        p.setRenderHint(QPainter::Antialiasing, true);
+        // Annotations are in logical coords; the layer is at device-pixel size
+        // with devicePixelRatio set, so painting in logical coords maps 1:1.
+        for (const Annotation &a : m_state->annotations()) {
+            AnnotationRenderer::render(p, a, m_croppedScreenshot);
+        }
+    }
+
+    m_committedLayer = layer;
+    m_committedLayerRevision = rev;
+    m_committedLayerDpr = dpr;
+    m_committedLayerValid = true;
+}
+
+// ---------------------------------------------------------------------------
 // compositeImage
 // ---------------------------------------------------------------------------
 
@@ -105,19 +169,8 @@ QImage AnnotationCanvas::compositeImage() const {
     // Annotations stored in widget-local (logical point) coords; composited
     // image is at pixel size (point_size * dpr). Scale painter so annotation
     // coords map into pixel space.
-    //
-    // Use the DPR of the screen this canvas is actually on, not the primary
-    // display's DPR — otherwise compositing on a secondary display with a
-    // different DPR shifts annotations off-target. Falls back to the global
-    // helper if the widget isn't yet attached to a screen.
-    double dpr = 0.0;
-    if (auto *scr = this->screen()) {
-        dpr = scr->devicePixelRatio();
-    }
-    if (dpr <= 0.0) {
-        dpr = snapforge_display_scale_factor();
-    }
-    if (dpr > 0.0 && dpr != 1.0) {
+    const double dpr = effectiveDpr();
+    if (dpr != 1.0) {
         p.scale(dpr, dpr);
     }
 
@@ -142,9 +195,14 @@ void AnnotationCanvas::paintEvent(QPaintEvent * /*event*/) {
 
     const ToolType active = m_state->activeTool();
 
-    // Committed annotations
-    for (const Annotation &a : m_state->annotations()) {
-        AnnotationRenderer::render(p, a, m_croppedScreenshot);
+    // Committed annotations: blit the cached layer instead of re-rendering the
+    // whole list every frame. During a freehand drag this is the hot path —
+    // the layer only rebuilds when the committed set / size / DPR changes.
+    ensureCommittedLayer();
+    if (!m_committedLayer.isNull()) {
+        // Layer carries its devicePixelRatio, so drawImage at (0,0) maps it
+        // back into logical coords 1:1 (no manual scaling needed).
+        p.drawImage(QPointF(0, 0), m_committedLayer);
     }
 
     // Active (in-progress) annotation — skip Text while editing (but show Steps circle)
@@ -157,6 +215,15 @@ void AnnotationCanvas::paintEvent(QPaintEvent * /*event*/) {
         }
     }
 
+}
+
+// ---------------------------------------------------------------------------
+// resizeEvent — committed-layer cache depends on widget size
+// ---------------------------------------------------------------------------
+
+void AnnotationCanvas::resizeEvent(QResizeEvent *event) {
+    m_committedLayerValid = false;
+    QWidget::resizeEvent(event);
 }
 
 // ---------------------------------------------------------------------------

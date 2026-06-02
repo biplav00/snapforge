@@ -40,6 +40,13 @@ public:
     int nextStepNumber() const { return m_nextStep; }
     void incrementStepNumber() { m_nextStep++; }
 
+    // Monotonically-increasing counter bumped on every mutation of the
+    // *committed* annotation set (commit/update/clear/undo/redo/offset).
+    // It is NOT bumped when only the active (in-progress) annotation changes,
+    // letting the canvas cache the committed layer and skip rebuilding it on
+    // every freehand stroke-point update.
+    quint64 committedRevision() const { return m_committedRevision; }
+
     static QString newId();
 
 signals:
@@ -55,6 +62,7 @@ private:
     QColor m_strokeColor = QColor("#FF0000");
     int m_strokeWidth = 2;
     int m_nextStep = 1;
+    quint64 m_committedRevision = 0;
 
     void recalcNextStep();
 
