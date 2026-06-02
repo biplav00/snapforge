@@ -1,5 +1,5 @@
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{mpsc, Mutex, OnceLock};
+use std::sync::{mpsc, Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use image::RgbaImage;
@@ -10,6 +10,7 @@ use objc2_screen_capture_kit::{
     SCContentFilter, SCDisplay, SCScreenshotManager, SCShareableContent, SCStreamConfiguration,
     SCWindow,
 };
+use rayon::prelude::*;
 
 use snapforge_domain::Rect;
 
@@ -215,8 +216,11 @@ pub fn request_screen_capture_permission() -> bool {
 /// isn't `Send`, so we cache only what's safely shareable: the CGDirectDisplayIDs
 /// in their SCK ordering. Callers that need the NSArray itself still re-query.
 ///
-/// Entry tuple: (timestamp, topology_version_at_capture, ids).
-static DISPLAY_IDS_CACHE: Mutex<Option<(Instant, u64, Vec<u32>)>> = Mutex::new(None);
+/// Entry tuple: (timestamp, topology_version_at_capture, ids). The ids are kept
+/// behind an `Arc` so the hot cached-resolve path returns a cheap refcount bump
+/// instead of deep-cloning the whole `Vec<u32>` on every call.
+type DisplayIdsCacheEntry = (Instant, u64, Arc<Vec<u32>>);
+static DISPLAY_IDS_CACHE: Mutex<Option<DisplayIdsCacheEntry>> = Mutex::new(None);
 const DISPLAYS_CACHE_TTL: Duration = Duration::from_secs(2);
 
 /// Fetch available displays via SCShareableContent (async → sync bridge).
@@ -268,7 +272,7 @@ fn get_shareable_displays() -> Option<Retained<NSArray<SCDisplay>>> {
             *guard = Some((
                 Instant::now(),
                 DISPLAY_TOPOLOGY_VERSION.load(Ordering::SeqCst),
-                ids,
+                Arc::new(ids),
             ));
         }
     } else if !unsafe { CGPreflightScreenCaptureAccess() } {
@@ -284,13 +288,14 @@ fn get_shareable_displays() -> Option<Retained<NSArray<SCDisplay>>> {
 /// Fast display ID list — uses cached IDs if fresh AND the display topology
 /// version matches, else a live SCK query. Safe across threads (unlike
 /// `Retained<NSArray<...>>`).
-fn get_display_ids_cached() -> Vec<u32> {
+fn get_display_ids_cached() -> Arc<Vec<u32>> {
     ensure_display_reconfig_registered();
     let current_ver = DISPLAY_TOPOLOGY_VERSION.load(Ordering::SeqCst);
     if let Ok(guard) = DISPLAY_IDS_CACHE.lock() {
         if let Some((ts, ver, ids)) = guard.as_ref() {
             if *ver == current_ver && ts.elapsed() < DISPLAYS_CACHE_TTL {
-                return ids.clone();
+                // Cheap refcount bump instead of a deep Vec clone.
+                return Arc::clone(ids);
             }
         }
     }
@@ -302,9 +307,9 @@ fn get_display_ids_cached() -> Vec<u32> {
                 let sc = arr.objectAtIndex(i);
                 ids.push(unsafe { sc.displayID() });
             }
-            ids
+            Arc::new(ids)
         }
-        None => Vec::new(),
+        None => Arc::new(Vec::new()),
     }
 }
 
@@ -749,20 +754,27 @@ fn cg_image_to_rgba(cg_image: &objc2_core_graphics::CGImage) -> Result<RgbaImage
 
     let mut rgba_buf = vec![0u8; expected_bytes];
 
-    for y in 0..height as usize {
-        let row_start = y * bytes_per_row;
-        let dst_row_start = y * (width as usize) * 4;
-        let src_row = &raw_bytes[row_start..row_start + (width as usize) * 4];
-        let dst_row = &mut rgba_buf[dst_row_start..dst_row_start + (width as usize) * 4];
+    // Parallelize across rows: for 4K (~33MB) the channel swap is a memory-bound
+    // serial pass, so we split the tightly-packed destination into per-row chunks
+    // and mirror each to the matching source row. The source may carry row padding
+    // (`bytes_per_row` != width*4), so the source offset is derived per row from
+    // its global row index rather than assuming contiguity.
+    let row_bytes = (width as usize) * 4;
+    rgba_buf
+        .par_chunks_exact_mut(row_bytes)
+        .enumerate()
+        .for_each(|(y, dst_row)| {
+            let row_start = y * bytes_per_row;
+            let src_row = &raw_bytes[row_start..row_start + row_bytes];
 
-        // Swap B and R channels: BGRA → RGBA
-        for (src, dst) in src_row.chunks_exact(4).zip(dst_row.chunks_exact_mut(4)) {
-            dst[0] = src[2]; // R
-            dst[1] = src[1]; // G
-            dst[2] = src[0]; // B
-            dst[3] = src[3]; // A
-        }
-    }
+            // Swap B and R channels: BGRA → RGBA
+            for (src, dst) in src_row.chunks_exact(4).zip(dst_row.chunks_exact_mut(4)) {
+                dst[0] = src[2]; // R
+                dst[1] = src[1]; // G
+                dst[2] = src[0]; // B
+                dst[3] = src[3]; // A
+            }
+        });
 
     RgbaImage::from_raw(width, height, rgba_buf).ok_or(CaptureError::ImageDataFailed)
 }
