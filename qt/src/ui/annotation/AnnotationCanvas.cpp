@@ -69,7 +69,10 @@ void AnnotationCanvas::setRegion(int x, int y, int w, int h) {
     m_committedLayerValid = false;
 
     if (!m_fullScreenshot.isNull()) {
-        double dpr = snapforge_display_scale_factor();
+        // Crop with the SAME DPR source compositeImage() uses (this screen's
+        // DPR, not the primary display's). Mixing the two shifts/empties the
+        // crop on a secondary display with a different scale factor.
+        double dpr = effectiveDpr();
         int px = static_cast<int>(x * dpr);
         int py = static_cast<int>(y * dpr);
         int pw = static_cast<int>(w * dpr);
