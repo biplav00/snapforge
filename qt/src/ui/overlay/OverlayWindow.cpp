@@ -593,25 +593,14 @@ void OverlayWindow::emitRecordRegion() {
         return;
     }
 
-    // Fix #11: refuse selections that span multiple displays. Capture backend
-    // is single-display only, so a multi-monitor rect would silently clip.
-    const QList<QScreen *> screens = QGuiApplication::screens();
-    bool contained = false;
-    QScreen *selScreen = nullptr;
-    for (QScreen *s : screens) {
-        if (s->geometry().contains(sel)) {
-            contained = true;
-            selScreen = s;
-            break;
-        }
-    }
-    if (!contained) {
-        emit regionInvalid(QStringLiteral("selection must be on one display"));
-        return;
-    }
-
-    // Fix #12: use the DPR of the display that actually contains the region,
-    // not the primary's.
+    // sel is in WIDGET-LOCAL coords (0-based), and the overlay is sized to
+    // exactly one display, so the region is always within that one display —
+    // no cross-display span is possible. Use THIS overlay's screen for the DPR.
+    // (The old `screen.geometry().contains(sel)` search compared local coords
+    // against GLOBAL screen rects: on a secondary display it matched the primary
+    // and applied the primary's DPR, and on a secondary larger than the primary
+    // it matched nothing and wrongly rejected the recording.)
+    QScreen *selScreen = this->screen();
     double dpr = selScreen ? selScreen->devicePixelRatio()
                            : snapforge_display_scale_factor();
     QRect pixelRegion(
@@ -1022,11 +1011,11 @@ void OverlayWindow::keyPressEvent(QKeyEvent *event) {
             return;
         }
 
-        // Fix #12: use the DPR of the display containing the region.
-        QScreen *selScreen = nullptr;
-        for (QScreen *s : QGuiApplication::screens()) {
-            if (s->geometry().contains(sel)) { selScreen = s; break; }
-        }
+        // sel is widget-local and the overlay covers exactly one display, so
+        // the region's display is THIS overlay's screen. (The old
+        // geometry().contains(sel) search compared local coords to global rects
+        // and picked the wrong screen's DPR on multi-monitor setups.)
+        QScreen *selScreen = this->screen();
         double dpr = selScreen ? selScreen->devicePixelRatio()
                                : snapforge_display_scale_factor();
         int px = static_cast<int>(sel.x() * dpr);

@@ -161,6 +161,12 @@ QImage AnnotationCanvas::compositeImage() const {
                     ? QImage(size(), QImage::Format_ARGB32_Premultiplied)
                     : m_croppedScreenshot.convertToFormat(QImage::Format_ARGB32_Premultiplied);
 
+    // A QImage(size) ctor leaves the buffer UNINITIALISED (garbage), and it is
+    // non-null, so the isNull() guard below skips it — annotations would then be
+    // painted over random memory. Fill any non-screenshot-backed result.
+    if (m_croppedScreenshot.isNull() && !result.isNull()) {
+        result.fill(Qt::transparent);
+    }
     if (result.isNull()) {
         result = QImage(size(), QImage::Format_ARGB32_Premultiplied);
         result.fill(Qt::transparent);
