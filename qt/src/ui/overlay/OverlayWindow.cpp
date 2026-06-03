@@ -683,6 +683,9 @@ void OverlayWindow::handleSave() {
 
 void OverlayWindow::handleCopy() {
     if (!m_canvas) return;
+    // See handleSave: skip while the async capture is still pending so a blank
+    // composite isn't copied; retry works once the canvas refreshes.
+    if (m_captureInFlight) return;
     QImage composited = m_canvas->compositeImage();
     if (composited.isNull()) return;
 
@@ -697,6 +700,9 @@ void OverlayWindow::handleCopy() {
 
 void OverlayWindow::handleSaveAndCopy() {
     if (!m_canvas) return;
+    // See handleSave: skip while the async capture is still pending so a blank
+    // composite isn't saved/copied; retry works once the canvas refreshes.
+    if (m_captureInFlight) return;
     QImage composited = m_canvas->compositeImage();
     if (composited.isNull()) return;
 
