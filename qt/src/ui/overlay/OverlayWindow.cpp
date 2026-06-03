@@ -137,6 +137,16 @@ void OverlayWindow::activateInternal() {
             return;
         }
         self->m_screenshot = img;
+        // If annotate mode was entered BEFORE the capture resolved (remembered
+        // region via activate(), or activateFullscreen()), the canvas was built
+        // with a null screenshot and its crop is empty — composite would be
+        // blank. Now that the real capture landed, re-feed it and re-crop the
+        // region so the committed image isn't blank.
+        if (self->m_mode == Annotate && self->m_canvas) {
+            self->m_canvas->setScreenshot(img);
+            QRect sel = self->selectedRect();
+            self->m_canvas->setRegion(sel.x(), sel.y(), sel.width(), sel.height());
+        }
         self->update();
     });
     QFuture<QImage> future = QtConcurrent::run([displayIndex]() -> QImage {
