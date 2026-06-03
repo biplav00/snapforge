@@ -663,6 +663,12 @@ void OverlayWindow::handleCaptureFailure(const char *reason) {
 
 void OverlayWindow::handleSave() {
     if (!m_canvas) return;
+    // Capture hasn't landed yet (user hit save while the async fullscreen grab
+    // was still in flight — possible via remembered-region/fullscreen, which
+    // enter annotate mode before the screenshot resolves). compositeImage()
+    // would be blank. Ignore the save and keep the overlay up; the completion
+    // handler refreshes the canvas, so a second save works.
+    if (m_captureInFlight) return;
     QImage composited = m_canvas->compositeImage();
     if (composited.isNull()) return;
 
