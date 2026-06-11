@@ -2479,7 +2479,7 @@ dependencies = [
 
 [[package]]
 name = "snapforge-core"
-version = "1.3.13"
+version = "1.3.14"
 dependencies = [
  "image",
  "snapforge-capture",

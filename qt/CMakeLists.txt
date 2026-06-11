@@ -41,7 +41,7 @@ else()
 endif()
 set(FFI_HEADER_DIR "${CMAKE_SOURCE_DIR}/../crates/snapforge-ffi")
 
-set(SNAPFORGE_VERSION "1.3.13")
+set(SNAPFORGE_VERSION "1.3.14")
 set(MACOSX_BUNDLE_BUNDLE_NAME "Snapforge")
 set(MACOSX_BUNDLE_GUI_IDENTIFIER "com.snapforge.app")
 set(MACOSX_BUNDLE_BUNDLE_VERSION "${SNAPFORGE_VERSION}")
