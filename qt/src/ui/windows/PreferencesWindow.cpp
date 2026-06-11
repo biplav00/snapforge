@@ -1191,8 +1191,11 @@ void PreferencesWindow::onResetHotkeys()
 
 void PreferencesWindow::onSave()
 {
-    // Fix #15: block duplicate hotkey bindings from being persisted. Two
-    // actions on the same chord is always a bug — one of them will never
+    // Fix #15: block duplicate hotkey bindings from being persisted. Every
+    // section here is live at the same time — global chords are system-wide
+    // Carbon hotkeys (they fire even while the overlay is up), and the
+    // tools/sizes/actions sections all apply inside the annotate overlay —
+    // so two actions on one chord is always a bug: one of them will never
     // fire. Single pass: bucket every non-empty shortcut; any bucket with
     // more than one entry is a conflict. Dedupe the reported list so a
     // shortcut bound three times doesn't show three copies of each row.
@@ -1437,6 +1440,20 @@ void PreferencesWindow::saveConfig()
 // Logs tab
 // ===========================================================================
 
+// QtMsgType is not severity-ordered (QtInfoMsg=4 sorts above QtCriticalMsg=2),
+// so map each level to an explicit severity rank before comparing.
+static int logSeverityRank(QtMsgType level)
+{
+    switch (level) {
+        case QtDebugMsg:    return 0;
+        case QtInfoMsg:     return 1;
+        case QtWarningMsg:  return 2;
+        case QtCriticalMsg: return 3;
+        case QtFatalMsg:    return 4;
+    }
+    return 0;
+}
+
 QWidget *PreferencesWindow::buildLogsTab()
 {
     auto *w = new QWidget;
@@ -1467,10 +1484,10 @@ QWidget *PreferencesWindow::buildLogsTab()
 
     m_logLevelFilter = new QComboBox(w);
     m_logLevelFilter->addItem(QStringLiteral("All"),    -1);
-    m_logLevelFilter->addItem(QStringLiteral("Debug+"), (int)QtDebugMsg);
-    m_logLevelFilter->addItem(QStringLiteral("Info+"),  (int)QtInfoMsg);
-    m_logLevelFilter->addItem(QStringLiteral("Warn+"),  (int)QtWarningMsg);
-    m_logLevelFilter->addItem(QStringLiteral("Error"),  (int)QtCriticalMsg);
+    m_logLevelFilter->addItem(QStringLiteral("Debug+"), logSeverityRank(QtDebugMsg));
+    m_logLevelFilter->addItem(QStringLiteral("Info+"),  logSeverityRank(QtInfoMsg));
+    m_logLevelFilter->addItem(QStringLiteral("Warn+"),  logSeverityRank(QtWarningMsg));
+    m_logLevelFilter->addItem(QStringLiteral("Error"),  logSeverityRank(QtCriticalMsg));
     ctrlRow->addWidget(m_logLevelFilter);
     connect(m_logLevelFilter, QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, [this](int){ reloadLogBuffer(); });
@@ -1563,7 +1580,7 @@ QWidget *PreferencesWindow::buildLogsTab()
     auto *logger = Logger::instance();
     connect(logger, &Logger::entryAdded, this, [this](const LogEntry &e) {
         const int filter = m_logLevelFilter->currentData().toInt();
-        if (filter >= 0 && (int)e.level < filter) return;
+        if (filter >= 0 && logSeverityRank(e.level) < filter) return;
         const QString needle = m_logSearch ? m_logSearch->text().trimmed() : QString();
         if (!needle.isEmpty() && !e.formatted().contains(needle, Qt::CaseInsensitive))
             return;
@@ -1608,7 +1625,7 @@ void PreferencesWindow::reloadLogBuffer()
     const int filter = m_logLevelFilter ? m_logLevelFilter->currentData().toInt() : -1;
     const QString needle = m_logSearch ? m_logSearch->text().trimmed() : QString();
     for (const auto &e : Logger::instance()->recent()) {
-        if (filter >= 0 && (int)e.level < filter) continue;
+        if (filter >= 0 && logSeverityRank(e.level) < filter) continue;
         if (!needle.isEmpty() && !e.formatted().contains(needle, Qt::CaseInsensitive))
             continue;
         appendLogLine(e.formatted(), e.level);

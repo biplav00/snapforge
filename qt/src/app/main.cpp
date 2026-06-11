@@ -24,6 +24,10 @@
 #include "SpaceChangeObserver.h"
 #endif
 
+// Preferences window — used by the mac hotkey handler below AND by the
+// save/copy paths, so it lives outside the Q_OS_MAC block.
+static PreferencesWindow *g_prefsRef = nullptr;
+
 #ifdef Q_OS_MAC
 #include <Carbon/Carbon.h>
 #include <objc/runtime.h>
@@ -36,14 +40,15 @@ static RecordingManager  *g_recording = nullptr;
 static HistoryWindow     *g_history   = nullptr;
 
 // Hotkey IDs
-static const UInt32 kHotkeyIDScreenshot = 1;
-static const UInt32 kHotkeyIDRecord     = 2;
-static const UInt32 kHotkeyIDHistory    = 3;
-static const UInt32 kHotkeyIDFullscreen = 4;
+static const UInt32 kHotkeyIDScreenshot  = 1;
+static const UInt32 kHotkeyIDRecord      = 2;
+static const UInt32 kHotkeyIDHistory     = 3;
+static const UInt32 kHotkeyIDFullscreen  = 4;
+static const UInt32 kHotkeyIDPreferences = 5;
 
 // H6: track every registered hotkey so we can unregister them on quit.
 // Previously we only kept the last one, so two were leaked on app exit.
-static std::array<EventHotKeyRef, 4> g_hotkeys = { nullptr, nullptr, nullptr, nullptr };
+static std::array<EventHotKeyRef, 5> g_hotkeys = { nullptr, nullptr, nullptr, nullptr, nullptr };
 
 OSStatus hotkeyHandler(EventHandlerCallRef, EventRef event, void *) {
     EventHotKeyID firedID;
@@ -124,11 +129,33 @@ OSStatus hotkeyHandler(EventHandlerCallRef, EventRef event, void *) {
             if (overlayBusy) {
                 notifyBusy();
             } else {
-                QTimer::singleShot(0, []() {
+                // Context object + re-check: g_history is nulled at
+                // aboutToQuit, so a quit racing the queued dispatch must not
+                // deref it (matches the screenshot/record paths above).
+                QTimer::singleShot(0, g_history, []() {
+                    if (!g_history) return;
                     g_history->refreshHistory();
                     g_history->show();
                     g_history->raise();
                     g_history->activateWindow();
+                });
+            }
+        }
+        break;
+
+    case kHotkeyIDPreferences:
+        if (g_prefsRef) {
+            if (overlayBusy) {
+                notifyBusy();
+            } else {
+                // Context object + re-check, same as the history path:
+                // g_prefsRef is nulled at aboutToQuit, so a quit racing the
+                // queued dispatch must not deref it.
+                QTimer::singleShot(0, g_prefsRef, []() {
+                    if (!g_prefsRef) return;
+                    g_prefsRef->show();
+                    g_prefsRef->raise();
+                    g_prefsRef->activateWindow();
                 });
             }
         }
@@ -163,6 +190,7 @@ static UInt32 hotkeyIdFor(const QString &actionKey) {
     if (actionKey == QLatin1String("record"))     return kHotkeyIDRecord;
     if (actionKey == QLatin1String("history"))     return kHotkeyIDHistory;
     if (actionKey == QLatin1String("fullscreen"))  return kHotkeyIDFullscreen;
+    if (actionKey == QLatin1String("preferences")) return kHotkeyIDPreferences;
     return 0;
 }
 
@@ -220,8 +248,6 @@ void reloadGlobalHotkeys() {
     registerAllChords();
 }
 #endif
-
-static PreferencesWindow *g_prefsRef = nullptr;
 
 // Bridge Rust `tracing` records into the Qt Logger so Rust diagnostics land in
 // the same rotating log file as the C++ side. Registered with
@@ -517,6 +543,9 @@ int main(int argc, char *argv[]) {
     // Sync prefs → overlay
     auto syncPrefsToOverlay = [&]() {
         overlay.setRememberRegion(prefs.rememberRegionEnabled());
+        // Overlay-local shortcuts (tools/sizes/actions) follow a prefs save
+        // just like the global Carbon chords do.
+        overlay.reloadKeyBindings();
     };
     QObject::connect(&prefs, &PreferencesWindow::configSaved, syncPrefsToOverlay);
     // M13: when prefs change, re-read recording config into RecordingManager.

@@ -2,7 +2,8 @@
 #define OVERLAYWINDOW_H
 
 #include <QWidget>
-#include <QMap>
+#include <QList>
+#include <QPair>
 #include "AnnotationState.h"
 
 class AnnotationCanvas;
@@ -18,6 +19,11 @@ public:
     void activateFullscreen();
     void activateForRecording();
     void setRememberRegion(bool enabled) { m_rememberRegion = enabled; }
+
+    // Re-read the overlay-local shortcuts (hotkeys.tools/sizes/actions in the
+    // shared config) and re-parse them into matchable chords. Called at
+    // construction and after every Preferences save (see main.cpp).
+    void reloadKeyBindings();
 
     // True only when overlay is visible AND mid-flight work exists (drawing,
     // region committed, annotate/record-select mode, or async capture pending).
@@ -72,7 +78,20 @@ private:
     void emitRecordRegion();
     void emitRecordFullscreen();
 
-    static const QMap<int, ToolType> &toolShortcuts();
+    // One rebindable overlay-local shortcut, parsed from the shared config.
+    // key/mods use Qt's macOS mapping (Cmd ⇒ ControlModifier) — see
+    // shortcuts::toQtKey.
+    struct KeyBinding {
+        int key = 0;
+        Qt::KeyboardModifiers mods = Qt::NoModifier;
+        bool matches(const QKeyEvent *event) const;
+    };
+    static KeyBinding bindingFor(const char *section, const char *actionId,
+                                 const char *defaultChord);
+
+    QList<QPair<KeyBinding, ToolType>> m_toolBindings;
+    KeyBinding m_bindSizeSmall, m_bindSizeMedium, m_bindSizeLarge;
+    KeyBinding m_bindSave, m_bindCopy, m_bindUndo, m_bindRedo, m_bindCancel;
 
     QPoint m_startPos;
     QPoint m_endPos;

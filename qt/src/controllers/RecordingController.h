@@ -41,5 +41,6 @@ private:
     void onPaused();
     void onResumed();
     void onError(const QString &message);
+    void onWarning(const QString &message);
     void onElapsedChanged(int seconds);
 };

@@ -39,6 +39,8 @@ RecordingController::RecordingController(RecordingManager      *recording,
                      this, &RecordingController::onResumed);
     QObject::connect(m_recording, &RecordingManager::recordingError,
                      this, &RecordingController::onError);
+    QObject::connect(m_recording, &RecordingManager::recordingWarning,
+                     this, &RecordingController::onWarning);
     QObject::connect(m_recording, &RecordingManager::elapsedChanged,
                      this, &RecordingController::onElapsedChanged);
 }
@@ -89,9 +91,9 @@ void RecordingController::onResumed() {
 
 void RecordingController::onError(const QString &message) {
     qWarning("Recording error: %s", qPrintable(message));
-    // Reset the tray back to idle — leaving the recording menu visible after
-    // a start-failure makes Stop/Pause clickable for a recording that never
-    // began, which then no-ops confusingly.
+    // Fatal (start/stop failure): reset the tray back to idle — leaving the
+    // recording menu visible after a start-failure makes Stop/Pause clickable
+    // for a recording that never began, which then no-ops confusingly.
     m_tray->leaveRecordingState();
     if (m_clickTap) m_clickTap->stop();
     m_clickOverlay->hideOverlay();
@@ -113,6 +115,17 @@ void RecordingController::onError(const QString &message) {
         box.setStandardButtons(QMessageBox::Ok);
         box.exec();
     });
+}
+
+void RecordingController::onWarning(const QString &message) {
+    // Non-fatal (pause/resume failure, incl. the auto-pause from
+    // WorkspaceSleepObserver): the recording is still writing to disk, so
+    // keep the tray in its recording state — resetting to idle here would
+    // show idle while recording continues and hide the stop control. Just
+    // log and notify.
+    qWarning("Recording warning: %s", qPrintable(message));
+    m_tray->showMessage("Snapforge — Recording", message,
+                        QSystemTrayIcon::Warning, 5000);
 }
 
 void RecordingController::onElapsedChanged(int seconds) {

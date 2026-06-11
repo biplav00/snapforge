@@ -33,7 +33,13 @@ signals:
     void recordingPaused();
     void recordingResumed();
     void elapsedChanged(int seconds);
+    // Fatal: recording never started or is no longer running (m_handle gone).
+    // UI should reset to idle.
     void recordingError(QString message);
+    // Non-fatal: a pause/resume FFI call failed but m_handle is still alive
+    // and frames keep writing to disk. UI must KEEP its recording state —
+    // resetting to idle here would hide the stop control mid-recording.
+    void recordingWarning(QString message);
 
 public slots:
     // Reload cached recording prefs from snapforge_config. Connect this to

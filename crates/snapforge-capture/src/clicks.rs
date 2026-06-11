@@ -233,12 +233,19 @@ mod macos_tap {
         ) -> CFRunLoopSourceRef;
         fn CFRunLoopGetCurrent() -> CFRunLoopRef;
         fn CFRunLoopAddSource(rl: CFRunLoopRef, source: CFRunLoopSourceRef, mode: CFStringRef);
-        fn CFRunLoopRun();
+        // `seconds` is CFTimeInterval (f64); `return_after_source_handled` is
+        // a CF Boolean (unsigned char). Returns a CFRunLoopRunResult (SInt32).
+        fn CFRunLoopRunInMode(
+            mode: CFStringRef,
+            seconds: f64,
+            return_after_source_handled: u8,
+        ) -> i32;
         fn CFRunLoopStop(rl: CFRunLoopRef);
         fn CGEventTapEnable(tap: CFMachPortRef, enable: bool);
         fn CGEventGetLocation(event: CGEventRef) -> CGPoint;
         fn CFRelease(cf: *const c_void);
         static kCFRunLoopCommonModes: CFStringRef;
+        static kCFRunLoopDefaultMode: CFStringRef;
     }
 
     /// Wrapper to make CF pointers Send/Sync — we only use them to signal stop.
@@ -255,15 +262,21 @@ mod macos_tap {
     pub struct MacOSClickTapHandle {
         run_loop: SendableRunLoop,
         tap: SendableTap,
+        stop: Arc<std::sync::atomic::AtomicBool>,
         thread: Option<std::thread::JoinHandle<()>>,
     }
 
     impl Drop for MacOSClickTapHandle {
         fn drop(&mut self) {
+            // Set the stop flag BEFORE CFRunLoopStop: if the worker hasn't
+            // entered its run-loop iteration yet, the stop call is a no-op,
+            // and only the flag guarantees the loop exits (the worker polls
+            // it between bounded CFRunLoopRunInMode calls).
+            self.stop.store(true, std::sync::atomic::Ordering::Release);
             unsafe {
                 // Disable the tap first so no more events fire.
                 CGEventTapEnable(self.tap.0, false);
-                // Stop the thread's CFRunLoopRun.
+                // Wake the thread's CFRunLoopRunInMode if it is running.
                 CFRunLoopStop(self.run_loop.0);
             }
             if let Some(t) = self.thread.take() {
@@ -345,6 +358,8 @@ mod macos_tap {
 
     pub fn start(tracker: ClickTracker) -> Option<MacOSClickTapHandle> {
         let (tx, rx) = mpsc::sync_channel::<SetupResult>(1);
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let stop_worker = Arc::clone(&stop);
 
         let thread = std::thread::spawn(move || {
             // Additionally listen for tap-disabled events so we can re-enable
@@ -406,10 +421,21 @@ mod macos_tap {
                 tap: SendableTap(tap),
             });
 
-            unsafe {
-                CFRunLoopRun();
+            // Run the loop in bounded slices, checking the stop flag between
+            // them. A single CFRunLoopRun() would race teardown: if Drop runs
+            // in the window between the SetupResult send above and the loop
+            // actually starting, its CFRunLoopStop hits a not-yet-running loop
+            // (a no-op) and CFRunLoopRun would then block forever, deadlocking
+            // Drop's join(). The flag closes that window; CFRunLoopStop still
+            // wakes an in-flight CFRunLoopRunInMode immediately.
+            while !stop_worker.load(std::sync::atomic::Ordering::Acquire) {
+                unsafe {
+                    CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.1, 1);
+                }
+            }
 
-                // Cleanup — CFRunLoopRun returned because CFRunLoopStop was called on teardown.
+            unsafe {
+                // Cleanup — the stop flag was set by the handle's Drop.
                 CFRelease(source);
                 CFRelease(tap);
                 // Free the raw Arc last, so any callback in-flight has already returned.
@@ -424,6 +450,7 @@ mod macos_tap {
             Some(MacOSClickTapHandle {
                 run_loop,
                 tap,
+                stop,
                 thread: Some(thread),
             })
         } else {

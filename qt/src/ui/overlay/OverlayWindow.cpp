@@ -20,30 +20,78 @@
 #include <algorithm>
 #include <cmath>
 #include "snapforge_ffi.h"
+#include "Shortcuts.h"
 
 #ifdef Q_OS_MAC
 #include <objc/runtime.h>
 #include <objc/message.h>
 #endif
 
-// --- Tool shortcut map ---
+// --- Rebindable overlay shortcuts ---
+//
+// Every row the Preferences Hotkeys tab offers under tools/sizes/actions is
+// resolved here against the shared config (hotkeys.<section>.<actionId>),
+// falling back to the historical hardcoded key. Chords are parsed once per
+// reloadKeyBindings(); keyPressEvent then matches QKeyEvents against them.
 
-const QMap<int, ToolType> &OverlayWindow::toolShortcuts() {
-    static const QMap<int, ToolType> map = {
-        { Qt::Key_A, ToolType::Arrow },
-        { Qt::Key_R, ToolType::Rect },
-        { Qt::Key_C, ToolType::Circle },
-        { Qt::Key_L, ToolType::Line },
-        { Qt::Key_D, ToolType::DottedLine },
-        { Qt::Key_F, ToolType::Freehand },
-        { Qt::Key_T, ToolType::Text },
-        { Qt::Key_H, ToolType::Highlight },
-        { Qt::Key_B, ToolType::Blur },
-        { Qt::Key_N, ToolType::Steps },
-        { Qt::Key_I, ToolType::ColorPicker },
-        { Qt::Key_M, ToolType::Measure },
+bool OverlayWindow::KeyBinding::matches(const QKeyEvent *event) const {
+    if (key == 0)
+        return false;
+    const Qt::KeyboardModifiers evMods = event->modifiers() &
+        (Qt::ControlModifier | Qt::ShiftModifier | Qt::AltModifier | Qt::MetaModifier);
+    if (evMods != mods)
+        return false;
+    if (event->key() == key)
+        return true;
+    // Prefs records keypad-Enter and Return both as "Enter" — accept either.
+    return key == Qt::Key_Return && event->key() == Qt::Key_Enter;
+}
+
+OverlayWindow::KeyBinding OverlayWindow::bindingFor(const char *section,
+                                                    const char *actionId,
+                                                    const char *defaultChord) {
+    KeyBinding b;
+    const QString c = shortcuts::chord(QLatin1String(section),
+                                       QLatin1String(actionId),
+                                       QLatin1String(defaultChord));
+    if (!shortcuts::toQtKey(c, &b.key, &b.mods)) {
+        // Unparseable user chord — fall back to the built-in default so the
+        // action never goes dead.
+        shortcuts::toQtKey(QLatin1String(defaultChord), &b.key, &b.mods);
+    }
+    return b;
+}
+
+void OverlayWindow::reloadKeyBindings() {
+    // Defaults mirror the PreferencesWindow hotkey table (and the keys that
+    // used to be hardcoded here).
+    static const struct { const char *id; const char *def; ToolType tool; } kTools[] = {
+        {"arrow",       "A", ToolType::Arrow},
+        {"rect",        "R", ToolType::Rect},
+        {"circle",      "C", ToolType::Circle},
+        {"line",        "L", ToolType::Line},
+        {"dottedline",  "D", ToolType::DottedLine},
+        {"freehand",    "F", ToolType::Freehand},
+        {"text",        "T", ToolType::Text},
+        {"highlight",   "H", ToolType::Highlight},
+        {"blur",        "B", ToolType::Blur},
+        {"steps",       "N", ToolType::Steps},
+        {"colorpicker", "I", ToolType::ColorPicker},
+        {"measure",     "M", ToolType::Measure},
     };
-    return map;
+    m_toolBindings.clear();
+    for (const auto &t : kTools)
+        m_toolBindings.append(qMakePair(bindingFor("tools", t.id, t.def), t.tool));
+
+    m_bindSizeSmall  = bindingFor("sizes", "small",  "1");
+    m_bindSizeMedium = bindingFor("sizes", "medium", "2");
+    m_bindSizeLarge  = bindingFor("sizes", "large",  "3");
+
+    m_bindSave   = bindingFor("actions", "save",   "Cmd+S");
+    m_bindCopy   = bindingFor("actions", "copy",   "Cmd+C");
+    m_bindUndo   = bindingFor("actions", "undo",   "Cmd+Z");
+    m_bindRedo   = bindingFor("actions", "redo",   "Cmd+Shift+Z");
+    m_bindCancel = bindingFor("actions", "cancel", "Escape");
 }
 
 // --- OverlayWindow ---
@@ -53,6 +101,10 @@ OverlayWindow::OverlayWindow(QWidget *parent)
 {
     setCursor(Qt::CrossCursor);
     setMouseTracking(true);
+
+    // Initial read of the rebindable overlay shortcuts; main.cpp re-invokes
+    // reloadKeyBindings() whenever Preferences saves.
+    reloadKeyBindings();
 
     // Pre-warm font metrics to avoid 125ms alias scan on first paint
     QFont font("Menlo", 11);
@@ -286,12 +338,12 @@ void OverlayWindow::activate() {
 void OverlayWindow::activateFullscreen() {
     m_purpose = Screenshot;
     activateInternal();
-    // Use the full widget rect (width(), height()) — selectedRect() is built
-    // from QRect(m_startPos, m_endPos) which is inclusive on both ends, so
-    // (0,0) to (w,h) covers the entire pixel range. The previous (w-1, h-1)
-    // dropped the rightmost column and bottom row.
+    // selectedRect() is built from QRect(m_startPos, m_endPos), whose corner
+    // points are both INCLUSIVE — (0,0) to (w-1,h-1) is exactly width()×height().
+    // Using (w,h) here oversized the selection to (w+1)×(h+1), which made
+    // AnnotationCanvas::setRegion request a crop past the image bounds.
     m_startPos = QPoint(0, 0);
-    m_endPos = QPoint(width(), height());
+    m_endPos = QPoint(width() - 1, height() - 1);
     m_hasRegion = true;
     m_drawing = false;
     enterAnnotateMode();
@@ -548,15 +600,15 @@ void OverlayWindow::enterRecordSelectMode() {
     int startX = sel.x() + sel.width() / 2 - totalWidth / 2;
     int startY = sel.bottom() + yOffset;
 
-    // Clamp so buttons stay on screen
-    QScreen *screen = QGuiApplication::primaryScreen();
-    if (screen) {
-        int screenW = screen->geometry().width();
-        int screenH = screen->geometry().height();
-        if (startX < 4) startX = 4;
-        if (startX + totalWidth > screenW - 4) startX = screenW - 4 - totalWidth;
-        if (startY + btnHeight > screenH - 4) startY = sel.top() - btnHeight - yOffset;
-    }
+    // Clamp so buttons stay within the overlay. startX/startY are WIDGET-LOCAL
+    // coords and the overlay spans exactly the cursor's screen, so clamp
+    // against our own size — the primary screen's geometry is the wrong bound
+    // on a secondary display with a different resolution.
+    const int overlayW = width();
+    const int overlayH = height();
+    if (startX < 4) startX = 4;
+    if (startX + totalWidth > overlayW - 4) startX = overlayW - 4 - totalWidth;
+    if (startY + btnHeight > overlayH - 4) startY = sel.top() - btnHeight - yOffset;
 
     int x = startX;
     m_btnRecordRegion->setGeometry(x, startY, m_btnRecordRegion->sizeHint().width(), btnHeight);
@@ -934,34 +986,27 @@ void OverlayWindow::keyPressEvent(QKeyEvent *event) {
             return;
         }
 
-        const auto modifiers = event->modifiers();
-        const bool cmd = modifiers & Qt::ControlModifier;
-        const bool shift = modifiers & Qt::ShiftModifier;
+        // All chords below come from the Preferences Hotkeys tab (see
+        // reloadKeyBindings); the comments give the defaults.
 
-        // Cmd+Z / Cmd+Shift+Z: undo/redo
-        if (cmd && event->key() == Qt::Key_Z) {
-            if (shift) {
-                m_annotationState.redo();
-            } else {
-                m_annotationState.undo();
-            }
-            return;
-        }
+        // Redo / undo (defaults Cmd+Shift+Z / Cmd+Z)
+        if (m_bindRedo.matches(event)) { m_annotationState.redo(); return; }
+        if (m_bindUndo.matches(event)) { m_annotationState.undo(); return; }
 
-        // Cmd+S: save and copy
-        if (cmd && event->key() == Qt::Key_S) {
+        // Save and copy (default Cmd+S)
+        if (m_bindSave.matches(event)) {
             handleSaveAndCopy();
             return;
         }
 
-        // Cmd+C: copy only
-        if (cmd && event->key() == Qt::Key_C) {
+        // Copy only (default Cmd+C)
+        if (m_bindCopy.matches(event)) {
             handleCopy();
             return;
         }
 
-        // Escape: exit annotate mode and hide
-        if (event->key() == Qt::Key_Escape) {
+        // Cancel (default Escape): exit annotate mode and hide
+        if (m_bindCancel.matches(event)) {
             m_annotationState.clearAnnotations();
             exitAnnotateMode();
             m_hasRegion = false;
@@ -971,17 +1016,15 @@ void OverlayWindow::keyPressEvent(QKeyEvent *event) {
             return;
         }
 
-        // Stroke width shortcuts: 1/2/3
-        if (event->key() == Qt::Key_1) { m_annotationState.setStrokeWidth(1); return; }
-        if (event->key() == Qt::Key_2) { m_annotationState.setStrokeWidth(2); return; }
-        if (event->key() == Qt::Key_3) { m_annotationState.setStrokeWidth(4); return; }
+        // Stroke width shortcuts (defaults 1/2/3)
+        if (m_bindSizeSmall.matches(event))  { m_annotationState.setStrokeWidth(1); return; }
+        if (m_bindSizeMedium.matches(event)) { m_annotationState.setStrokeWidth(2); return; }
+        if (m_bindSizeLarge.matches(event))  { m_annotationState.setStrokeWidth(4); return; }
 
-        // Tool shortcuts (only when no modifier)
-        if (!cmd && !shift) {
-            const auto &shortcuts = toolShortcuts();
-            auto it = shortcuts.find(event->key());
-            if (it != shortcuts.end()) {
-                m_annotationState.setActiveTool(it.value());
+        // Tool shortcuts (defaults A/R/C/L/D/F/T/H/B/N/I/M, modifier-exact)
+        for (const auto &tb : m_toolBindings) {
+            if (tb.first.matches(event)) {
+                m_annotationState.setActiveTool(tb.second);
                 return;
             }
         }
@@ -994,7 +1037,8 @@ void OverlayWindow::keyPressEvent(QKeyEvent *event) {
             emitRecordRegion();
             return;
         }
-        if (event->key() == Qt::Key_Escape) {
+        // Cancel (default Escape)
+        if (m_bindCancel.matches(event)) {
             exitRecordSelectMode();
             m_hasRegion = false;
             m_drawing = false;
@@ -1006,15 +1050,16 @@ void OverlayWindow::keyPressEvent(QKeyEvent *event) {
     }
 
     // Select mode
-    if (event->key() == Qt::Key_Escape) {
+    if (m_bindCancel.matches(event)) {
+        // Cancel (default Escape)
         m_hasRegion = false;
         m_drawing = false;
         hideOverlay();
         emit cancelled();
     } else if (event->key() == Qt::Key_Return && m_hasRegion) {
         enterAnnotateMode();
-    } else if ((event->modifiers() & Qt::ControlModifier) && event->key() == Qt::Key_C && m_hasRegion) {
-        // Cmd+C / Ctrl+C -- copy to clipboard
+    } else if (m_bindCopy.matches(event) && m_hasRegion) {
+        // Copy to clipboard (default Cmd+C)
         QRect sel = selectedRect();
 
         // Fix #19: ignore zero-size regions.

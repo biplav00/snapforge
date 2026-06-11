@@ -410,10 +410,12 @@ void AnnotationToolbar::positionRelativeTo(int regionX, int regionY, int regionW
     int x = regionX + (regionW - sz.width()) / 2;
     int y = regionY + regionH + kGap;
 
-    // Determine available screen height at that position
-    QScreen *screen = QApplication::primaryScreen();
-    if (screen) {
-        const QRect avail = screen->availableGeometry();
+    // The toolbar is a CHILD of the overlay window, so move() is parent-local —
+    // clamp against the parent overlay's rect, not the primary screen's
+    // (global) available geometry, which is a different coordinate space and
+    // possibly a different display entirely.
+    if (const QWidget *overlay = parentWidget()) {
+        const QRect avail = overlay->rect();
 
         // Clamp horizontally
         if (x < avail.left()) x = avail.left();

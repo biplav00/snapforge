@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QString>
+#include <Qt>
 #include <cstdint>
 
 // Single source of truth for the app's global hotkeys.
@@ -28,14 +29,28 @@ struct GlobalAction {
     const char *defaultChord;
 };
 inline constexpr GlobalAction kGlobalActions[] = {
-    {"screenshot", "Cmd+Shift+S"},
-    {"fullscreen", "Cmd+Shift+F"},
-    {"record",     "Cmd+Shift+R"},
-    {"history",    "Cmd+Shift+H"},
+    {"screenshot",  "Cmd+Shift+S"},
+    {"fullscreen",  "Cmd+Shift+F"},
+    {"record",      "Cmd+Shift+R"},
+    {"history",     "Cmd+Shift+H"},
+    {"preferences", "Cmd+,"},
 };
 
 // Current chord for a global action: config value if present, else the default.
 QString chord(const QString &actionKey);
+
+// Current chord for any other Preferences hotkey row (hotkeys.<section>.<actionId>):
+// config value if present, else the caller-supplied default. The overlay uses
+// this for its local tools/sizes/actions bindings.
+QString chord(const QString &section, const QString &actionId,
+              const QString &defaultChord);
+
+// Parse a chord ("Cmd+Shift+Z", "Escape", "A") into a Qt key + modifier set
+// for matching QKeyEvents inside the app. "Cmd" maps to Qt::ControlModifier
+// and "Ctrl" to Qt::MetaModifier — Qt swaps Command/Control on macOS, and this
+// mirrors PreferencesWindow::formatKeyToShortcut which records the chords.
+// Returns false if no key token parses (caller should fall back to a default).
+bool toQtKey(const QString &chord, int *key, Qt::KeyboardModifiers *mods);
 
 // Render a chord string ("Cmd+Shift+S") as macOS glyphs ("⌘⇧S").
 QString glyphs(const QString &chord);

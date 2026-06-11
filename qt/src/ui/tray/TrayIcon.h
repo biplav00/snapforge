@@ -69,6 +69,7 @@ signals:
 private:
     QIcon makeIdleIcon() const;
     QIcon makeRecordingPillIcon(double alpha, bool paused, int seconds) const;
+    QIcon makeStopIcon() const;
 
     void buildNormalMenu();
     void buildRecordingMenu();
@@ -76,9 +77,15 @@ private:
     void refreshPill(double alpha);
 
     QSystemTrayIcon *m_tray = nullptr;
+    // Dedicated menu-bar stop button shown only while recording: a single
+    // click stops the capture without opening the main tray's context menu.
+    // Has no context menu of its own, so activation fires actionStopRecording
+    // directly.
+    QSystemTrayIcon *m_stopTray = nullptr;
     QMenu           *m_menu = nullptr;
     QTimer          *m_pulseTimer = nullptr;
     QIcon            m_idleIcon;
+    QIcon            m_stopIcon;
 
     bool m_inRecordingState = false;
     bool m_paused           = false;

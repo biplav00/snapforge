@@ -23,6 +23,20 @@ struct CGPointRaw {
     y: f64,
 }
 
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct CGSizeRaw {
+    width: f64,
+    height: f64,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct CGRectRaw {
+    origin: CGPointRaw,
+    size: CGSizeRaw,
+}
+
 type CGDisplayReconfigurationCallBack =
     unsafe extern "C" fn(display: u32, flags: u32, user_info: *mut std::ffi::c_void);
 
@@ -51,6 +65,9 @@ extern "C" {
         callback: CGDisplayReconfigurationCallBack,
         user_info: *mut std::ffi::c_void,
     ) -> i32;
+    /// Returns the display's bounds in the global desktop (point) coordinate
+    /// space. The origin is non-zero for any display that isn't the primary.
+    fn CGDisplayBounds(display: u32) -> CGRectRaw;
 }
 
 /// Bumped whenever CoreGraphics tells us the display topology changed. Any
@@ -133,6 +150,49 @@ pub fn primary_display_pixel_height() -> usize {
         CGDisplayModeRelease(mode);
         h
     }
+}
+
+/// Resolve a display index (in our SCK ordering) to its CGDirectDisplayID.
+fn display_id_for_index(display: usize) -> Result<u32, CaptureError> {
+    get_display_ids_cached()
+        .get(display)
+        .copied()
+        .ok_or(CaptureError::NoDisplay(display))
+}
+
+/// Get the native pixel size of a display by index (Retina-aware).
+pub fn display_pixel_size_for_index(display: usize) -> Result<(usize, usize), CaptureError> {
+    let display_id = display_id_for_index(display)?;
+    display_pixel_size(display_id)
+}
+
+/// Get the point-to-pixel scale factor of a display by index.
+/// Returns 1.0 on non-Retina, 2.0 on Retina (typically); falls back to 2.0
+/// if the display mode can't be read (matching `primary_display_scale_factor`).
+pub fn display_scale_factor_for(display: usize) -> Result<f64, CaptureError> {
+    let display_id = display_id_for_index(display)?;
+    unsafe {
+        let mode = CGDisplayCopyDisplayMode(display_id);
+        if mode.is_null() {
+            return Ok(2.0);
+        }
+        let pixel_w = CGDisplayModeGetPixelWidth(mode);
+        let point_w = CGDisplayModeGetWidth(mode);
+        CGDisplayModeRelease(mode);
+        if point_w == 0 {
+            Ok(2.0)
+        } else {
+            Ok(pixel_w as f64 / point_w as f64)
+        }
+    }
+}
+
+/// Get a display's origin in global desktop point coordinates by index.
+/// (0, 0) for the primary display; non-zero for secondary displays.
+pub fn display_origin_points(display: usize) -> Result<(f64, f64), CaptureError> {
+    let display_id = display_id_for_index(display)?;
+    let bounds = unsafe { CGDisplayBounds(display_id) };
+    Ok((bounds.origin.x, bounds.origin.y))
 }
 
 /// Get the true backing pixel dimensions for a display (Retina-aware).
