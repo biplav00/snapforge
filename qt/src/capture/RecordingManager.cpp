@@ -98,7 +98,10 @@ void RecordingManager::pauseRecording()
     void *h = m_handle.load();
     if (!h || m_paused) return;
     if (snapforge_record_pause(h) != 0) {
-        emit recordingError(QStringLiteral("Failed to pause recording"));
+        // Non-fatal: the handle stays alive and the recording continues, so
+        // surface a warning instead of recordingError (which resets the UI
+        // to idle and hides the stop control while we're still recording).
+        emit recordingWarning(QStringLiteral("Failed to pause recording"));
         return;
     }
     // Bank the current lap into accumulated, stop ticking the current lap.
@@ -115,7 +118,9 @@ void RecordingManager::resumeRecording()
     void *h = m_handle.load();
     if (!h || !m_paused) return;
     if (snapforge_record_resume(h) != 0) {
-        emit recordingError(QStringLiteral("Failed to resume recording"));
+        // Non-fatal: still paused but the recording session is alive — see
+        // pauseRecording above.
+        emit recordingWarning(QStringLiteral("Failed to resume recording"));
         return;
     }
     m_elapsed.start();

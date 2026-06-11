@@ -129,7 +129,11 @@ impl ScreenshotHistory {
             .unwrap_or_default()
             .to_string_lossy()
             .to_string();
-        let thumb_filename = format!("{stem}_thumb.png");
+        // Include a hash of the FULL source path so two sources with the same
+        // stem in different directories can't collide on one thumbnail file
+        // (eviction / remove_entry would otherwise delete the survivor's thumb).
+        let hash = path_hash(image_path);
+        let thumb_filename = format!("{stem}_{hash:016x}_thumb.png");
         let thumb_path = thumb_dir.join(&thumb_filename);
         let timestamp = chrono::Local::now().to_rfc3339();
 
@@ -181,11 +185,30 @@ impl ScreenshotHistory {
     }
 }
 
+/// FNV-1a hash of a path string. Used to make thumbnail filenames unique per
+/// FULL source path, not just per file stem.
+fn path_hash(path: &str) -> u64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in path.as_bytes() {
+        h ^= u64::from(*b);
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    h
+}
+
 /// Heuristic check for "ffmpeg was killed mid-write" — a file whose first 8
 /// bytes look like an MP4 (ftyp box) but that never got a `moov` atom written.
 /// Used by the FFI `snapforge_history_add` path to refuse to index garbage
 /// after a SIGKILL. Returns `false` for non-mp4 paths, missing files, or any
 /// IO error (we prefer a false negative to refusing a valid file).
+///
+/// Walks the top-level MP4 box structure from offset 0 (seeking over box
+/// bodies, never reading them): the file is complete iff a top-level `moov`
+/// box exists and is fully contained in the file. A truncated or invalid box
+/// header means ffmpeg never finalized — incomplete. We deliberately do NOT
+/// scan the tail for the `moov` fourcc: the moov box *contents* grow with
+/// recording length, so on long recordings the fourcc (at the box start)
+/// falls outside any fixed-size tail window.
 pub fn is_incomplete_mp4(path: &str) -> bool {
     let p = std::path::Path::new(path);
     let ext_is_mp4 = p
@@ -201,6 +224,11 @@ pub fn is_incomplete_mp4(path: &str) -> bool {
     };
     use std::io::{Read, Seek, SeekFrom};
 
+    let Ok(metadata) = f.metadata() else {
+        return false;
+    };
+    let size = metadata.len();
+
     let mut header = [0u8; 8];
     if f.read_exact(&mut header).is_err() {
         return false;
@@ -209,36 +237,83 @@ pub fn is_incomplete_mp4(path: &str) -> bool {
     if &header[4..8] != b"ftyp" {
         return false;
     }
-
-    let Ok(metadata) = f.metadata() else {
-        return false;
-    };
-    let size = metadata.len();
     if size < 16 {
         return true; // practically empty — treat as incomplete
     }
 
-    // Scan the last 64KB for a `moov` atom. ffmpeg (faststart OFF) writes the
-    // moov atom at the end of the file when it finalizes; an abruptly killed
-    // ffmpeg never gets there.
-    let tail_len = std::cmp::min(size, 64 * 1024);
-    // tail_len is clamped to <= 64KiB, so the i64 cast can never wrap.
-    #[allow(clippy::cast_possible_wrap)]
-    let tail_off = -(tail_len as i64);
-    if f.seek(SeekFrom::End(tail_off)).is_err() {
-        return false;
+    // Walk top-level boxes: 8-byte header = u32 big-endian size + 4-byte type.
+    let mut offset: u64 = 0;
+    while offset < size {
+        if offset + 8 > size {
+            return true; // truncated box header
+        }
+        if f.seek(SeekFrom::Start(offset)).is_err() {
+            return false;
+        }
+        let mut hdr = [0u8; 8];
+        if f.read_exact(&mut hdr).is_err() {
+            return false; // bytes exist per metadata, so this is a real IO error
+        }
+        let size32 = u64::from(u32::from_be_bytes([hdr[0], hdr[1], hdr[2], hdr[3]]));
+        let box_type = [hdr[4], hdr[5], hdr[6], hdr[7]];
+        let box_size = match size32 {
+            // size == 0: box extends to end of file.
+            0 => size - offset,
+            // size == 1: actual size is the u64 `largesize` field that follows.
+            1 => {
+                if offset + 16 > size {
+                    return true; // truncated largesize
+                }
+                let mut large = [0u8; 8];
+                if f.read_exact(&mut large).is_err() {
+                    return false;
+                }
+                let largesize = u64::from_be_bytes(large);
+                if largesize < 16 {
+                    return true; // can't even hold its own extended header
+                }
+                largesize
+            }
+            s if s < 8 => return true, // invalid: smaller than its own header
+            s => s,
+        };
+        let Some(end) = offset.checked_add(box_size) else {
+            return true; // overflow — garbage header
+        };
+        if end > size {
+            return true; // box not fully contained — ffmpeg was killed mid-write
+        }
+        if box_type == *b"moov" {
+            return false; // complete: a fully-contained top-level moov exists
+        }
+        offset = end;
     }
-    let mut tail = vec![0u8; tail_len as usize];
-    if f.read_exact(&mut tail).is_err() {
-        return false;
-    }
-    !tail.windows(4).any(|w| w == b"moov")
+    true // reached EOF without finding a moov box
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::io::Write;
+
+    /// Build a well-formed MP4 box: u32 BE size (header + payload) + 4-byte type.
+    fn mp4_box(box_type: [u8; 4], payload: &[u8]) -> Vec<u8> {
+        let mut v = Vec::with_capacity(8 + payload.len());
+        v.extend_from_slice(&u32::try_from(8 + payload.len()).unwrap().to_be_bytes());
+        v.extend_from_slice(&box_type);
+        v.extend_from_slice(payload);
+        v
+    }
+
+    fn write_mp4(name: &str, contents: &[u8]) -> (tempfile::TempDir, String) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(name);
+        let mut f = std::fs::File::create(&path).unwrap();
+        f.write_all(contents).unwrap();
+        drop(f);
+        let s = path.to_str().unwrap().to_string();
+        (dir, s)
+    }
 
     #[test]
     fn non_mp4_extension_never_incomplete() {
@@ -254,32 +329,107 @@ mod tests {
 
     #[test]
     fn ftyp_without_moov_is_incomplete() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("broken.mp4");
-        let mut f = std::fs::File::create(&path).unwrap();
-        // 4 bytes size + "ftyp" + some filler — no moov atom anywhere.
-        let mut buf = vec![0u8; 0];
-        buf.extend_from_slice(&[0, 0, 0, 0x20]);
-        buf.extend_from_slice(b"ftyp");
-        buf.extend_from_slice(&[0u8; 64]);
-        f.write_all(&buf).unwrap();
-        drop(f);
-        assert!(is_incomplete_mp4(path.to_str().unwrap()));
+        // ftyp + mdat only — ffmpeg was killed before finalizing the moov.
+        let mut buf = mp4_box(*b"ftyp", &[0u8; 24]);
+        buf.extend_from_slice(&mp4_box(*b"mdat", &[0u8; 64]));
+        let (_dir, path) = write_mp4("broken.mp4", &buf);
+        assert!(is_incomplete_mp4(&path));
     }
 
     #[test]
     fn ftyp_with_moov_is_complete() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("ok.mp4");
-        let mut f = std::fs::File::create(&path).unwrap();
-        let mut buf = vec![0u8; 0];
-        buf.extend_from_slice(&[0, 0, 0, 0x20]);
-        buf.extend_from_slice(b"ftyp");
-        buf.extend_from_slice(&[0u8; 64]);
+        let mut buf = mp4_box(*b"ftyp", &[0u8; 24]);
+        buf.extend_from_slice(&mp4_box(*b"mdat", &[0u8; 64]));
+        buf.extend_from_slice(&mp4_box(*b"moov", &[0u8; 32]));
+        let (_dir, path) = write_mp4("ok.mp4", &buf);
+        assert!(!is_incomplete_mp4(&path));
+    }
+
+    #[test]
+    fn large_moov_with_fourcc_outside_64kb_tail_is_complete() {
+        // Long recordings grow the moov sample tables; the `moov` fourcc sits
+        // at the box START, far more than 64KB from EOF. The old tail scan
+        // misclassified these as incomplete.
+        let mut buf = mp4_box(*b"ftyp", &[0u8; 24]);
+        buf.extend_from_slice(&mp4_box(*b"mdat", &[0u8; 64]));
+        buf.extend_from_slice(&mp4_box(*b"moov", &vec![0u8; 200 * 1024]));
+        let (_dir, path) = write_mp4("long.mp4", &buf);
+        assert!(!is_incomplete_mp4(&path));
+    }
+
+    #[test]
+    fn truncated_last_box_is_incomplete() {
+        // mdat header claims 1000 bytes but the file ends after 10 — the box
+        // is not fully contained, so the file was cut off mid-write.
+        let mut buf = mp4_box(*b"ftyp", &[0u8; 24]);
+        buf.extend_from_slice(&1000u32.to_be_bytes());
+        buf.extend_from_slice(b"mdat");
+        buf.extend_from_slice(&[0u8; 10]);
+        let (_dir, path) = write_mp4("truncated.mp4", &buf);
+        assert!(is_incomplete_mp4(&path));
+    }
+
+    #[test]
+    fn truncated_box_header_is_incomplete() {
+        // A dangling 4-byte fragment where a box header should be.
+        let mut buf = mp4_box(*b"ftyp", &[0u8; 24]);
+        buf.extend_from_slice(&[0, 0, 0, 9]);
+        let (_dir, path) = write_mp4("fragment.mp4", &buf);
+        assert!(is_incomplete_mp4(&path));
+    }
+
+    #[test]
+    fn size_zero_moov_extending_to_eof_is_complete() {
+        // size == 0 means "box extends to end of file".
+        let mut buf = mp4_box(*b"ftyp", &[0u8; 24]);
+        buf.extend_from_slice(&0u32.to_be_bytes());
         buf.extend_from_slice(b"moov");
-        buf.extend_from_slice(&[0u8; 16]);
-        f.write_all(&buf).unwrap();
-        drop(f);
-        assert!(!is_incomplete_mp4(path.to_str().unwrap()));
+        buf.extend_from_slice(&[0u8; 32]);
+        let (_dir, path) = write_mp4("eofbox.mp4", &buf);
+        assert!(!is_incomplete_mp4(&path));
+    }
+
+    #[test]
+    fn size_zero_non_moov_box_is_incomplete() {
+        // A to-EOF mdat swallows the rest of the file; no moov ever appears.
+        let mut buf = mp4_box(*b"ftyp", &[0u8; 24]);
+        buf.extend_from_slice(&0u32.to_be_bytes());
+        buf.extend_from_slice(b"mdat");
+        buf.extend_from_slice(&[0u8; 32]);
+        let (_dir, path) = write_mp4("eofmdat.mp4", &buf);
+        assert!(is_incomplete_mp4(&path));
+    }
+
+    #[test]
+    fn largesize_moov_is_complete() {
+        // size == 1: real size lives in the 64-bit largesize field.
+        let payload = [0u8; 32];
+        let mut buf = mp4_box(*b"ftyp", &[0u8; 24]);
+        buf.extend_from_slice(&1u32.to_be_bytes());
+        buf.extend_from_slice(b"moov");
+        buf.extend_from_slice(&(16 + payload.len() as u64).to_be_bytes());
+        buf.extend_from_slice(&payload);
+        let (_dir, path) = write_mp4("large.mp4", &buf);
+        assert!(!is_incomplete_mp4(&path));
+    }
+
+    #[test]
+    fn truncated_largesize_moov_is_incomplete() {
+        // largesize claims more bytes than the file holds.
+        let mut buf = mp4_box(*b"ftyp", &[0u8; 24]);
+        buf.extend_from_slice(&1u32.to_be_bytes());
+        buf.extend_from_slice(b"moov");
+        buf.extend_from_slice(&4096u64.to_be_bytes());
+        buf.extend_from_slice(&[0u8; 8]);
+        let (_dir, path) = write_mp4("largetrunc.mp4", &buf);
+        assert!(is_incomplete_mp4(&path));
+    }
+
+    #[test]
+    fn path_hash_distinguishes_same_stem_different_dirs() {
+        // Thumbnail names embed this hash so /a/shot.png and /b/shot.png
+        // can't collide on one thumbnail file.
+        assert_ne!(path_hash("/a/shot.png"), path_hash("/b/shot.png"));
+        assert_eq!(path_hash("/a/shot.png"), path_hash("/a/shot.png"));
     }
 }

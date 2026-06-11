@@ -19,12 +19,24 @@
 TrayIcon::TrayIcon(QObject *parent)
     : QObject(parent),
       m_tray(new QSystemTrayIcon(this)),
+      m_stopTray(new QSystemTrayIcon(this)),
       m_menu(new QMenu()),
       m_pulseTimer(new QTimer(this)) {
     m_pulseTimer->setInterval(500);
     QObject::connect(m_pulseTimer, &QTimer::timeout, this, [this]() {
         m_pulseHigh = !m_pulseHigh;
         refreshPill(m_pulseHigh ? 1.0 : 0.35);
+    });
+
+    // Stop button has no context menu, so any activation (left click on macOS)
+    // stops the recording outright.
+    QObject::connect(m_stopTray, &QSystemTrayIcon::activated, this,
+                     [this](QSystemTrayIcon::ActivationReason reason) {
+        if (reason == QSystemTrayIcon::Trigger ||
+            reason == QSystemTrayIcon::DoubleClick ||
+            reason == QSystemTrayIcon::Context) {
+            emit actionStopRecording();
+        }
     });
 }
 
@@ -40,6 +52,12 @@ void TrayIcon::initialize() {
     m_idleIcon = makeIdleIcon();
     m_tray->setIcon(m_idleIcon);
     m_tray->setToolTip("Snapforge");
+
+    // Stop button starts hidden; only shown while recording (enterRecordingState).
+    m_stopIcon = makeStopIcon();
+    m_stopTray->setIcon(m_stopIcon);
+    m_stopTray->setToolTip("Stop Recording");
+    m_stopTray->hide();
 
     // Preserve the existing app-wide property used by miscellaneous tray
     // banners that don't have direct access to TrayIcon (e.g. save-failed
@@ -57,6 +75,7 @@ void TrayIcon::enterRecordingState(bool paused) {
     m_paused = paused;
     buildRecordingMenu();
     m_tray->setToolTip(paused ? "Snapforge — Paused" : "Snapforge — Recording");
+    m_stopTray->show();
     refreshPill(1.0);
     if (paused) {
         m_pulseTimer->stop();
@@ -70,6 +89,7 @@ void TrayIcon::leaveRecordingState() {
     m_paused = false;
     m_elapsedSeconds = 0;
     m_pulseTimer->stop();
+    m_stopTray->hide();
     m_tray->setIcon(m_idleIcon);
     m_tray->setToolTip("Snapforge");
     buildNormalMenu();
@@ -113,7 +133,9 @@ void TrayIcon::refreshPill(double alpha) {
 // capture/record motif at menu-bar size.
 QIcon TrayIcon::makeIdleIcon() const {
     const qreal logicalSz = 18.0;
-    const qreal dpr = 2.0;
+    // Match the pill/stop icons' 3.0 DPR so all three tray glyphs render at the
+    // same crispness on a Retina menu bar.
+    const qreal dpr = 3.0;
     const int sz = static_cast<int>(logicalSz * dpr);
     QPixmap pm(sz, sz);
     pm.setDevicePixelRatio(dpr);
@@ -190,13 +212,13 @@ QIcon TrayIcon::makeRecordingPillIcon(double alpha, bool paused, int seconds) co
     }
 
     QFont timeFont(QStringLiteral("Menlo"));
-    timeFont.setPixelSize(14);
+    timeFont.setPixelSize(15);
     timeFont.setWeight(QFont::Bold);
     QFontMetrics tfm(timeFont);
     const qreal timeW = tfm.horizontalAdvance(timeStr);
 
     const qreal padX = 4.0;
-    const qreal dotR = 4.0;
+    const qreal dotR = 5.5;
     const qreal gap = 6.0;
     const int logicalH = 18;
     const int logicalW = static_cast<int>(std::ceil(
@@ -220,7 +242,9 @@ QIcon TrayIcon::makeRecordingPillIcon(double alpha, bool paused, int seconds) co
         // overall layout doesn't shift when toggling pause.
         p.setBrush(QColor(255, 150, 150, 230));
         const qreal barW = 2.6;
-        const qreal barH = 8.0;
+        // Match the dot's diameter (2*dotR) so the glyph keeps the same
+        // footprint and height when toggling pause.
+        const qreal barH = dotR * 2.0;
         p.drawRoundedRect(QRectF(dotCx - dotR, cy - barH / 2.0, barW, barH),
                           0.8, 0.8);
         p.drawRoundedRect(QRectF(dotCx + dotR - barW, cy - barH / 2.0,
@@ -228,7 +252,7 @@ QIcon TrayIcon::makeRecordingPillIcon(double alpha, bool paused, int seconds) co
     } else {
         int halo = qBound(0, static_cast<int>(90 * alpha), 90);
         p.setBrush(QColor(255, 70, 70, halo));
-        p.drawEllipse(QPointF(dotCx, cy), dotR + 2.0, dotR + 2.0);
+        p.drawEllipse(QPointF(dotCx, cy), dotR + 2.5, dotR + 2.5);
         int dotAlpha = qBound(200, static_cast<int>(255 * alpha), 255);
         p.setBrush(QColor(255, 70, 70, dotAlpha));
         p.drawEllipse(QPointF(dotCx, cy), dotR, dotR);
@@ -244,6 +268,32 @@ QIcon TrayIcon::makeRecordingPillIcon(double alpha, bool paused, int seconds) co
     p.end();
     // Multi-color (red dot + white text), so render as a regular icon —
     // template mode would collapse the dot's red into the menu-bar tint.
+    QIcon icon(pm);
+    icon.setIsMask(false);
+    return icon;
+}
+
+// Menu-bar stop button: a solid red rounded square — the universal stop glyph,
+// tinted to match the recording dot so the pair reads as "recording / stop".
+// Multi-color against the bar tint, so rendered as a regular (non-mask) icon.
+QIcon TrayIcon::makeStopIcon() const {
+    const qreal logicalSz = 18.0;
+    const qreal dpr = 3.0;
+    const int sz = static_cast<int>(logicalSz * dpr);
+    QPixmap pm(sz, sz);
+    pm.setDevicePixelRatio(dpr);
+    pm.fill(Qt::transparent);
+
+    QPainter p(&pm);
+    p.setRenderHint(QPainter::Antialiasing);
+    p.setPen(Qt::NoPen);
+    p.setBrush(QColor(255, 70, 70, 255));
+
+    const qreal side = 12.0;
+    const qreal off = (logicalSz - side) / 2.0;
+    p.drawRoundedRect(QRectF(off, off, side, side), 2.6, 2.6);
+
+    p.end();
     QIcon icon(pm);
     icon.setIsMask(false);
     return icon;
@@ -267,7 +317,7 @@ void TrayIcon::buildNormalMenu() {
     m_menu->addSeparator();
 
     m_menu->addAction(trayLabel(QStringLiteral("History"), "history"), this, &TrayIcon::actionHistory);
-    m_menu->addAction(QStringLiteral("Preferences"), this, &TrayIcon::actionPreferences);
+    m_menu->addAction(trayLabel(QStringLiteral("Preferences"), "preferences"), this, &TrayIcon::actionPreferences);
 
     m_menu->addSeparator();
 
@@ -292,7 +342,7 @@ void TrayIcon::buildRecordingMenu() {
     m_menu->addSeparator();
 
     m_menu->addAction(trayLabel(QStringLiteral("History"), "history"), this, &TrayIcon::actionHistory);
-    m_menu->addAction(QStringLiteral("Preferences"), this, &TrayIcon::actionPreferences);
+    m_menu->addAction(trayLabel(QStringLiteral("Preferences"), "preferences"), this, &TrayIcon::actionPreferences);
 
     m_menu->addSeparator();
 

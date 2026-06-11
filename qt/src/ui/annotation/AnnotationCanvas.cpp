@@ -69,7 +69,10 @@ void AnnotationCanvas::setRegion(int x, int y, int w, int h) {
     m_committedLayerValid = false;
 
     if (!m_fullScreenshot.isNull()) {
-        double dpr = snapforge_display_scale_factor();
+        // Crop with the SAME DPR source compositeImage() uses (this screen's
+        // DPR, not the primary display's). Mixing the two shifts/empties the
+        // crop on a secondary display with a different scale factor.
+        double dpr = effectiveDpr();
         int px = static_cast<int>(x * dpr);
         int py = static_cast<int>(y * dpr);
         int pw = static_cast<int>(w * dpr);
@@ -89,6 +92,10 @@ void AnnotationCanvas::setRegion(int x, int y, int w, int h) {
                      "vs image %dx%d", px, py, pw, ph, cpx, cpy, cpw, cph, imgW, imgH);
         }
         m_croppedScreenshot = m_fullScreenshot.copy(cpx, cpy, cpw, cph);
+        // The crop is at device-pixel scale but the FFI buffer carries no DPR
+        // (defaults to 1.0). Tag it so samplers working in widget-logical
+        // coords (Blur, ColorPicker) can map back into pixel space.
+        m_croppedScreenshot.setDevicePixelRatio(dpr);
     }
 }
 
@@ -158,6 +165,12 @@ QImage AnnotationCanvas::compositeImage() const {
                     ? QImage(size(), QImage::Format_ARGB32_Premultiplied)
                     : m_croppedScreenshot.convertToFormat(QImage::Format_ARGB32_Premultiplied);
 
+    // A QImage(size) ctor leaves the buffer UNINITIALISED (garbage), and it is
+    // non-null, so the isNull() guard below skips it — annotations would then be
+    // painted over random memory. Fill any non-screenshot-backed result.
+    if (m_croppedScreenshot.isNull() && !result.isNull()) {
+        result.fill(Qt::transparent);
+    }
     if (result.isNull()) {
         result = QImage(size(), QImage::Format_ARGB32_Premultiplied);
         result.fill(Qt::transparent);
@@ -245,8 +258,12 @@ void AnnotationCanvas::mousePressEvent(QMouseEvent *event) {
     // --- ColorPicker ---
     if (tool == ToolType::ColorPicker) {
         if (!m_croppedScreenshot.isNull()) {
-            int px = static_cast<int>(pos.x());
-            int py = static_cast<int>(pos.y());
+            // pos is widget-logical but the crop is at device-pixel scale
+            // (DPR tagged in setRegion) — scale before sampling, otherwise
+            // Retina picks the colour from the wrong location.
+            const double imgDpr = m_croppedScreenshot.devicePixelRatio();
+            int px = static_cast<int>(pos.x() * imgDpr);
+            int py = static_cast<int>(pos.y() * imgDpr);
             px = std::max(0, std::min(px, m_croppedScreenshot.width() - 1));
             py = std::max(0, std::min(py, m_croppedScreenshot.height() - 1));
             QColor sampled = m_croppedScreenshot.pixelColor(px, py);

@@ -5,12 +5,12 @@
 //! - Caller-owned buffers are allocated here and freed via snapforge_free_buffer.
 //! - String out-params are allocated here and freed via snapforge_free_string.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::ffi::{c_char, c_int, c_void, CStr, CString};
 use std::hash::{BuildHasherDefault, Hasher};
 use std::path::PathBuf;
 use std::ptr;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
 /// A tiny deterministic hasher for `usize` keys that are already raw memory
 /// addresses (and therefore uniformly distributed by the allocator). The
@@ -80,42 +80,6 @@ fn register_buffer(ptr: *mut u8, len: usize) {
             map.insert(ptr as usize, len);
         }
     }
-}
-
-/// Tracks every live recording handle pointer we've issued so an arbitrary
-/// caller-supplied pointer can be rejected without dereferencing it. This is
-/// the authoritative liveness check; the in-band magic word is a secondary
-/// defense against allocator reuse of a recently-freed slot.
-static HANDLE_REGISTRY: OnceLock<Mutex<HashSet<usize, PtrBuildHasher>>> = OnceLock::new();
-
-fn handle_registry() -> &'static Mutex<HashSet<usize, PtrBuildHasher>> {
-    HANDLE_REGISTRY.get_or_init(|| Mutex::new(HashSet::default()))
-}
-
-fn register_handle(ptr: *mut c_void) {
-    if !ptr.is_null() {
-        if let Ok(mut set) = handle_registry().lock() {
-            set.insert(ptr as usize);
-        }
-    }
-}
-
-fn unregister_handle(ptr: *mut c_void) -> bool {
-    if ptr.is_null() {
-        return false;
-    }
-    handle_registry()
-        .lock()
-        .is_ok_and(|mut set| set.remove(&(ptr as usize)))
-}
-
-fn is_registered_handle(ptr: *mut c_void) -> bool {
-    if ptr.is_null() {
-        return false;
-    }
-    handle_registry()
-        .lock()
-        .is_ok_and(|set| set.contains(&(ptr as usize)))
 }
 
 /// Build a `CString` even when the input has embedded NUL bytes. The FFI
@@ -709,21 +673,28 @@ fn dispatch_log(level: SnapforgeLogLevel, message: &str) {
 
 /// Register the C callback that receives formatted Rust log records, and (on
 /// first call) install the tracing subscriber that drives it. Pass a non-null
-/// `callback`; passing it again replaces the previous one. The subscriber is
-/// installed exactly once — subsequent calls only swap the callback pointer.
+/// `callback`; passing it again replaces the previous one (a NULL callback is
+/// ignored). The subscriber is installed exactly once — subsequent calls only
+/// swap the callback pointer.
 ///
 /// Qt calls this once at startup to route Rust diagnostics into its rotating
 /// log file. Until it does, Rust logs fall back to stderr.
 ///
 /// # Safety
 ///
-/// `callback` must be a valid function pointer for the remaining lifetime of
-/// the process (it is stored and invoked from arbitrary Rust threads). It must
-/// not unwind — Rust guards the call with `catch_unwind`, but the callback
-/// should still avoid panicking.
+/// `callback` must be NULL or a valid function pointer for the remaining
+/// lifetime of the process (it is stored and invoked from arbitrary Rust
+/// threads). It must not unwind — Rust guards the call with `catch_unwind`,
+/// but the callback should still avoid panicking.
 #[no_mangle]
-pub unsafe extern "C" fn snapforge_set_log_callback(callback: SnapforgeLogCallback) {
-    LOG_CALLBACK.store(callback as *mut (), Ordering::Release);
+pub unsafe extern "C" fn snapforge_set_log_callback(callback: Option<SnapforgeLogCallback>) {
+    // `Option<extern "C" fn>` has the same ABI as a bare fn pointer, so a C
+    // caller passing NULL arrives as `None` instead of instant UB.
+    let Some(cb) = callback else {
+        eprintln!("[snapforge] snapforge_set_log_callback called with NULL; ignoring");
+        return;
+    };
+    LOG_CALLBACK.store(cb as *mut (), Ordering::Release);
 
     // Install the subscriber once. `try_init` is a no-op (returns Err) if a
     // global subscriber already exists, so this is safe to race / repeat.
@@ -975,7 +946,6 @@ pub unsafe extern "C" fn snapforge_save_prerendered(
 // --- Recording (use-case) ---------------------------------------------------
 
 const APP_RECORDING_MAGIC_ALIVE: u64 = 0x534E_4150_5245_4348; // "SNAPRECH"
-const APP_RECORDING_MAGIC_DEAD: u64 = 0xDEAD_BEEF_DEAD_BEEF;
 
 #[repr(C)]
 struct FfiAppRecordingHandle {
@@ -983,28 +953,45 @@ struct FfiAppRecordingHandle {
     inner: Mutex<Option<app_recording::RecordingHandle>>,
 }
 
-unsafe fn check_app_recording_handle<'a>(handle: *mut c_void) -> Option<&'a FfiAppRecordingHandle> {
+/// Tracks every live recording handle we've issued, keyed by the raw pointer
+/// handed to C. Storing the `Arc` here (rather than a bare pointer set) closes
+/// the validate-then-free TOCTOU: `check_app_recording_handle` clones the Arc
+/// UNDER the registry lock, so a concurrent `snapforge_record_free_handle` can
+/// only remove the registry entry — deallocation is deferred until the last
+/// clone drops. The in-band magic word stays as a secondary defense against a
+/// registry entry pointing at corrupted memory.
+static RECORDING_HANDLE_REGISTRY: OnceLock<
+    Mutex<HashMap<usize, Arc<FfiAppRecordingHandle>, PtrBuildHasher>>,
+> = OnceLock::new();
+
+fn recording_handle_registry(
+) -> &'static Mutex<HashMap<usize, Arc<FfiAppRecordingHandle>, PtrBuildHasher>> {
+    RECORDING_HANDLE_REGISTRY.get_or_init(|| Mutex::new(HashMap::default()))
+}
+
+fn check_app_recording_handle(handle: *mut c_void) -> Option<Arc<FfiAppRecordingHandle>> {
     if handle.is_null() || (handle as usize) < 4096 {
         return None;
     }
-    if !is_registered_handle(handle) {
+    let Ok(map) = recording_handle_registry().lock() else {
+        return None;
+    };
+    let Some(wrapper) = map.get(&(handle as usize)) else {
         tracing::warn!(
             "[snapforge] app recording handle {:p} not in registry; rejecting",
             handle
         );
         return None;
-    }
-    let p = handle.cast::<FfiAppRecordingHandle>();
-    let magic = std::ptr::read_volatile(std::ptr::addr_of!((*p).magic));
-    if magic != APP_RECORDING_MAGIC_ALIVE {
+    };
+    if wrapper.magic != APP_RECORDING_MAGIC_ALIVE {
         tracing::warn!(
             "[snapforge] app recording handle {:p} bad magic 0x{:016x}; rejecting",
             handle,
-            magic
+            wrapper.magic
         );
         return None;
     }
-    Some(&*p)
+    Some(Arc::clone(wrapper))
 }
 
 /// Start a recording via the use-case surface.
@@ -1078,12 +1065,18 @@ pub unsafe extern "C" fn snapforge_record_start(req_json: *const c_char) -> *mut
     match app_recording::start_recording(req) {
         Ok(handle) => {
             clear_app_error();
-            let wrapper = Box::new(FfiAppRecordingHandle {
+            let wrapper = Arc::new(FfiAppRecordingHandle {
                 magic: APP_RECORDING_MAGIC_ALIVE,
                 inner: Mutex::new(Some(handle)),
             });
-            let raw = Box::into_raw(wrapper).cast::<c_void>();
-            register_handle(raw);
+            // The pointer handed to C owns one strong reference; the registry
+            // owns a second one. Both are released in `record_free_handle`.
+            let raw = Arc::into_raw(Arc::clone(&wrapper))
+                .cast_mut()
+                .cast::<c_void>();
+            if let Ok(mut map) = recording_handle_registry().lock() {
+                map.insert(raw as usize, wrapper);
+            }
             raw
         }
         Err(e) => {
@@ -1186,31 +1179,35 @@ pub unsafe extern "C" fn snapforge_record_free_handle(handle: *mut c_void) {
     if handle.is_null() || (handle as usize) < 4096 {
         return;
     }
-    if !unregister_handle(handle) {
+    let removed = recording_handle_registry()
+        .lock()
+        .ok()
+        .and_then(|mut map| map.remove(&(handle as usize)));
+    let Some(registry_ref) = removed else {
         tracing::warn!(
             "[snapforge] record_free_handle: {:p} not in registry; ignoring",
             handle
         );
         return;
-    }
-    let p = handle.cast::<FfiAppRecordingHandle>();
-    let magic = std::ptr::read_volatile(std::ptr::addr_of!((*p).magic));
-    if magic != APP_RECORDING_MAGIC_ALIVE {
+    };
+    if registry_ref.magic != APP_RECORDING_MAGIC_ALIVE {
         tracing::error!(
             "[snapforge] record_free_handle: {:p} bad magic 0x{:016x}; leaking",
             handle,
-            magic
+            registry_ref.magic
         );
+        std::mem::forget(registry_ref);
         return;
     }
-    std::ptr::write_volatile(std::ptr::addr_of_mut!((*p).magic), APP_RECORDING_MAGIC_DEAD);
-    let _ = Box::from_raw(p);
+    drop(registry_ref);
+    // Reclaim the strong reference handed to C at creation. The allocation is
+    // released once any in-flight `check_app_recording_handle` clone drops.
+    let _ = Arc::from_raw(handle.cast::<FfiAppRecordingHandle>());
 }
 
 // --- Click tracking (use-case) ---------------------------------------------
 
 const APP_CLICKS_MAGIC_ALIVE: u64 = 0x534E_4150_434C_4B48; // "SNAPCLKH"
-const APP_CLICKS_MAGIC_DEAD: u64 = 0xDEAD_C1ED_DEAD_C1ED;
 
 /// C-ABI callback delivered for every click. `right_click` is 1 for
 /// right-mouse-down, 0 for left-mouse-down. `user_data` is the opaque pointer
@@ -1224,28 +1221,38 @@ struct FfiClickHandle {
     inner: Mutex<Option<app_clicks::ClickHandle>>,
 }
 
-unsafe fn check_click_handle<'a>(handle: *mut c_void) -> Option<&'a FfiClickHandle> {
+/// Same Arc-in-registry scheme as `RECORDING_HANDLE_REGISTRY` — see the
+/// comment there for the TOCTOU rationale.
+static CLICK_HANDLE_REGISTRY: OnceLock<Mutex<HashMap<usize, Arc<FfiClickHandle>, PtrBuildHasher>>> =
+    OnceLock::new();
+
+fn click_handle_registry() -> &'static Mutex<HashMap<usize, Arc<FfiClickHandle>, PtrBuildHasher>> {
+    CLICK_HANDLE_REGISTRY.get_or_init(|| Mutex::new(HashMap::default()))
+}
+
+fn check_click_handle(handle: *mut c_void) -> Option<Arc<FfiClickHandle>> {
     if handle.is_null() || (handle as usize) < 4096 {
         return None;
     }
-    if !is_registered_handle(handle) {
+    let Ok(map) = click_handle_registry().lock() else {
+        return None;
+    };
+    let Some(wrapper) = map.get(&(handle as usize)) else {
         tracing::warn!(
             "[snapforge] click handle {:p} not in registry; rejecting",
             handle
         );
         return None;
-    }
-    let p = handle.cast::<FfiClickHandle>();
-    let magic = std::ptr::read_volatile(std::ptr::addr_of!((*p).magic));
-    if magic != APP_CLICKS_MAGIC_ALIVE {
+    };
+    if wrapper.magic != APP_CLICKS_MAGIC_ALIVE {
         tracing::warn!(
             "[snapforge] click handle {:p} bad magic 0x{:016x}; rejecting",
             handle,
-            magic
+            wrapper.magic
         );
         return None;
     }
-    Some(&*p)
+    Some(Arc::clone(wrapper))
 }
 
 /// Begin streaming global click events to `callback`.
@@ -1263,21 +1270,27 @@ unsafe fn check_click_handle<'a>(handle: *mut c_void) -> Option<&'a FfiClickHand
 ///
 /// # Safety
 ///
-/// `callback` must remain valid for the lifetime of the returned handle.
+/// `callback` must be non-NULL and remain valid for the lifetime of the
+/// returned handle (a NULL callback is rejected with an error).
 /// `user_data` must remain valid for the same lifetime if the callback
 /// dereferences it.
 #[no_mangle]
 pub unsafe extern "C" fn snapforge_clicks_start(
-    callback: SnapforgeClickCallback,
+    callback: Option<SnapforgeClickCallback>,
     user_data: *mut c_void,
 ) -> *mut c_void {
+    // `Option<extern "C" fn>` has the same ABI as a bare fn pointer, so a C
+    // caller passing NULL arrives as `None` instead of instant UB.
+    let Some(cb) = callback else {
+        set_app_error("internal: null click callback");
+        return ptr::null_mut();
+    };
     // Cast the user pointer to usize for transport across the thread
     // boundary — `*mut c_void` is `!Send` even when wrapped in a newtype
     // because the rustc auto-trait check looks through the closure capture.
     // We never dereference it; the callback gets the bit pattern back as a
     // pointer. Raw `extern "C" fn` is Send already.
     let ud_bits = user_data as usize;
-    let cb = callback;
     let inner = match app_clicks::start_click_tracking(move |ev| {
         let p = ud_bits as *mut c_void;
         cb(ev.x, ev.y, c_int::from(ev.right_click), p);
@@ -1289,12 +1302,18 @@ pub unsafe extern "C" fn snapforge_clicks_start(
         }
     };
     clear_app_error();
-    let wrapper = Box::new(FfiClickHandle {
+    let wrapper = Arc::new(FfiClickHandle {
         magic: APP_CLICKS_MAGIC_ALIVE,
         inner: Mutex::new(Some(inner)),
     });
-    let raw = Box::into_raw(wrapper).cast::<c_void>();
-    register_handle(raw);
+    // The pointer handed to C owns one strong reference; the registry owns a
+    // second one. Both are released in `clicks_free_handle`.
+    let raw = Arc::into_raw(Arc::clone(&wrapper))
+        .cast_mut()
+        .cast::<c_void>();
+    if let Ok(mut map) = click_handle_registry().lock() {
+        map.insert(raw as usize, wrapper);
+    }
     raw
 }
 
@@ -1329,25 +1348,30 @@ pub unsafe extern "C" fn snapforge_clicks_free_handle(handle: *mut c_void) {
     if handle.is_null() || (handle as usize) < 4096 {
         return;
     }
-    if !unregister_handle(handle) {
+    let removed = click_handle_registry()
+        .lock()
+        .ok()
+        .and_then(|mut map| map.remove(&(handle as usize)));
+    let Some(registry_ref) = removed else {
         tracing::warn!(
             "[snapforge] clicks_free_handle: {:p} not in registry; ignoring",
             handle
         );
         return;
-    }
-    let p = handle.cast::<FfiClickHandle>();
-    let magic = std::ptr::read_volatile(std::ptr::addr_of!((*p).magic));
-    if magic != APP_CLICKS_MAGIC_ALIVE {
+    };
+    if registry_ref.magic != APP_CLICKS_MAGIC_ALIVE {
         tracing::error!(
             "[snapforge] clicks_free_handle: {:p} bad magic 0x{:016x}; leaking",
             handle,
-            magic
+            registry_ref.magic
         );
+        std::mem::forget(registry_ref);
         return;
     }
-    std::ptr::write_volatile(std::ptr::addr_of_mut!((*p).magic), APP_CLICKS_MAGIC_DEAD);
-    let _ = Box::from_raw(p);
+    drop(registry_ref);
+    // Reclaim the strong reference handed to C at creation. The allocation is
+    // released once any in-flight `check_click_handle` clone drops.
+    let _ = Arc::from_raw(handle.cast::<FfiClickHandle>());
 }
 
 #[cfg(test)]
@@ -1499,7 +1523,7 @@ mod app_ffi_tests {
 
     #[test]
     fn log_callback_receives_forwarded_records() {
-        unsafe { snapforge_set_log_callback(capture_log) };
+        unsafe { snapforge_set_log_callback(Some(capture_log)) };
         tracing::warn!("ffi-bridge-test-marker");
         let got = LAST_LOG.lock().unwrap().clone();
         // The subscriber may already be installed by another test's call; what

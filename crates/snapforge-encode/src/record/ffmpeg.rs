@@ -6,7 +6,7 @@ use std::io::{Read as _, Write};
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 const STATE_RUNNING: u8 = 0;
@@ -129,6 +129,64 @@ fn kill_and_reap(mut child: Child) {
     let _ = child.wait();
 }
 
+/// Maximum bytes of ffmpeg stderr retained for error diagnostics.
+const STDERR_RETAIN_BYTES: usize = 4096;
+
+/// Continuously drain ffmpeg's stderr on a background thread.
+///
+/// stderr must be drained *while ffmpeg runs*: if the 64KB pipe buffer fills,
+/// ffmpeg blocks writing to it, stops reading stdin, and the capture thread
+/// deadlocks in write_all — stop()/Drop then hang forever in join(). Only the
+/// tail of the output is retained (capped) so a chatty ffmpeg can't grow
+/// memory unbounded; the buffer is used for the error message on failure.
+fn spawn_stderr_drain(stderr: Option<std::process::ChildStderr>) -> Arc<Mutex<String>> {
+    let buf = Arc::new(Mutex::new(String::new()));
+    if let Some(mut err) = stderr {
+        let buf_clone = Arc::clone(&buf);
+        std::thread::spawn(move || {
+            let mut chunk = [0u8; 4096];
+            loop {
+                match err.read(&mut chunk) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => {
+                        if let Ok(mut guard) = buf_clone.lock() {
+                            guard.push_str(&String::from_utf8_lossy(&chunk[..n]));
+                            if guard.len() > STDERR_RETAIN_BYTES * 2 {
+                                // Keep only the tail, respecting char boundaries.
+                                let mut cut = guard.len() - STDERR_RETAIN_BYTES;
+                                while !guard.is_char_boundary(cut) {
+                                    cut -= 1;
+                                }
+                                guard.drain(..cut);
+                            }
+                        }
+                    }
+                }
+            }
+        });
+    }
+    buf
+}
+
+/// Build the error for a non-success ffmpeg exit using the drained stderr tail.
+fn ffmpeg_exit_error(status: std::process::ExitStatus, stderr_buf: &Mutex<String>) -> RecordError {
+    let buf = stderr_buf.lock().map(|g| g.clone()).unwrap_or_default();
+    if buf.is_empty() {
+        RecordError::WriteFailed(format!("ffmpeg exited with code: {:?}", status.code()))
+    } else {
+        // Truncate to last 500 chars for readability (char-boundary safe).
+        let mut cut = buf.len().saturating_sub(500);
+        while !buf.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        RecordError::WriteFailed(format!(
+            "ffmpeg exited with code {:?}: {}",
+            status.code(),
+            buf[cut..].trim()
+        ))
+    }
+}
+
 #[cfg(not(target_os = "macos"))]
 fn start_recording_rgba(
     config: RecordConfig,
@@ -157,7 +215,8 @@ fn start_recording_rgba(
         kill_and_reap(child);
         return Err(RecordError::FfmpegSpawnFailed("no stdin".into()));
     };
-    let stderr = child.stderr.take();
+    // Drain stderr from the start so ffmpeg can never block on a full pipe.
+    let stderr_buf = spawn_stderr_drain(child.stderr.take());
 
     let stop_flag = Arc::new(AtomicBool::new(false));
     let stop_clone = stop_flag.clone();
@@ -168,127 +227,125 @@ fn start_recording_rgba(
     let display = config.display;
 
     let thread = std::thread::spawn(move || -> Result<(), RecordError> {
-        // Use 256KB buffer — better for pipe throughput than full-frame buffer
-        let mut writer = std::io::BufWriter::with_capacity(256 * 1024, &mut stdin);
+        // Run the capture loop in an inner closure so EVERY exit path —
+        // success or error — falls through to the cleanup below, which marks
+        // the handle state terminal and reaps ffmpeg on failure. Without
+        // this, an error exit left is_running() true forever and ffmpeg as a
+        // zombie.
+        let result = (|| -> Result<(), RecordError> {
+            // Use 256KB buffer — better for pipe throughput than full-frame buffer
+            let mut writer = std::io::BufWriter::with_capacity(256 * 1024, &mut stdin);
 
-        // Cache the last successfully captured frame so we can duplicate it
-        let mut last_frame: image::RgbaImage = test_frame;
+            // Cache the last successfully captured frame so we can duplicate it
+            let mut last_frame: image::RgbaImage = test_frame;
 
-        if let Err(e) = writer.write_all(last_frame.as_raw()) {
-            if e.kind() == std::io::ErrorKind::BrokenPipe {
-                return Err(RecordError::WriteFailed(
-                    "ffmpeg stdin closed (broken pipe)".into(),
-                ));
-            }
-            return Err(RecordError::WriteFailed(e.to_string()));
-        }
-
-        let start = Instant::now();
-        let mut frame_count: u64 = 1;
-        // Accumulated time spent in the paused state — subtracted from real elapsed
-        // so the output stream stays constant-frame-rate across pause/resume.
-        let mut paused_accum = Duration::ZERO;
-        let mut paused_since: Option<Instant> = None;
-
-        loop {
-            if stop_clone.load(Ordering::SeqCst) {
-                break;
-            }
-
-            // Pause: freeze the frame clock, skip capture & write entirely.
-            if state_clone.load(Ordering::SeqCst) == STATE_PAUSED {
-                if paused_since.is_none() {
-                    paused_since = Some(Instant::now());
+            if let Err(e) = writer.write_all(last_frame.as_raw()) {
+                if e.kind() == std::io::ErrorKind::BrokenPipe {
+                    return Err(RecordError::WriteFailed(
+                        "ffmpeg stdin closed (broken pipe)".into(),
+                    ));
                 }
-                std::thread::sleep(Duration::from_millis(20));
-                continue;
-            } else if let Some(p0) = paused_since.take() {
-                paused_accum += p0.elapsed();
+                return Err(RecordError::WriteFailed(e.to_string()));
             }
 
-            frame_count += 1;
-            let target_time = start + paused_accum + frame_interval * frame_count as u32;
-            let now = Instant::now();
+            let start = Instant::now();
+            let mut frame_count: u64 = 1;
+            // Accumulated time spent in the paused state — subtracted from real elapsed
+            // so the output stream stays constant-frame-rate across pause/resume.
+            let mut paused_accum = Duration::ZERO;
+            let mut paused_since: Option<Instant> = None;
 
-            if now < target_time {
-                std::thread::sleep(target_time - now);
-            }
-
-            let frame_result = if let Some(r) = &region {
-                capture::capture_region(display, *r)
-            } else {
-                capture::capture_fullscreen(display)
-            };
-
-            let effective_elapsed = start
-                .elapsed()
-                .checked_sub(paused_accum)
-                .unwrap_or_default();
-            let elapsed_frames =
-                (effective_elapsed.as_secs_f64() / frame_interval.as_secs_f64()) as u64;
-            let frames_to_write = elapsed_frames.saturating_sub(frame_count - 1).max(1);
-
-            if let Ok(img) = frame_result {
-                let cropped = if img.width() != width || img.height() != height {
-                    image::imageops::crop_imm(&img, 0, 0, width, height).to_image()
-                } else {
-                    img
-                };
-                last_frame = cropped;
-            }
-
-            let mut pipe_broken = false;
-            for _ in 0..frames_to_write {
-                if let Err(e) = writer.write_all(last_frame.as_raw()) {
-                    if e.kind() == std::io::ErrorKind::BrokenPipe {
-                        pipe_broken = true;
-                    }
+            loop {
+                if stop_clone.load(Ordering::SeqCst) {
                     break;
                 }
-            }
-            if pipe_broken {
-                return Err(RecordError::WriteFailed(
-                    "ffmpeg stdin closed mid-recording (broken pipe)".into(),
-                ));
-            }
 
-            frame_count = frame_count + frames_to_write - 1;
-        }
-
-        drop(writer);
-        drop(stdin);
-
-        let status = child
-            .wait()
-            .map_err(|e| RecordError::WriteFailed(e.to_string()))?;
-
-        if !status.success() {
-            // Read stderr for diagnostic info
-            let stderr_msg = if let Some(mut err) = stderr {
-                let mut buf = String::new();
-                let _ = err.read_to_string(&mut buf);
-                if buf.is_empty() {
-                    format!("ffmpeg exited with code: {:?}", status.code())
-                } else {
-                    // Truncate to last 500 chars for readability
-                    let trimmed = if buf.len() > 500 {
-                        &buf[buf.len() - 500..]
-                    } else {
-                        &buf
-                    };
-                    format!(
-                        "ffmpeg exited with code {:?}: {}",
-                        status.code(),
-                        trimmed.trim()
-                    )
+                // Pause: freeze the frame clock, skip capture & write entirely.
+                if state_clone.load(Ordering::SeqCst) == STATE_PAUSED {
+                    if paused_since.is_none() {
+                        paused_since = Some(Instant::now());
+                    }
+                    std::thread::sleep(Duration::from_millis(20));
+                    continue;
+                } else if let Some(p0) = paused_since.take() {
+                    paused_accum += p0.elapsed();
                 }
-            } else {
-                format!("ffmpeg exited with code: {:?}", status.code())
-            };
-            return Err(RecordError::WriteFailed(stderr_msg));
-        }
 
-        Ok(())
+                frame_count += 1;
+                let target_time = start + paused_accum + frame_interval * frame_count as u32;
+                let now = Instant::now();
+
+                if now < target_time {
+                    std::thread::sleep(target_time - now);
+                }
+
+                let frame_result = if let Some(r) = &region {
+                    capture::capture_region(display, *r)
+                } else {
+                    capture::capture_fullscreen(display)
+                };
+
+                let effective_elapsed = start
+                    .elapsed()
+                    .checked_sub(paused_accum)
+                    .unwrap_or_default();
+                let elapsed_frames =
+                    (effective_elapsed.as_secs_f64() / frame_interval.as_secs_f64()) as u64;
+                let frames_to_write = elapsed_frames.saturating_sub(frame_count - 1).max(1);
+
+                if let Ok(img) = frame_result {
+                    if img.width() == width && img.height() == height {
+                        last_frame = img;
+                    } else {
+                        // Display changed size mid-recording: ffmpeg reads
+                        // fixed width*height*4 rawvideo frames, so copy the
+                        // incoming frame into the fixed-size buffer (crop if
+                        // larger, zero-pad if smaller). A short frame would
+                        // permanently desync the raw stream.
+                        copy_rgba_padded(&img, &mut last_frame);
+                    }
+                }
+
+                let mut pipe_broken = false;
+                for _ in 0..frames_to_write {
+                    if let Err(e) = writer.write_all(last_frame.as_raw()) {
+                        if e.kind() == std::io::ErrorKind::BrokenPipe {
+                            pipe_broken = true;
+                        }
+                        break;
+                    }
+                }
+                if pipe_broken {
+                    return Err(RecordError::WriteFailed(
+                        "ffmpeg stdin closed mid-recording (broken pipe)".into(),
+                    ));
+                }
+
+                frame_count = frame_count + frames_to_write - 1;
+            }
+
+            drop(writer);
+            drop(stdin);
+
+            let status = child
+                .wait()
+                .map_err(|e| RecordError::WriteFailed(e.to_string()))?;
+
+            if !status.success() {
+                return Err(ffmpeg_exit_error(status, &stderr_buf));
+            }
+
+            Ok(())
+        })();
+
+        state_clone.store(STATE_STOPPED, Ordering::SeqCst);
+        if result.is_err() {
+            // No zombie ffmpeg on error exits. Harmless when the child has
+            // already been waited on: kill() fails, wait() returns the
+            // cached status.
+            kill_and_reap(child);
+        }
+        result
     });
 
     Ok(RecordingHandle {
@@ -296,6 +353,28 @@ fn start_recording_rgba(
         state,
         thread: Some(thread),
     })
+}
+
+/// Copy `src` into the fixed-size `dst` frame: the overlapping window is
+/// copied, any uncovered area is zeroed. Keeps every frame piped to ffmpeg at
+/// exactly `dst_w * dst_h * 4` bytes even if the display changes size
+/// mid-recording (mirrors the macOS `crop_bgra_to_region_into` behavior).
+#[cfg(not(target_os = "macos"))]
+fn copy_rgba_padded(src: &image::RgbaImage, dst: &mut image::RgbaImage) {
+    let (dst_w, dst_h) = (dst.width() as usize, dst.height() as usize);
+    let (src_w, src_h) = (src.width() as usize, src.height() as usize);
+    let dst_stride = dst_w * 4;
+    let src_stride = src_w * 4;
+    let copy_w = dst_w.min(src_w) * 4;
+    let copy_h = dst_h.min(src_h);
+    let src_buf = src.as_raw();
+    let dst_buf: &mut [u8] = dst;
+    dst_buf.fill(0);
+    for y in 0..copy_h {
+        let src_off = y * src_stride;
+        let dst_off = y * dst_stride;
+        dst_buf[dst_off..dst_off + copy_w].copy_from_slice(&src_buf[src_off..src_off + copy_w]);
+    }
 }
 
 /// macOS fast path: capture directly in BGRA and pipe to FFmpeg without
@@ -319,8 +398,13 @@ fn start_recording_macos_bgra(
 
     // Scale factor from native pixel coords → downscaled output coords.
     // The region from the frontend is in native pixels; we need to scale it.
-    let native_w = capture::macos::primary_display_pixel_width() as f64;
-    let native_h = capture::macos::primary_display_pixel_height() as f64;
+    // Use the TARGET display's pixel size — the primary display's dimensions
+    // would produce wrong scale factors (and wrong region crops) whenever
+    // config.display is a secondary display.
+    let (native_w_px, native_h_px) = capture::macos::display_pixel_size_for_index(config.display)
+        .map_err(|e| RecordError::CaptureFailed(e.to_string()))?;
+    let native_w = native_w_px as f64;
+    let native_h = native_h_px as f64;
     let sx = if native_w > 0.0 {
         f64::from(full_width) / native_w
     } else {
@@ -361,7 +445,8 @@ fn start_recording_macos_bgra(
         kill_and_reap(child);
         return Err(RecordError::FfmpegSpawnFailed("no stdin".into()));
     };
-    let stderr = child.stderr.take();
+    // Drain stderr from the start so ffmpeg can never block on a full pipe.
+    let stderr_buf = spawn_stderr_drain(child.stderr.take());
 
     let stop_flag = Arc::new(AtomicBool::new(false));
     let stop_clone = stop_flag.clone();
@@ -374,175 +459,189 @@ fn start_recording_macos_bgra(
     let click_tracker = ClickTracker::new();
     let _click_tap_handle = click_tracker.start_macos_tap();
 
-    // Clicks come in points; convert to scaled-frame pixels.
-    let native_scale = capture::display_scale_factor();
+    // Clicks come in GLOBAL desktop points (CGEventGetLocation); convert to
+    // scaled-frame pixels of the TARGET display: translate by the display's
+    // origin, then scale by its point→pixel factor and the downscale ratio.
+    let native_scale = capture::macos::display_scale_factor_for(config.display)
+        .map_err(|e| RecordError::CaptureFailed(e.to_string()))?;
+    let (display_origin_x, display_origin_y) =
+        capture::macos::display_origin_points(config.display)
+            .map_err(|e| RecordError::CaptureFailed(e.to_string()))?;
     let point_to_scaled_pixel_x = native_scale * sx;
     let point_to_scaled_pixel_y = native_scale * sy;
 
     let thread = std::thread::spawn(move || -> Result<(), RecordError> {
-        let ctx = capture::CaptureContext::new(display, max_dimension)
-            .map_err(|e| RecordError::CaptureFailed(e.to_string()))?;
+        // Run the capture loop in an inner closure so EVERY exit path —
+        // success or error — falls through to the cleanup below, which marks
+        // the handle state terminal and reaps ffmpeg on failure. Without
+        // this, an error exit left is_running() true forever and ffmpeg as a
+        // zombie.
+        let result = (|| -> Result<(), RecordError> {
+            let ctx = capture::CaptureContext::new(display, max_dimension)
+                .map_err(|e| RecordError::CaptureFailed(e.to_string()))?;
 
-        let frame_bytes = (width as usize) * (height as usize) * 4;
-        // Use a buffer roughly the size of one frame so each frame typically
-        // flushes once (the previous 256 KiB caused 30+ flushes per 1080p
-        // frame, which was strictly slower than no buffering).
-        let buf_capacity = frame_bytes.clamp(1 << 20, 8 << 20); // 1–8 MiB
-        let mut writer = std::io::BufWriter::with_capacity(buf_capacity, &mut stdin);
+            let frame_bytes = (width as usize) * (height as usize) * 4;
+            // Use a buffer roughly the size of one frame so each frame typically
+            // flushes once (the previous 256 KiB caused 30+ flushes per 1080p
+            // frame, which was strictly slower than no buffering).
+            let buf_capacity = frame_bytes.clamp(1 << 20, 8 << 20); // 1–8 MiB
+            let mut writer = std::io::BufWriter::with_capacity(buf_capacity, &mut stdin);
 
-        // Two scratch buffers reused across the entire recording: one holds the
-        // most recent captured (and cropped) frame, the other is the per-output
-        // "composed" frame with clicks drawn over it. Pre-allocating eliminates
-        // ~240 MB/s of allocator traffic at 1080p30.
-        let mut last_frame_bytes: Vec<u8> = vec![0u8; frame_bytes];
-        let mut composed: Vec<u8> = vec![0u8; frame_bytes];
-        // Reused click snapshot — refreshed once per captured frame.
-        let mut click_snapshot: Vec<snapforge_capture::clicks::ClickEvent> = Vec::with_capacity(32);
+            // Two scratch buffers reused across the entire recording: one holds the
+            // most recent captured (and cropped) frame, the other is the per-output
+            // "composed" frame with clicks drawn over it. Pre-allocating eliminates
+            // ~240 MB/s of allocator traffic at 1080p30.
+            let mut last_frame_bytes: Vec<u8> = vec![0u8; frame_bytes];
+            let mut composed: Vec<u8> = vec![0u8; frame_bytes];
+            // Reused click snapshot — refreshed once per captured frame.
+            let mut click_snapshot: Vec<snapforge_capture::clicks::ClickEvent> =
+                Vec::with_capacity(32);
 
-        // Capture the initial frame into last_frame_bytes.
-        if let Ok(f) = ctx.capture_frame_raw_bgra() {
-            crop_bgra_to_region_into(
-                &f.bytes,
-                f.width,
-                f.height,
-                region_in_scaled.as_ref(),
-                width,
-                height,
-                &mut last_frame_bytes,
-            );
-        }
-
-        if let Err(e) = writer.write_all(&last_frame_bytes) {
-            if e.kind() == std::io::ErrorKind::BrokenPipe {
-                return Err(RecordError::WriteFailed(
-                    "ffmpeg stdin closed (broken pipe)".into(),
-                ));
-            }
-            return Err(RecordError::WriteFailed(e.to_string()));
-        }
-
-        let start = Instant::now();
-        let mut frame_count: u64 = 1;
-        let mut paused_accum = Duration::ZERO;
-        let mut paused_since: Option<Instant> = None;
-
-        loop {
-            if stop_clone.load(Ordering::SeqCst) {
-                break;
-            }
-
-            // Pause: freeze the frame clock, skip capture & write entirely.
-            if state_clone.load(Ordering::SeqCst) == STATE_PAUSED {
-                if paused_since.is_none() {
-                    paused_since = Some(Instant::now());
-                }
-                std::thread::sleep(Duration::from_millis(20));
-                continue;
-            } else if let Some(p0) = paused_since.take() {
-                paused_accum += p0.elapsed();
-            }
-
-            frame_count += 1;
-            let target_time = start + paused_accum + frame_interval * frame_count as u32;
-            let now = Instant::now();
-
-            if now < target_time {
-                std::thread::sleep(target_time - now);
-            }
-
-            if let Ok(raw) = ctx.capture_frame_raw_bgra() {
-                crop_bgra_to_region_into(
-                    &raw.bytes,
-                    raw.width,
-                    raw.height,
-                    region_in_scaled.as_ref(),
-                    width,
-                    height,
-                    &mut last_frame_bytes,
-                );
-            }
-
-            // Refresh the click snapshot once per captured frame, not per
-            // output frame. The lock + filter cost is amortized across all
-            // duplicated frames written below.
-            click_tracker.recent_into(CLICK_LIFETIME_MS, &mut click_snapshot);
-
-            let effective_elapsed = start
-                .elapsed()
-                .checked_sub(paused_accum)
-                .unwrap_or_default();
-            let elapsed_frames =
-                (effective_elapsed.as_secs_f64() / frame_interval.as_secs_f64()) as u64;
-            let frames_to_write = elapsed_frames.saturating_sub(frame_count - 1).max(1);
-
-            let mut pipe_broken = false;
-            for _ in 0..frames_to_write {
-                // Hot-path optimization: when no clicks are active, skip the
-                // copy and write the captured frame directly. With clicks,
-                // copy into the scratch buffer and overlay them in place.
-                let to_write: &[u8] = if click_snapshot.is_empty() {
-                    &last_frame_bytes
-                } else {
-                    composed.copy_from_slice(&last_frame_bytes);
-                    draw_clicks_bgra(
-                        &mut composed,
+            // Capture the initial frame into last_frame_bytes.
+            match ctx.capture_frame_raw_bgra() {
+                Ok(f) => {
+                    crop_bgra_to_region_into(
+                        &f.bytes,
+                        f.width,
+                        f.height,
+                        region_in_scaled.as_ref(),
                         width,
                         height,
-                        &click_snapshot,
-                        region_in_scaled.as_ref(),
-                        point_to_scaled_pixel_x,
-                        point_to_scaled_pixel_y,
+                        &mut last_frame_bytes,
                     );
-                    &composed
-                };
-                if let Err(e) = writer.write_all(to_write) {
-                    if e.kind() == std::io::ErrorKind::BrokenPipe {
-                        pipe_broken = true;
-                    }
+                }
+                Err(e) => {
+                    // The zeroed scratch buffer is written instead — the
+                    // recording starts with a black frame, so leave a trace.
+                    tracing::warn!(
+                    "[record] initial frame capture failed ({e}); recording starts with a black frame"
+                );
+                }
+            }
+
+            if let Err(e) = writer.write_all(&last_frame_bytes) {
+                if e.kind() == std::io::ErrorKind::BrokenPipe {
+                    return Err(RecordError::WriteFailed(
+                        "ffmpeg stdin closed (broken pipe)".into(),
+                    ));
+                }
+                return Err(RecordError::WriteFailed(e.to_string()));
+            }
+
+            let start = Instant::now();
+            let mut frame_count: u64 = 1;
+            let mut paused_accum = Duration::ZERO;
+            let mut paused_since: Option<Instant> = None;
+
+            loop {
+                if stop_clone.load(Ordering::SeqCst) {
                     break;
                 }
-            }
-            if pipe_broken {
-                return Err(RecordError::WriteFailed(
-                    "ffmpeg stdin closed mid-recording (broken pipe)".into(),
-                ));
-            }
 
-            frame_count = frame_count + frames_to_write - 1;
-        }
-
-        drop(writer);
-        drop(stdin);
-
-        let status = child
-            .wait()
-            .map_err(|e| RecordError::WriteFailed(e.to_string()))?;
-
-        if !status.success() {
-            let stderr_msg = if let Some(mut err) = stderr {
-                let mut buf = String::new();
-                let _ = err.read_to_string(&mut buf);
-                if buf.is_empty() {
-                    format!("ffmpeg exited with code: {:?}", status.code())
-                } else {
-                    let trimmed = if buf.len() > 500 {
-                        &buf[buf.len() - 500..]
-                    } else {
-                        &buf
-                    };
-                    format!(
-                        "ffmpeg exited with code {:?}: {}",
-                        status.code(),
-                        trimmed.trim()
-                    )
+                // Pause: freeze the frame clock, skip capture & write entirely.
+                if state_clone.load(Ordering::SeqCst) == STATE_PAUSED {
+                    if paused_since.is_none() {
+                        paused_since = Some(Instant::now());
+                    }
+                    std::thread::sleep(Duration::from_millis(20));
+                    continue;
+                } else if let Some(p0) = paused_since.take() {
+                    paused_accum += p0.elapsed();
                 }
-            } else {
-                format!("ffmpeg exited with code: {:?}", status.code())
-            };
-            return Err(RecordError::WriteFailed(stderr_msg));
-        }
 
-        Ok(())
+                frame_count += 1;
+                let target_time = start + paused_accum + frame_interval * frame_count as u32;
+                let now = Instant::now();
+
+                if now < target_time {
+                    std::thread::sleep(target_time - now);
+                }
+
+                if let Ok(raw) = ctx.capture_frame_raw_bgra() {
+                    crop_bgra_to_region_into(
+                        &raw.bytes,
+                        raw.width,
+                        raw.height,
+                        region_in_scaled.as_ref(),
+                        width,
+                        height,
+                        &mut last_frame_bytes,
+                    );
+                }
+
+                // Refresh the click snapshot once per captured frame, not per
+                // output frame. The lock + filter cost is amortized across all
+                // duplicated frames written below.
+                click_tracker.recent_into(CLICK_LIFETIME_MS, &mut click_snapshot);
+
+                let effective_elapsed = start
+                    .elapsed()
+                    .checked_sub(paused_accum)
+                    .unwrap_or_default();
+                let elapsed_frames =
+                    (effective_elapsed.as_secs_f64() / frame_interval.as_secs_f64()) as u64;
+                let frames_to_write = elapsed_frames.saturating_sub(frame_count - 1).max(1);
+
+                let mut pipe_broken = false;
+                for _ in 0..frames_to_write {
+                    // Hot-path optimization: when no clicks are active, skip the
+                    // copy and write the captured frame directly. With clicks,
+                    // copy into the scratch buffer and overlay them in place.
+                    let to_write: &[u8] = if click_snapshot.is_empty() {
+                        &last_frame_bytes
+                    } else {
+                        composed.copy_from_slice(&last_frame_bytes);
+                        draw_clicks_bgra(
+                            &mut composed,
+                            width,
+                            height,
+                            &click_snapshot,
+                            region_in_scaled.as_ref(),
+                            display_origin_x,
+                            display_origin_y,
+                            point_to_scaled_pixel_x,
+                            point_to_scaled_pixel_y,
+                        );
+                        &composed
+                    };
+                    if let Err(e) = writer.write_all(to_write) {
+                        if e.kind() == std::io::ErrorKind::BrokenPipe {
+                            pipe_broken = true;
+                        }
+                        break;
+                    }
+                }
+                if pipe_broken {
+                    return Err(RecordError::WriteFailed(
+                        "ffmpeg stdin closed mid-recording (broken pipe)".into(),
+                    ));
+                }
+
+                frame_count = frame_count + frames_to_write - 1;
+            }
+
+            drop(writer);
+            drop(stdin);
+
+            let status = child
+                .wait()
+                .map_err(|e| RecordError::WriteFailed(e.to_string()))?;
+
+            if !status.success() {
+                return Err(ffmpeg_exit_error(status, &stderr_buf));
+            }
+
+            Ok(())
+        })();
+
+        state_clone.store(STATE_STOPPED, Ordering::SeqCst);
+        if result.is_err() {
+            // No zombie ffmpeg on error exits. Harmless when the child has
+            // already been waited on: kill() fails, wait() returns the
+            // cached status.
+            kill_and_reap(child);
+        }
+        result
     });
 
     Ok(RecordingHandle {
@@ -621,6 +720,8 @@ fn draw_clicks_bgra(
     height: u32,
     clicks: &[snapforge_capture::clicks::ClickEvent],
     region: Option<&snapforge_domain::Rect>,
+    origin_x: f64,
+    origin_y: f64,
     scale_x: f64,
     scale_y: f64,
 ) {
@@ -644,9 +745,10 @@ fn draw_clicks_bgra(
         let age_ms = now.duration_since(click.timestamp).as_millis() as f64;
         let t = (age_ms / CLICK_LIFETIME_MS as f64).clamp(0.0, 1.0);
 
-        // Convert click screen-points to scaled-frame pixels
-        let px = click.x * scale_x - f64::from(region_x);
-        let py = click.y * scale_y - f64::from(region_y);
+        // Convert click GLOBAL screen-points to scaled-frame pixels: translate
+        // into the target display's local point space first, then scale.
+        let px = (click.x - origin_x) * scale_x - f64::from(region_x);
+        let py = (click.y - origin_y) * scale_y - f64::from(region_y);
 
         // --- Filled center dot: visible for the first half, fades out ---
         let dot_alpha = ((1.0 - t).powf(0.6) * 230.0) as u8;
@@ -867,6 +969,12 @@ fn spawn_ffmpeg(
 
     let mut args: Vec<String> = vec![
         "-y".into(),
+        // Suppress periodic `frame=... fps=...` progress stats and chatty info
+        // output: stderr is drained on a background thread, but keeping it
+        // quiet means the retained tail holds actual errors, not progress spam.
+        "-nostats".into(),
+        "-loglevel".into(),
+        "error".into(),
         "-f".into(),
         "rawvideo".into(),
         "-pix_fmt".into(),
@@ -894,9 +1002,13 @@ fn spawn_ffmpeg(
             ]);
         }
         RecordingFormat::Gif => {
+            // Streaming per-frame palettes: plain `palettegen` only emits its
+            // palette at EOF, forcing ffmpeg to buffer every frame in memory
+            // for the whole recording (unbounded growth). `stats_mode=single`
+            // + `paletteuse=new=1` generate and apply a palette per frame.
             args.extend([
                 "-vf".into(),
-                "split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse".into(),
+                "split[s0][s1];[s0]palettegen=stats_mode=single[p];[s1][p]paletteuse=new=1".into(),
                 "-loop".into(),
                 "0".into(),
             ]);
@@ -1290,7 +1402,7 @@ mod tests {
     fn draw_clicks_empty_slice_is_noop() {
         let mut buf = solid_bgra(8, 8, 0x10);
         let before = buf.clone();
-        draw_clicks_bgra(&mut buf, 8, 8, &[], None, 1.0, 1.0);
+        draw_clicks_bgra(&mut buf, 8, 8, &[], None, 0.0, 0.0, 1.0, 1.0);
         assert_eq!(buf, before, "no clicks should leave the frame untouched");
     }
 }

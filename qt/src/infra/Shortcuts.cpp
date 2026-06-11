@@ -3,6 +3,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QHash>
+#include <QKeySequence>
 
 #include "snapforge_ffi.h"
 
@@ -20,25 +21,35 @@ static QString defaultChordFor(const QString &actionKey) {
     return {};
 }
 
-QString chord(const QString &actionKey) {
-    QString fallback = defaultChordFor(actionKey);
-
+// Stored chord for hotkeys.<section>.<actionKey>, or empty if the config is
+// missing/unparseable or the row was never saved.
+static QString storedChord(const QString &section, const QString &actionKey) {
     char *raw = snapforge_config_load();
     if (!raw)
-        return fallback;
+        return {};
     QByteArray bytes(raw);
     snapforge_free_string(raw);
 
     QJsonParseError err{};
     QJsonDocument doc = QJsonDocument::fromJson(bytes, &err);
     if (err.error != QJsonParseError::NoError || !doc.isObject())
-        return fallback;
+        return {};
 
-    QJsonObject global = doc.object()
-                             .value(QStringLiteral("hotkeys")).toObject()
-                             .value(QStringLiteral("global")).toObject();
-    QString stored = global.value(actionKey).toString();
-    return stored.isEmpty() ? fallback : stored;
+    QJsonObject sec = doc.object()
+                          .value(QStringLiteral("hotkeys")).toObject()
+                          .value(section).toObject();
+    return sec.value(actionKey).toString();
+}
+
+QString chord(const QString &actionKey) {
+    QString stored = storedChord(QStringLiteral("global"), actionKey);
+    return stored.isEmpty() ? defaultChordFor(actionKey) : stored;
+}
+
+QString chord(const QString &section, const QString &actionId,
+              const QString &defaultChord) {
+    QString stored = storedChord(section, actionId);
+    return stored.isEmpty() ? defaultChord : stored;
 }
 
 QString glyphs(const QString &chord) {
@@ -74,6 +85,61 @@ QString glyphs(const QString &chord) {
             out += tok.toUpper(); // letters, digits, comma, etc.
     }
     return out;
+}
+
+bool toQtKey(const QString &chord, int *key, Qt::KeyboardModifiers *mods) {
+    if (!key || !mods)
+        return false;
+    *mods = Qt::NoModifier;
+    int k = 0;
+
+    const QStringList tokens = chord.split(QLatin1Char('+'), Qt::SkipEmptyParts);
+    for (QString tok : tokens) {
+        tok = tok.trimmed();
+        if (tok.compare(QLatin1String("cmd"), Qt::CaseInsensitive) == 0 ||
+            tok.compare(QLatin1String("command"), Qt::CaseInsensitive) == 0)
+            *mods |= Qt::ControlModifier; // ⌘ arrives as ControlModifier on macOS
+        else if (tok.compare(QLatin1String("shift"), Qt::CaseInsensitive) == 0)
+            *mods |= Qt::ShiftModifier;
+        else if (tok.compare(QLatin1String("alt"), Qt::CaseInsensitive) == 0 ||
+                 tok.compare(QLatin1String("opt"), Qt::CaseInsensitive) == 0 ||
+                 tok.compare(QLatin1String("option"), Qt::CaseInsensitive) == 0)
+            *mods |= Qt::AltModifier;
+        else if (tok.compare(QLatin1String("ctrl"), Qt::CaseInsensitive) == 0 ||
+                 tok.compare(QLatin1String("control"), Qt::CaseInsensitive) == 0)
+            *mods |= Qt::MetaModifier; // ⌃ arrives as MetaModifier on macOS
+        else {
+            // The (single) non-modifier token. Named keys match what
+            // PreferencesWindow::formatKeyToShortcut emits.
+            const QString lower = tok.toLower();
+            if (lower == QLatin1String("escape"))
+                k = Qt::Key_Escape;
+            else if (lower == QLatin1String("enter") || lower == QLatin1String("return"))
+                k = Qt::Key_Return;
+            else if (lower == QLatin1String("space"))
+                k = Qt::Key_Space;
+            else if (lower == QLatin1String("tab"))
+                k = Qt::Key_Tab;
+            else if (lower == QLatin1String("backspace"))
+                k = Qt::Key_Backspace;
+            else if (lower == QLatin1String("delete"))
+                k = Qt::Key_Delete;
+            else if (tok.size() == 1)
+                k = tok.toUpper().at(0).unicode(); // letters, digits, punctuation
+            else {
+                // F-keys, arrows, Home, ... — formatKeyToShortcut emits these
+                // via QKeySequence, so parse them back the same way.
+                const QKeySequence seq = QKeySequence::fromString(tok);
+                if (seq.count() == 1)
+                    k = seq[0].key();
+            }
+        }
+    }
+
+    if (k == 0)
+        return false;
+    *key = k;
+    return true;
 }
 
 #ifdef Q_OS_MAC

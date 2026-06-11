@@ -118,11 +118,19 @@ static void renderBlur(QPainter &p, const BlurData &d, const QImage &screenshotR
     int imgW = screenshotRegion.width();
     int imgH = screenshotRegion.height();
 
+    // Annotation coords are widget-logical but the screenshot crop is at
+    // device-pixel scale (DPR tagged by AnnotationCanvas::setRegion) — scale
+    // sample coords or Retina samples the wrong location. Blocks are laid out
+    // in logical coords; sampling each block's scaled center keeps the
+    // pixelation visually block-aligned.
+    const double imgDpr = screenshotRegion.devicePixelRatio() > 0.0
+                          ? screenshotRegion.devicePixelRatio() : 1.0;
+
     for (int by = 0; by < rh; by += blockSize) {
         for (int bx = 0; bx < rw; bx += blockSize) {
-            // Sample center pixel of block
-            int cx = rx + bx + blockSize / 2;
-            int cy = ry + by + blockSize / 2;
+            // Sample center pixel of block (logical → device pixels)
+            int cx = static_cast<int>((rx + bx + blockSize / 2) * imgDpr);
+            int cy = static_cast<int>((ry + by + blockSize / 2) * imgDpr);
 
             // Clamp to image bounds
             cx = std::max(0, std::min(cx, imgW - 1));

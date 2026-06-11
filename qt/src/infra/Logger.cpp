@@ -41,8 +41,12 @@ void qtMessageHandler(QtMsgType type, const QMessageLogContext &ctx, const QStri
     const char *cat = ctx.category ? ctx.category : "default";
 
     // Include source location for warnings and above — invaluable while developing.
+    // Note: QtMsgType is not severity-ordered (QtInfoMsg=4 > QtWarningMsg=1),
+    // so check the warning-or-worse levels explicitly.
     QString text = msg;
-    if (type >= QtWarningMsg && ctx.file) {
+    const bool warnOrWorse =
+        type == QtWarningMsg || type == QtCriticalMsg || type == QtFatalMsg;
+    if (warnOrWorse && ctx.file) {
         text += QStringLiteral("  (%1:%2)")
                     .arg(QString::fromUtf8(ctx.file))
                     .arg(ctx.line);

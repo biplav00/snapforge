@@ -6,7 +6,9 @@
 #include <QMouseEvent>
 #include <QKeyEvent>
 #include <QScreen>
+#include <QWindow>
 #include <QGuiApplication>
+#include <QCursor>
 #include <QElapsedTimer>
 #include <QTimer>
 #include <QFontMetrics>
@@ -20,30 +22,78 @@
 #include <algorithm>
 #include <cmath>
 #include "snapforge_ffi.h"
+#include "Shortcuts.h"
 
 #ifdef Q_OS_MAC
 #include <objc/runtime.h>
 #include <objc/message.h>
 #endif
 
-// --- Tool shortcut map ---
+// --- Rebindable overlay shortcuts ---
+//
+// Every row the Preferences Hotkeys tab offers under tools/sizes/actions is
+// resolved here against the shared config (hotkeys.<section>.<actionId>),
+// falling back to the historical hardcoded key. Chords are parsed once per
+// reloadKeyBindings(); keyPressEvent then matches QKeyEvents against them.
 
-const QMap<int, ToolType> &OverlayWindow::toolShortcuts() {
-    static const QMap<int, ToolType> map = {
-        { Qt::Key_A, ToolType::Arrow },
-        { Qt::Key_R, ToolType::Rect },
-        { Qt::Key_C, ToolType::Circle },
-        { Qt::Key_L, ToolType::Line },
-        { Qt::Key_D, ToolType::DottedLine },
-        { Qt::Key_F, ToolType::Freehand },
-        { Qt::Key_T, ToolType::Text },
-        { Qt::Key_H, ToolType::Highlight },
-        { Qt::Key_B, ToolType::Blur },
-        { Qt::Key_N, ToolType::Steps },
-        { Qt::Key_I, ToolType::ColorPicker },
-        { Qt::Key_M, ToolType::Measure },
+bool OverlayWindow::KeyBinding::matches(const QKeyEvent *event) const {
+    if (key == 0)
+        return false;
+    const Qt::KeyboardModifiers evMods = event->modifiers() &
+        (Qt::ControlModifier | Qt::ShiftModifier | Qt::AltModifier | Qt::MetaModifier);
+    if (evMods != mods)
+        return false;
+    if (event->key() == key)
+        return true;
+    // Prefs records keypad-Enter and Return both as "Enter" — accept either.
+    return key == Qt::Key_Return && event->key() == Qt::Key_Enter;
+}
+
+OverlayWindow::KeyBinding OverlayWindow::bindingFor(const char *section,
+                                                    const char *actionId,
+                                                    const char *defaultChord) {
+    KeyBinding b;
+    const QString c = shortcuts::chord(QLatin1String(section),
+                                       QLatin1String(actionId),
+                                       QLatin1String(defaultChord));
+    if (!shortcuts::toQtKey(c, &b.key, &b.mods)) {
+        // Unparseable user chord — fall back to the built-in default so the
+        // action never goes dead.
+        shortcuts::toQtKey(QLatin1String(defaultChord), &b.key, &b.mods);
+    }
+    return b;
+}
+
+void OverlayWindow::reloadKeyBindings() {
+    // Defaults mirror the PreferencesWindow hotkey table (and the keys that
+    // used to be hardcoded here).
+    static const struct { const char *id; const char *def; ToolType tool; } kTools[] = {
+        {"arrow",       "A", ToolType::Arrow},
+        {"rect",        "R", ToolType::Rect},
+        {"circle",      "C", ToolType::Circle},
+        {"line",        "L", ToolType::Line},
+        {"dottedline",  "D", ToolType::DottedLine},
+        {"freehand",    "F", ToolType::Freehand},
+        {"text",        "T", ToolType::Text},
+        {"highlight",   "H", ToolType::Highlight},
+        {"blur",        "B", ToolType::Blur},
+        {"steps",       "N", ToolType::Steps},
+        {"colorpicker", "I", ToolType::ColorPicker},
+        {"measure",     "M", ToolType::Measure},
     };
-    return map;
+    m_toolBindings.clear();
+    for (const auto &t : kTools)
+        m_toolBindings.append(qMakePair(bindingFor("tools", t.id, t.def), t.tool));
+
+    m_bindSizeSmall  = bindingFor("sizes", "small",  "1");
+    m_bindSizeMedium = bindingFor("sizes", "medium", "2");
+    m_bindSizeLarge  = bindingFor("sizes", "large",  "3");
+
+    m_bindSave   = bindingFor("actions", "save",   "Cmd+S");
+    m_bindCopy   = bindingFor("actions", "copy",   "Cmd+C");
+    m_bindUndo   = bindingFor("actions", "undo",   "Cmd+Z");
+    m_bindRedo   = bindingFor("actions", "redo",   "Cmd+Shift+Z");
+    m_bindCancel = bindingFor("actions", "cancel", "Escape");
 }
 
 // --- OverlayWindow ---
@@ -54,10 +104,69 @@ OverlayWindow::OverlayWindow(QWidget *parent)
     setCursor(Qt::CrossCursor);
     setMouseTracking(true);
 
+    // Initial read of the rebindable overlay shortcuts; main.cpp re-invokes
+    // reloadKeyBindings() whenever Preferences saves.
+    reloadKeyBindings();
+
     // Pre-warm font metrics to avoid 125ms alias scan on first paint
     QFont font("Menlo", 11);
     QFontMetrics fm(font);
     fm.boundingRect("0");
+
+    // This window is created once and reused for the whole session (see
+    // main.cpp). React to display-topology changes so a sleep/wake or monitor
+    // hot-plug can't strand the reused window on a now-stale screen. Each
+    // activation re-anchors anyway; these keep a *visible* overlay correct if
+    // the topology shifts while it's up.
+    connect(qApp, &QGuiApplication::screenAdded,
+            this, &OverlayWindow::onScreenConfigChanged);
+    connect(qApp, &QGuiApplication::screenRemoved,
+            this, &OverlayWindow::onScreenConfigChanged);
+    connect(qApp, &QGuiApplication::primaryScreenChanged,
+            this, &OverlayWindow::onScreenConfigChanged);
+}
+
+void OverlayWindow::repositionToScreen(QScreen *screen) {
+    if (!screen)
+        return;
+    const QRect geo = screen->geometry();
+
+    // Update the QWidget's logical geometry first (child layout, hit-testing,
+    // and selectedRect() math all key off this).
+    setGeometry(geo);
+
+    // The catch: this overlay is a single long-lived window dismissed with
+    // hide(), never destroyed, so its native NSWindow persists for the whole
+    // session. Across a display reconfiguration (sleep/wake, monitor hot-plug,
+    // resolution/arrangement change) AppKit can silently relocate that hidden
+    // window to another display, while Qt's cached geometry still believes it
+    // is where we last put it. The setGeometry() above then no-ops (cached
+    // rect already equals geo), leaving the window on the wrong monitor until
+    // the app restarts — the reported bug.
+    //
+    // Re-anchor at the platform layer: bind the native window to the target
+    // QScreen and push the geometry straight through QWindow, which bypasses
+    // QWidget's no-op cache. windowHandle() is null only before the first
+    // show(); the first activation always lands correctly on a fresh launch,
+    // and every reuse afterwards has a live handle (hide() keeps it).
+    if (QWindow *wh = windowHandle()) {
+        if (wh->screen() != screen)
+            wh->setScreen(screen);
+        wh->setGeometry(geo);
+    }
+}
+
+void OverlayWindow::onScreenConfigChanged() {
+    // Topology changed underneath us. If the overlay is hidden, do nothing: the
+    // next activate() repositions to the cursor's screen from scratch. If it's
+    // visible, re-anchor now so it follows the new layout instead of lingering
+    // on a screen that may have moved or vanished.
+    if (!isVisible())
+        return;
+    QScreen *screen = QGuiApplication::screenAt(QCursor::pos());
+    if (!screen)
+        screen = QGuiApplication::primaryScreen();
+    repositionToScreen(screen);
 }
 
 // Shared internal activation logic
@@ -100,9 +209,12 @@ void OverlayWindow::activateInternal() {
     m_captureInFlight = true;
     const quint64 captureSeq = ++m_captureSeq;
 
-    // Size overlay to the cursor's screen (not primary).
+    // Size overlay to the cursor's screen (not primary). repositionToScreen
+    // re-anchors the reused native window at the platform layer so a stale
+    // post-reconfiguration screen association can't strand it on the wrong
+    // monitor (see the helper for the full rationale).
     if (screen) {
-        setGeometry(screen->geometry());
+        repositionToScreen(screen);
     }
 
     // Show the overlay BEFORE capturing. Previously snapforge_capture_fullscreen
@@ -137,6 +249,16 @@ void OverlayWindow::activateInternal() {
             return;
         }
         self->m_screenshot = img;
+        // If annotate mode was entered BEFORE the capture resolved (remembered
+        // region via activate(), or activateFullscreen()), the canvas was built
+        // with a null screenshot and its crop is empty — composite would be
+        // blank. Now that the real capture landed, re-feed it and re-crop the
+        // region so the committed image isn't blank.
+        if (self->m_mode == Annotate && self->m_canvas) {
+            self->m_canvas->setScreenshot(img);
+            QRect sel = self->selectedRect();
+            self->m_canvas->setRegion(sel.x(), sel.y(), sel.width(), sel.height());
+        }
         self->update();
     });
     QFuture<QImage> future = QtConcurrent::run([displayIndex]() -> QImage {
@@ -276,12 +398,12 @@ void OverlayWindow::activate() {
 void OverlayWindow::activateFullscreen() {
     m_purpose = Screenshot;
     activateInternal();
-    // Use the full widget rect (width(), height()) — selectedRect() is built
-    // from QRect(m_startPos, m_endPos) which is inclusive on both ends, so
-    // (0,0) to (w,h) covers the entire pixel range. The previous (w-1, h-1)
-    // dropped the rightmost column and bottom row.
+    // selectedRect() is built from QRect(m_startPos, m_endPos), whose corner
+    // points are both INCLUSIVE — (0,0) to (w-1,h-1) is exactly width()×height().
+    // Using (w,h) here oversized the selection to (w+1)×(h+1), which made
+    // AnnotationCanvas::setRegion request a crop past the image bounds.
     m_startPos = QPoint(0, 0);
-    m_endPos = QPoint(width(), height());
+    m_endPos = QPoint(width() - 1, height() - 1);
     m_hasRegion = true;
     m_drawing = false;
     enterAnnotateMode();
@@ -538,15 +660,15 @@ void OverlayWindow::enterRecordSelectMode() {
     int startX = sel.x() + sel.width() / 2 - totalWidth / 2;
     int startY = sel.bottom() + yOffset;
 
-    // Clamp so buttons stay on screen
-    QScreen *screen = QGuiApplication::primaryScreen();
-    if (screen) {
-        int screenW = screen->geometry().width();
-        int screenH = screen->geometry().height();
-        if (startX < 4) startX = 4;
-        if (startX + totalWidth > screenW - 4) startX = screenW - 4 - totalWidth;
-        if (startY + btnHeight > screenH - 4) startY = sel.top() - btnHeight - yOffset;
-    }
+    // Clamp so buttons stay within the overlay. startX/startY are WIDGET-LOCAL
+    // coords and the overlay spans exactly the cursor's screen, so clamp
+    // against our own size — the primary screen's geometry is the wrong bound
+    // on a secondary display with a different resolution.
+    const int overlayW = width();
+    const int overlayH = height();
+    if (startX < 4) startX = 4;
+    if (startX + totalWidth > overlayW - 4) startX = overlayW - 4 - totalWidth;
+    if (startY + btnHeight > overlayH - 4) startY = sel.top() - btnHeight - yOffset;
 
     int x = startX;
     m_btnRecordRegion->setGeometry(x, startY, m_btnRecordRegion->sizeHint().width(), btnHeight);
@@ -583,25 +705,14 @@ void OverlayWindow::emitRecordRegion() {
         return;
     }
 
-    // Fix #11: refuse selections that span multiple displays. Capture backend
-    // is single-display only, so a multi-monitor rect would silently clip.
-    const QList<QScreen *> screens = QGuiApplication::screens();
-    bool contained = false;
-    QScreen *selScreen = nullptr;
-    for (QScreen *s : screens) {
-        if (s->geometry().contains(sel)) {
-            contained = true;
-            selScreen = s;
-            break;
-        }
-    }
-    if (!contained) {
-        emit regionInvalid(QStringLiteral("selection must be on one display"));
-        return;
-    }
-
-    // Fix #12: use the DPR of the display that actually contains the region,
-    // not the primary's.
+    // sel is in WIDGET-LOCAL coords (0-based), and the overlay is sized to
+    // exactly one display, so the region is always within that one display —
+    // no cross-display span is possible. Use THIS overlay's screen for the DPR.
+    // (The old `screen.geometry().contains(sel)` search compared local coords
+    // against GLOBAL screen rects: on a secondary display it matched the primary
+    // and applied the primary's DPR, and on a secondary larger than the primary
+    // it matched nothing and wrongly rejected the recording.)
+    QScreen *selScreen = this->screen();
     double dpr = selScreen ? selScreen->devicePixelRatio()
                            : snapforge_display_scale_factor();
     QRect pixelRegion(
@@ -664,6 +775,12 @@ void OverlayWindow::handleCaptureFailure(const char *reason) {
 
 void OverlayWindow::handleSave() {
     if (!m_canvas) return;
+    // Capture hasn't landed yet (user hit save while the async fullscreen grab
+    // was still in flight — possible via remembered-region/fullscreen, which
+    // enter annotate mode before the screenshot resolves). compositeImage()
+    // would be blank. Ignore the save and keep the overlay up; the completion
+    // handler refreshes the canvas, so a second save works.
+    if (m_captureInFlight) return;
     QImage composited = m_canvas->compositeImage();
     if (composited.isNull()) return;
 
@@ -678,6 +795,9 @@ void OverlayWindow::handleSave() {
 
 void OverlayWindow::handleCopy() {
     if (!m_canvas) return;
+    // See handleSave: skip while the async capture is still pending so a blank
+    // composite isn't copied; retry works once the canvas refreshes.
+    if (m_captureInFlight) return;
     QImage composited = m_canvas->compositeImage();
     if (composited.isNull()) return;
 
@@ -692,6 +812,9 @@ void OverlayWindow::handleCopy() {
 
 void OverlayWindow::handleSaveAndCopy() {
     if (!m_canvas) return;
+    // See handleSave: skip while the async capture is still pending so a blank
+    // composite isn't saved/copied; retry works once the canvas refreshes.
+    if (m_captureInFlight) return;
     QImage composited = m_canvas->compositeImage();
     if (composited.isNull()) return;
 
@@ -923,34 +1046,27 @@ void OverlayWindow::keyPressEvent(QKeyEvent *event) {
             return;
         }
 
-        const auto modifiers = event->modifiers();
-        const bool cmd = modifiers & Qt::ControlModifier;
-        const bool shift = modifiers & Qt::ShiftModifier;
+        // All chords below come from the Preferences Hotkeys tab (see
+        // reloadKeyBindings); the comments give the defaults.
 
-        // Cmd+Z / Cmd+Shift+Z: undo/redo
-        if (cmd && event->key() == Qt::Key_Z) {
-            if (shift) {
-                m_annotationState.redo();
-            } else {
-                m_annotationState.undo();
-            }
-            return;
-        }
+        // Redo / undo (defaults Cmd+Shift+Z / Cmd+Z)
+        if (m_bindRedo.matches(event)) { m_annotationState.redo(); return; }
+        if (m_bindUndo.matches(event)) { m_annotationState.undo(); return; }
 
-        // Cmd+S: save and copy
-        if (cmd && event->key() == Qt::Key_S) {
+        // Save and copy (default Cmd+S)
+        if (m_bindSave.matches(event)) {
             handleSaveAndCopy();
             return;
         }
 
-        // Cmd+C: copy only
-        if (cmd && event->key() == Qt::Key_C) {
+        // Copy only (default Cmd+C)
+        if (m_bindCopy.matches(event)) {
             handleCopy();
             return;
         }
 
-        // Escape: exit annotate mode and hide
-        if (event->key() == Qt::Key_Escape) {
+        // Cancel (default Escape): exit annotate mode and hide
+        if (m_bindCancel.matches(event)) {
             m_annotationState.clearAnnotations();
             exitAnnotateMode();
             m_hasRegion = false;
@@ -960,17 +1076,15 @@ void OverlayWindow::keyPressEvent(QKeyEvent *event) {
             return;
         }
 
-        // Stroke width shortcuts: 1/2/3
-        if (event->key() == Qt::Key_1) { m_annotationState.setStrokeWidth(1); return; }
-        if (event->key() == Qt::Key_2) { m_annotationState.setStrokeWidth(2); return; }
-        if (event->key() == Qt::Key_3) { m_annotationState.setStrokeWidth(4); return; }
+        // Stroke width shortcuts (defaults 1/2/3)
+        if (m_bindSizeSmall.matches(event))  { m_annotationState.setStrokeWidth(1); return; }
+        if (m_bindSizeMedium.matches(event)) { m_annotationState.setStrokeWidth(2); return; }
+        if (m_bindSizeLarge.matches(event))  { m_annotationState.setStrokeWidth(4); return; }
 
-        // Tool shortcuts (only when no modifier)
-        if (!cmd && !shift) {
-            const auto &shortcuts = toolShortcuts();
-            auto it = shortcuts.find(event->key());
-            if (it != shortcuts.end()) {
-                m_annotationState.setActiveTool(it.value());
+        // Tool shortcuts (defaults A/R/C/L/D/F/T/H/B/N/I/M, modifier-exact)
+        for (const auto &tb : m_toolBindings) {
+            if (tb.first.matches(event)) {
+                m_annotationState.setActiveTool(tb.second);
                 return;
             }
         }
@@ -983,7 +1097,8 @@ void OverlayWindow::keyPressEvent(QKeyEvent *event) {
             emitRecordRegion();
             return;
         }
-        if (event->key() == Qt::Key_Escape) {
+        // Cancel (default Escape)
+        if (m_bindCancel.matches(event)) {
             exitRecordSelectMode();
             m_hasRegion = false;
             m_drawing = false;
@@ -995,15 +1110,16 @@ void OverlayWindow::keyPressEvent(QKeyEvent *event) {
     }
 
     // Select mode
-    if (event->key() == Qt::Key_Escape) {
+    if (m_bindCancel.matches(event)) {
+        // Cancel (default Escape)
         m_hasRegion = false;
         m_drawing = false;
         hideOverlay();
         emit cancelled();
     } else if (event->key() == Qt::Key_Return && m_hasRegion) {
         enterAnnotateMode();
-    } else if ((event->modifiers() & Qt::ControlModifier) && event->key() == Qt::Key_C && m_hasRegion) {
-        // Cmd+C / Ctrl+C -- copy to clipboard
+    } else if (m_bindCopy.matches(event) && m_hasRegion) {
+        // Copy to clipboard (default Cmd+C)
         QRect sel = selectedRect();
 
         // Fix #19: ignore zero-size regions.
@@ -1012,11 +1128,11 @@ void OverlayWindow::keyPressEvent(QKeyEvent *event) {
             return;
         }
 
-        // Fix #12: use the DPR of the display containing the region.
-        QScreen *selScreen = nullptr;
-        for (QScreen *s : QGuiApplication::screens()) {
-            if (s->geometry().contains(sel)) { selScreen = s; break; }
-        }
+        // sel is widget-local and the overlay covers exactly one display, so
+        // the region's display is THIS overlay's screen. (The old
+        // geometry().contains(sel) search compared local coords to global rects
+        // and picked the wrong screen's DPR on multi-monitor setups.)
+        QScreen *selScreen = this->screen();
         double dpr = selScreen ? selScreen->devicePixelRatio()
                                : snapforge_display_scale_factor();
         int px = static_cast<int>(sel.x() * dpr);
