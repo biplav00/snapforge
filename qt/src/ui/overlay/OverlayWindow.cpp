@@ -6,7 +6,9 @@
 #include <QMouseEvent>
 #include <QKeyEvent>
 #include <QScreen>
+#include <QWindow>
 #include <QGuiApplication>
+#include <QCursor>
 #include <QElapsedTimer>
 #include <QTimer>
 #include <QFontMetrics>
@@ -110,6 +112,61 @@ OverlayWindow::OverlayWindow(QWidget *parent)
     QFont font("Menlo", 11);
     QFontMetrics fm(font);
     fm.boundingRect("0");
+
+    // This window is created once and reused for the whole session (see
+    // main.cpp). React to display-topology changes so a sleep/wake or monitor
+    // hot-plug can't strand the reused window on a now-stale screen. Each
+    // activation re-anchors anyway; these keep a *visible* overlay correct if
+    // the topology shifts while it's up.
+    connect(qApp, &QGuiApplication::screenAdded,
+            this, &OverlayWindow::onScreenConfigChanged);
+    connect(qApp, &QGuiApplication::screenRemoved,
+            this, &OverlayWindow::onScreenConfigChanged);
+    connect(qApp, &QGuiApplication::primaryScreenChanged,
+            this, &OverlayWindow::onScreenConfigChanged);
+}
+
+void OverlayWindow::repositionToScreen(QScreen *screen) {
+    if (!screen)
+        return;
+    const QRect geo = screen->geometry();
+
+    // Update the QWidget's logical geometry first (child layout, hit-testing,
+    // and selectedRect() math all key off this).
+    setGeometry(geo);
+
+    // The catch: this overlay is a single long-lived window dismissed with
+    // hide(), never destroyed, so its native NSWindow persists for the whole
+    // session. Across a display reconfiguration (sleep/wake, monitor hot-plug,
+    // resolution/arrangement change) AppKit can silently relocate that hidden
+    // window to another display, while Qt's cached geometry still believes it
+    // is where we last put it. The setGeometry() above then no-ops (cached
+    // rect already equals geo), leaving the window on the wrong monitor until
+    // the app restarts — the reported bug.
+    //
+    // Re-anchor at the platform layer: bind the native window to the target
+    // QScreen and push the geometry straight through QWindow, which bypasses
+    // QWidget's no-op cache. windowHandle() is null only before the first
+    // show(); the first activation always lands correctly on a fresh launch,
+    // and every reuse afterwards has a live handle (hide() keeps it).
+    if (QWindow *wh = windowHandle()) {
+        if (wh->screen() != screen)
+            wh->setScreen(screen);
+        wh->setGeometry(geo);
+    }
+}
+
+void OverlayWindow::onScreenConfigChanged() {
+    // Topology changed underneath us. If the overlay is hidden, do nothing: the
+    // next activate() repositions to the cursor's screen from scratch. If it's
+    // visible, re-anchor now so it follows the new layout instead of lingering
+    // on a screen that may have moved or vanished.
+    if (!isVisible())
+        return;
+    QScreen *screen = QGuiApplication::screenAt(QCursor::pos());
+    if (!screen)
+        screen = QGuiApplication::primaryScreen();
+    repositionToScreen(screen);
 }
 
 // Shared internal activation logic
@@ -152,9 +209,12 @@ void OverlayWindow::activateInternal() {
     m_captureInFlight = true;
     const quint64 captureSeq = ++m_captureSeq;
 
-    // Size overlay to the cursor's screen (not primary).
+    // Size overlay to the cursor's screen (not primary). repositionToScreen
+    // re-anchors the reused native window at the platform layer so a stale
+    // post-reconfiguration screen association can't strand it on the wrong
+    // monitor (see the helper for the full rationale).
     if (screen) {
-        setGeometry(screen->geometry());
+        repositionToScreen(screen);
     }
 
     // Show the overlay BEFORE capturing. Previously snapforge_capture_fullscreen

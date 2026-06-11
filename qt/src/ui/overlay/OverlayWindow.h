@@ -9,6 +9,7 @@
 class AnnotationCanvas;
 class AnnotationToolbar;
 class QPushButton;
+class QScreen;
 
 class OverlayWindow : public QWidget {
     Q_OBJECT
@@ -61,6 +62,13 @@ private:
     };
 
     void activateInternal();
+    // Force the (single, long-lived) overlay window onto `screen`, re-anchoring
+    // the reused native window after a display reconfiguration. See the .cpp
+    // for why a plain setGeometry() is not enough.
+    void repositionToScreen(QScreen *screen);
+    // Slot for qApp screen-add/remove/primary-change. Re-anchors the overlay if
+    // it's currently visible when the display topology changes underneath it.
+    void onScreenConfigChanged();
     void enterAnnotateMode();
     void exitAnnotateMode();
     void enterRecordSelectMode();
