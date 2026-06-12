@@ -77,6 +77,11 @@ private:
     void handleCopy();
     void handleSaveAndCopy();
     void hideOverlay();
+    // Hold/release an application override crosshair for the draw-a-region phase
+    // (Select mode, no region yet). Idempotent and driven purely by state, so it
+    // can be called from every transition without tracking push/pop balance. See
+    // the .cpp for why a per-widget cursor is not reliable on macOS.
+    void syncSelectCursor();
     // Reset overlay + capture state after a failed/stalled async capture so
     // isBusy() can't latch true forever and wedge the hotkey gate.
     void handleCaptureFailure(const char *reason);
@@ -106,6 +111,9 @@ private:
     bool m_drawing = false;
     bool m_hasRegion = false;
     bool m_resizing = false;
+    // True while an application override crosshair is held for the draw-region
+    // phase. Guards syncSelectCursor() against unbalanced push/restore.
+    bool m_selectCursorActive = false;
     ResizeEdge m_activeResize = EdgeNone;
     int m_resizeFixedLeft = 0;
     int m_resizeFixedRight = 0;

@@ -288,15 +288,10 @@ void OverlayWindow::activateInternal() {
         self->handleCaptureFailure("capture watchdog timeout (worker stalled)");
     });
 
-    // Set the cursor for the CURRENT initial state explicitly, rather than
-    // relying on the one-time constructor setCursor() or a later mouseMoveEvent.
-    // After exitAnnotateMode()/exitRecordSelectMode() above, m_mode == Select and
-    // m_hasRegion == false, so the region-select crosshair is the correct cursor
-    // here. (activateFullscreen()/remembered-region switch to Annotate AFTER this,
-    // and their first mouseMoveEvent applies the arrow cursor.)
-    if (m_mode == Select && !m_hasRegion) {
-        setCursor(Qt::CrossCursor);
-    }
+    // The region-select crosshair is applied by syncSelectCursor() at the end of
+    // this function (and by every later state transition). It uses an application
+    // override cursor rather than a per-widget setCursor() because the latter is
+    // not reliable on macOS for a stationary pointer — see syncSelectCursor().
 
     show();
     activateWindow();
@@ -341,43 +336,14 @@ void OverlayWindow::activateInternal() {
                 }
             }
             ((void (*)(id, SEL))objc_msgSend)(nsWindow, sel_registerName("makeKeyWindow"));
-
-            // CURSOR FIX: On macOS the app-requested QCursor is only honored once
-            // the window is key AND AppKit re-evaluates its cursor rects (a
-            // cursorUpdate). The show()/activateWindow() above run BEFORE
-            // makeKeyWindow, so the constructor's CrossCursor isn't applied yet,
-            // and with a stationary mouse no mouseMoveEvent ever fires to re-set
-            // it — leaving the default arrow. Now that the window IS key, force a
-            // re-evaluation so the crosshair renders immediately, no mouse move
-            // required.
-            if (m_mode == Select && !m_hasRegion) {
-                // 1. Bounce the Qt cursor so Qt re-pushes its NSCursor to AppKit
-                //    now that the window is key.
-                unsetCursor();
-                setCursor(Qt::CrossCursor);
-                // 2. Invalidate the NSWindow's cursor rects for its content view,
-                //    forcing AppKit to issue a cursorUpdate for the view under the
-                //    pointer without waiting for mouse movement.
-                id contentView = ((id (*)(id, SEL))objc_msgSend)(
-                    nsWindow, sel_registerName("contentView"));
-                if (contentView) {
-                    ((void (*)(id, SEL, id))objc_msgSend)(
-                        nsWindow, sel_registerName("invalidateCursorRectsForView:"),
-                        contentView);
-                }
-                // 3. As a belt-and-suspenders fallback for the stationary-mouse
-                //    case, set the crosshair directly on the AppKit cursor stack.
-                //    The dynamic mouseMoveEvent logic still overrides this the
-                //    instant the pointer moves.
-                id crosshair = ((id (*)(id, SEL))objc_msgSend)(
-                    (id)objc_getClass("NSCursor"), sel_registerName("crosshairCursor"));
-                if (crosshair) {
-                    ((void (*)(id, SEL))objc_msgSend)(crosshair, sel_registerName("set"));
-                }
-            }
         }
     }
 #endif
+
+    // Apply the draw-region crosshair now that the window is shown and (on macOS)
+    // key. Uses an application override cursor so it survives the AppKit cursor
+    // re-evaluations that a stationary pointer would otherwise lose it to.
+    syncSelectCursor();
 
     qDebug("Overlay shown in %lld ms", timer.elapsed());
 }
@@ -560,6 +526,7 @@ void OverlayWindow::enterAnnotateMode() {
     m_toolbar->raise();
 
     update();
+    syncSelectCursor();
 }
 
 void OverlayWindow::exitAnnotateMode() {
@@ -570,6 +537,7 @@ void OverlayWindow::exitAnnotateMode() {
     if (m_toolbar) {
         m_toolbar->hide();
     }
+    syncSelectCursor();
 }
 
 // ---- Record-select mode ----
@@ -685,6 +653,7 @@ void OverlayWindow::enterRecordSelectMode() {
     m_btnRecordCancel->raise();
 
     update();
+    syncSelectCursor();
 }
 
 void OverlayWindow::exitRecordSelectMode() {
@@ -694,6 +663,7 @@ void OverlayWindow::exitRecordSelectMode() {
     if (m_btnRecordRegion)    m_btnRecordRegion->hide();
     if (m_btnRecordFullscreen) m_btnRecordFullscreen->hide();
     if (m_btnRecordCancel)    m_btnRecordCancel->hide();
+    syncSelectCursor();
 }
 
 void OverlayWindow::emitRecordRegion() {
@@ -740,6 +710,30 @@ void OverlayWindow::emitRecordFullscreen() {
 
 void OverlayWindow::hideOverlay() {
     hide();
+    syncSelectCursor();
+}
+
+// The crosshair shown while drawing a region. A per-widget setCursor() is not
+// reliable here on macOS: with a stationary pointer no mouseMoveEvent fires, and
+// any AppKit cursorUpdate (window becoming key, a cursor-rect invalidation, a
+// focus change) re-resolves the cursor and can revert the crosshair to the
+// default arrow before the user moves — the intermittent "arrow instead of
+// crosshair" bug. An application override cursor is immune: setOverrideCursor
+// applies synchronously at the call (covering the stationary case) and Qt
+// re-applies it on every subsequent cursorUpdate, so no re-resolution can land
+// on the arrow. It is held only during the draw-region phase (Select mode, no
+// region committed) and released the instant a region exists, so the edge-resize
+// cursors in mouseMoveEvent take over normally. Driven purely by state and
+// guarded by m_selectCursorActive, so it is safe to call from every transition.
+void OverlayWindow::syncSelectCursor() {
+    const bool want = isVisible() && m_mode == Select && !m_hasRegion;
+    if (want == m_selectCursorActive) return;
+    if (want) {
+        QGuiApplication::setOverrideCursor(Qt::CrossCursor);
+    } else {
+        QGuiApplication::restoreOverrideCursor();
+    }
+    m_selectCursorActive = want;
 }
 
 bool OverlayWindow::isBusy() const {
@@ -942,6 +936,7 @@ void OverlayWindow::mousePressEvent(QMouseEvent *event) {
                 m_drawing = true;
                 m_hasRegion = false;
                 update();
+                syncSelectCursor();
             }
             return;
         }
@@ -960,6 +955,7 @@ void OverlayWindow::mousePressEvent(QMouseEvent *event) {
         m_drawing = true;
         m_hasRegion = false;
         update();
+        syncSelectCursor();
     }
 }
 
@@ -1035,6 +1031,9 @@ void OverlayWindow::mouseReleaseEvent(QMouseEvent *event) {
                 enterAnnotateMode();
             }
         }
+        // Region committed (enter*Mode pops the override) or too small to commit
+        // (still in the draw phase, keep the crosshair). Either way reconcile.
+        syncSelectCursor();
     }
 }
 

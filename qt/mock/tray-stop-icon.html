@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Snapforge — Menu-bar Stop Icon Mock</title>
+<style>
+  :root {
+    --bar-h: 26px;
+    --ink: #ffffff;
+    --rec: #ff4646;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, "SF Pro Text", "Helvetica Neue", Arial, sans-serif;
+    background: #1c1c1e;
+    color: #e8e8ea;
+    padding: 40px 32px 64px;
+  }
+  h1 { font-size: 18px; font-weight: 600; margin: 0 0 4px; }
+  p.sub { margin: 0 0 28px; color: #9a9aa0; font-size: 13px; }
+
+  .wallpaper {
+    position: relative;
+    border-radius: 10px;
+    overflow: hidden;
+    background: linear-gradient(135deg, #3a5a78 0%, #6b4a78 50%, #78514a 100%);
+    box-shadow: 0 12px 40px rgba(0,0,0,.5);
+    margin-bottom: 40px;
+  }
+  /* macOS-style translucent menu bar */
+  .menubar {
+    height: var(--bar-h);
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 0;
+    padding: 0 6px;
+    background: rgba(20,20,22,.42);
+    backdrop-filter: blur(20px) saturate(140%);
+    -webkit-backdrop-filter: blur(20px) saturate(140%);
+    border-bottom: 0.5px solid rgba(255,255,255,.10);
+  }
+  .desktop-body { height: 150px; }
+
+  /* one clickable menu-bar item */
+  .item {
+    height: 100%;
+    display: inline-flex;
+    align-items: center;
+    padding: 0 7px;
+    cursor: pointer;
+    border-radius: 4px;
+    user-select: none;
+    transition: background .12s;
+  }
+  .item:hover { background: rgba(120,160,255,.28); }
+  .item.active { background: rgba(120,160,255,.55); }
+
+  .clock { color: var(--ink); font-size: 12.5px; font-weight: 500; letter-spacing: .2px; }
+  .glyph { color: var(--ink); display: inline-flex; }
+
+  /* recording pill (existing icon) */
+  .pill { display: inline-flex; align-items: center; gap: 5px; }
+  .dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: var(--rec);
+    box-shadow: 0 0 0 3px rgba(255,70,70,.30);
+    animation: pulse 1s ease-in-out infinite;
+  }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.4} }
+  .timer { color: var(--ink); font: 700 12.5px/1 Menlo, monospace; }
+
+  /* the new STOP button variants */
+  .stop-sq {
+    width: 13px; height: 13px; border-radius: 3px; background: var(--rec);
+  }
+  .stop-ring {
+    width: 15px; height: 15px; border-radius: 50%;
+    border: 1.6px solid var(--rec);
+    display: inline-flex; align-items: center; justify-content: center;
+  }
+  .stop-ring::after { content:""; width:6px; height:6px; border-radius:1.5px; background: var(--rec); }
+  .stop-mono {
+    width: 14px; height: 14px; border-radius: 3px;
+    border: 1.5px solid var(--ink);
+    display: inline-flex; align-items:center; justify-content:center;
+  }
+  .stop-mono::after { content:""; width:6px; height:6px; border-radius:1px; background: var(--ink); }
+
+  .variants { display: grid; gap: 22px; }
+  .variant {
+    background: #232325; border: 1px solid #34343a; border-radius: 10px;
+    padding: 18px 20px;
+  }
+  .variant h2 { font-size: 13px; font-weight: 600; margin: 0 0 4px; color:#cfcfd4; }
+  .variant p { font-size: 12px; color:#8e8e95; margin: 0 0 14px; }
+  .mini-bar {
+    display: inline-flex; align-items: center; gap: 0;
+    background: rgba(20,20,22,.85); border-radius: 6px; padding: 2px 4px;
+    height: var(--bar-h);
+  }
+  .tip { font-size: 11px; color:#6f6f76; margin-top: 10px; }
+  .note { color:#f0c674; }
+</style>
+</head>
+<body>
+  <h1>Snapforge — menu-bar stop button</h1>
+  <p class="sub">New: dedicated stop icon appears next to the recording indicator while capturing. One click = stop. No menu needed.</p>
+
+  <div class="wallpaper">
+    <div class="menubar">
+      <div class="item pill" title="Recording indicator (existing)">
+        <span class="dot"></span><span class="timer">00:14</span>
+      </div>
+      <div class="item active" title="Stop recording (new)"><span class="glyph"><span class="stop-sq"></span></span></div>
+      <div class="item"><span class="glyph">🔋</span></div>
+      <div class="item"><span class="glyph">📶</span></div>
+      <div class="item clock">Mon 9:41 AM</div>
+    </div>
+    <div class="desktop-body"></div>
+  </div>
+
+  <div class="variants">
+    <div class="variant">
+      <h2>A — Red filled square <span class="note">(recommended)</span></h2>
+      <p>Universal stop glyph, matches the red recording dot. Highest at-a-glance recognition.</p>
+      <div class="mini-bar">
+        <span class="item pill"><span class="dot"></span><span class="timer">00:14</span></span>
+        <span class="item active"><span class="stop-sq"></span></span>
+      </div>
+      <div class="tip">Click square → <code>actionStopRecording()</code></div>
+    </div>
+
+    <div class="variant">
+      <h2>B — Red stop-in-ring</h2>
+      <p>Square inside a ring. Softer, reads as a button. Slightly busier at 18px.</p>
+      <div class="mini-bar">
+        <span class="item pill"><span class="dot"></span><span class="timer">00:14</span></span>
+        <span class="item active"><span class="stop-ring"></span></span>
+      </div>
+    </div>
+
+    <div class="variant">
+      <h2>C — Monochrome (template) square</h2>
+      <p>White/black square that follows the menu-bar tint like native items. Loses the red urgency cue.</p>
+      <div class="mini-bar">
+        <span class="item pill"><span class="dot"></span><span class="timer">00:14</span></span>
+        <span class="item active"><span class="stop-mono"></span></span>
+      </div>
+    </div>
+  </div>
+
+  <p class="tip" style="margin-top:28px">
+    Implementation: second <code>QSystemTrayIcon</code> (<code>m_stopTray</code>), hidden when idle,
+    <code>show()</code> on <code>enterRecordingState()</code> / <code>hide()</code> on <code>leaveRecordingState()</code>.
+    <code>activated()</code> → emit <code>actionStopRecording()</code>. No context menu on it, so a click fires directly.
+  </p>
+</body>
+</html>
