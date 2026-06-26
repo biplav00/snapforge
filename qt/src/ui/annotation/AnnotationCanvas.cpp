@@ -176,6 +176,14 @@ QImage AnnotationCanvas::compositeImage() const {
         result.fill(Qt::transparent);
     }
 
+    // `result` is built from the cropped screenshot, which setRegion() tags
+    // with devicePixelRatio = dpr (so Blur/ColorPicker can sample it in logical
+    // coords). For compositing we want raw pixel space and scale the painter
+    // manually below, so clear the dpr — otherwise QPainter applies it too and
+    // annotations are scaled twice (coord * dpr * dpr), drifting off-position
+    // on Retina displays.
+    result.setDevicePixelRatio(1.0);
+
     QPainter p(&result);
     p.setRenderHint(QPainter::Antialiasing, true);
 

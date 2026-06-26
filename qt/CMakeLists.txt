@@ -317,4 +317,12 @@ if(BUILD_TESTING)
     target_link_libraries(tst_preferences PRIVATE Qt6::Widgets)
     set_tests_properties(tst_preferences PROPERTIES
         ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
+    # Probe/regression for the compositeImage double-DPR bug (pure QPainter,
+    # no FFI). Runs offscreen.
+    add_executable(tst_composite_dpr tests/tst_composite_dpr.cpp)
+    target_link_libraries(tst_composite_dpr PRIVATE Qt6::Test Qt6::Gui)
+    add_test(NAME tst_composite_dpr COMMAND tst_composite_dpr)
+    set_tests_properties(tst_composite_dpr PROPERTIES
+        ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 endif()
