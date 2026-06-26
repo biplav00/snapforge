@@ -21,7 +21,7 @@
 #include <QJsonObject>
 #include <algorithm>
 #include <cmath>
-#include "snapforge_ffi.h"
+#include "SnapforgeClient.h"
 #include "Shortcuts.h"
 
 #ifdef Q_OS_MAC
@@ -198,7 +198,7 @@ void OverlayWindow::activateInternal() {
     if (!screen) {
         m_displayIndex = 0;
     } else {
-        int display = snapforge_display_at_point(cursor.x(), cursor.y());
+        int display = sf::displayAtPoint(cursor.x(), cursor.y());
         m_displayIndex = (display >= 0) ? display : 0;
     }
 
@@ -262,15 +262,10 @@ void OverlayWindow::activateInternal() {
         self->update();
     });
     QFuture<QImage> future = QtConcurrent::run([displayIndex]() -> QImage {
-        CapturedImage img = snapforge_capture_fullscreen(displayIndex);
-        if (!img.data || img.width == 0) {
-            return QImage();
-        }
-        QImage qimg(img.data, img.width, img.height, img.width * 4,
-                    QImage::Format_RGBA8888);
-        QImage copy = qimg.copy();
-        snapforge_free_buffer(img.data, img.len);
-        return copy;
+        // The client copies the pixels into the QImage and frees the FFI
+        // buffer internally; nullopt (capture failed) -> null QImage.
+        return sf::captureFullscreen(static_cast<uint32_t>(displayIndex))
+            .value_or(QImage());
     });
     watcher->setFuture(future);
 
@@ -684,7 +679,7 @@ void OverlayWindow::emitRecordRegion() {
     // it matched nothing and wrongly rejected the recording.)
     QScreen *selScreen = this->screen();
     double dpr = selScreen ? selScreen->devicePixelRatio()
-                           : snapforge_display_scale_factor();
+                           : sf::displayScaleFactor();
     QRect pixelRegion(
         static_cast<int>(sel.x()      * dpr),
         static_cast<int>(sel.y()      * dpr),
@@ -1133,7 +1128,7 @@ void OverlayWindow::keyPressEvent(QKeyEvent *event) {
         // and picked the wrong screen's DPR on multi-monitor setups.)
         QScreen *selScreen = this->screen();
         double dpr = selScreen ? selScreen->devicePixelRatio()
-                               : snapforge_display_scale_factor();
+                               : sf::displayScaleFactor();
         int px = static_cast<int>(sel.x() * dpr);
         int py = static_cast<int>(sel.y() * dpr);
         int pw = static_cast<int>(sel.width() * dpr);
@@ -1153,21 +1148,22 @@ void OverlayWindow::keyPressEvent(QKeyEvent *event) {
             // preserve. We pipe it through the use-case clipboard path so
             // the clipboard write goes via snapforge_save_prerendered
             // (output_path omitted = clipboard-only).
-            CapturedImage img = snapforge_capture_region(displayIndex, px, py, pw, ph);
-            if (img.data && img.width > 0) {
-                QJsonObject req;
-                req[QStringLiteral("copy_to_clipboard")] = true;
-                QByteArray reqBytes = QJsonDocument(req).toJson(QJsonDocument::Compact);
-                char *resJson = snapforge_save_prerendered(img.data, img.len,
-                                                           img.width, img.height,
-                                                           reqBytes.constData());
-                if (resJson) {
-                    snapforge_free_string(resJson);
-                } else if (char *err = snapforge_app_last_error()) {
-                    qWarning("Cmd+C clipboard copy failed: %s", err);
-                    snapforge_free_string(err);
+            auto captured = sf::captureRegion(
+                static_cast<uint32_t>(displayIndex),
+                sf::Region{px, py, static_cast<uint32_t>(pw), static_cast<uint32_t>(ph)});
+            if (captured) {
+                const QImage &img = *captured;
+                sf::SaveReq req;            // outputPath empty = clipboard-only
+                req.copyToClipboard = true;
+                if (!sf::savePrerendered(img.constBits(),
+                                         static_cast<size_t>(img.sizeInBytes()),
+                                         static_cast<uint32_t>(img.width()),
+                                         static_cast<uint32_t>(img.height()),
+                                         req)) {
+                    const QString err = sf::lastError();
+                    if (!err.isEmpty())
+                        qWarning("Cmd+C clipboard copy failed: %s", qUtf8Printable(err));
                 }
-                snapforge_free_buffer(img.data, img.len);
             }
         });
     }

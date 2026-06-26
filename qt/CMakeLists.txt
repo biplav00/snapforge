@@ -65,6 +65,7 @@ set(SNAPFORGE_SOURCES
     src/infra/Logger.cpp
     src/infra/LogCategories.cpp
     src/infra/Shortcuts.cpp
+    src/infra/SnapforgeClient.cpp
     src/ui/overlay/OverlayWindow.cpp
     src/ui/annotation/AnnotationState.cpp
     src/ui/annotation/AnnotationRenderer.cpp
@@ -126,7 +127,7 @@ target_link_libraries(snapforge-qt PRIVATE
     "${RUST_TARGET_DIR}/libsnapforge_ffi.a"
 )
 
-# macOS frameworks required by snapforge-core
+# macOS frameworks required by the snapforge Rust staticlib
 if(APPLE)
     target_link_libraries(snapforge-qt PRIVATE
         "-framework ScreenCaptureKit"
@@ -229,10 +230,14 @@ if(BUILD_TESTING)
         ${FFI_HEADER_DIR}
         src/infra
         src/capture
+        src/controllers
+        src/ui/windows
     )
 
     # name = test target/ctest name, remaining args = extra .cpp sources to
-    # compile into that test alongside the test driver itself.
+    # compile into that test alongside the test driver itself. Links the REAL
+    # Rust staticlib — for units that call the FFI on paths that fail safely
+    # without capture (config, record-start).
     function(snapforge_add_test name)
         add_executable(${name} ${ARGN})
         target_include_directories(${name} PRIVATE ${SNAPFORGE_TEST_INCLUDES})
@@ -245,15 +250,32 @@ if(BUILD_TESTING)
         add_test(NAME ${name} COMMAND ${name})
     endfunction()
 
+    # Same, but for units tested through the SnapforgeClient SEAM: the target
+    # links src/infra/SnapforgeClientFake.cpp (added automatically) INSTEAD of
+    # the real Rust staticlib + macOS frameworks, so the test runs with no FFI,
+    # no display, no TCC grant. The fake is driven via SnapforgeClientTesting.h.
+    function(snapforge_add_fake_test name)
+        add_executable(${name} ${ARGN} src/infra/SnapforgeClientFake.cpp)
+        target_include_directories(${name} PRIVATE ${SNAPFORGE_TEST_INCLUDES})
+        target_link_libraries(${name} PRIVATE
+            Qt6::Test
+            Qt6::Core
+            Qt6::Gui
+        )
+        add_test(NAME ${name} COMMAND ${name})
+    endfunction()
+
     # Pure chord parsing/formatting (the dynamic-hotkeys feature). GUILESS.
     snapforge_add_test(tst_shortcuts
         tests/tst_shortcuts.cpp
         src/infra/Shortcuts.cpp
+        src/infra/SnapforgeClient.cpp
     )
 
-    # RecordingManager state machine + timing + prefs parsing. GUILESS; FFI
-    # calls are exercised only on paths that fail safely without capture.
-    snapforge_add_test(tst_recordingmanager
+    # RecordingManager state machine + timing + prefs parsing, through the
+    # SnapforgeClient seam against the fake — start/stop/pause paths are now
+    # deterministic (no real capture/TCC). GUILESS.
+    snapforge_add_fake_test(tst_recordingmanager
         tests/tst_recordingmanager.cpp
         src/capture/RecordingManager.cpp
     )
@@ -265,5 +287,34 @@ if(BUILD_TESTING)
         tests/tst_smoke.cpp
         src/capture/RecordingManager.cpp
         src/infra/Shortcuts.cpp
+        src/infra/SnapforgeClient.cpp
     )
+
+    # ClickTap tested through the SnapforgeClient seam against the fake — a
+    # simulated system click must surface as a clicked() signal on the Qt main
+    # thread, with no Input Monitoring grant or real event tap.
+    snapforge_add_fake_test(tst_clicktap
+        tests/tst_clicktap.cpp
+        src/controllers/ClickTap.cpp
+    )
+
+    # Real SnapforgeClient adapter against the real staticlib, headless-safe
+    # paths only — verifies it compiles, links, and round-trips the FFI.
+    snapforge_add_test(tst_snapforgeclient
+        tests/tst_snapforgeclient.cpp
+        src/infra/SnapforgeClient.cpp
+    )
+
+    # PreferencesWindow config load/save round-trip through the seam (fake).
+    # A widget test: needs Qt6::Widgets and runs offscreen so no window server
+    # is required.
+    snapforge_add_fake_test(tst_preferences
+        tests/tst_preferences.cpp
+        src/ui/windows/PreferencesWindow.cpp
+        src/infra/Logger.cpp
+        src/infra/LogCategories.cpp
+    )
+    target_link_libraries(tst_preferences PRIVATE Qt6::Widgets)
+    set_tests_properties(tst_preferences PROPERTIES
+        ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 endif()

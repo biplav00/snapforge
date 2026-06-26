@@ -4,7 +4,7 @@
 #include <QPointer>
 #include <Qt>
 
-#include "snapforge_ffi.h"
+#include "SnapforgeClient.h"
 
 ClickTap::ClickTap(QObject *parent)
     : QObject(parent) {}
@@ -14,20 +14,20 @@ ClickTap::~ClickTap() {
 }
 
 bool ClickTap::isRunning() const {
-    return m_handle != nullptr;
+    return m_handle.valid();
 }
 
 bool ClickTap::start() {
-    if (m_handle) return true;
-    m_handle = snapforge_clicks_start(&ClickTap::onClickStatic, this);
-    return m_handle != nullptr;
+    if (m_handle.valid()) return true;
+    m_handle = sf::clicksStart(&ClickTap::onClickStatic, this);
+    return m_handle.valid();
 }
 
 void ClickTap::stop() {
-    if (!m_handle) return;
-    snapforge_clicks_stop(m_handle);
-    snapforge_clicks_free_handle(m_handle);
-    m_handle = nullptr;
+    if (!m_handle.valid()) return;
+    sf::clicksStop(m_handle);
+    sf::clicksFreeHandle(m_handle);
+    m_handle = sf::ClickHandle{};
 }
 
 void ClickTap::onClickStatic(double x, double y, int rightClick,

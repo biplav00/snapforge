@@ -32,7 +32,6 @@ Snapforge = **Rust core** (split across 6 leaf/use-case crates) + **Qt/C++ front
 │   snapforge-capture  (SCK + xcap fallback + clicks)      │
 │   snapforge-encode   (image format + ffmpeg record)      │
 │   snapforge-storage  (config, history, clipboard)        │
-│   snapforge-core     (facade re-exporting the above)     │
 └──────────────────────────────────────────────────────────┘
 ```
 

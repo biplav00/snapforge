@@ -1,5 +1,5 @@
 #include "HistoryWindow.h"
-#include "snapforge_ffi.h"
+#include "SnapforgeClient.h"
 
 #include <QApplication>
 #include <QClipboard>
@@ -280,13 +280,12 @@ void HistoryWindow::showEvent(QShowEvent *event) {
 }
 
 void HistoryWindow::refreshHistory() {
-    char *raw = snapforge_history_list();
-    if (!raw) {
+    QByteArray raw = sf::historyListJson();
+    if (raw.isEmpty()) {
         loadEntries({});
         return;
     }
     QString json = QString::fromUtf8(raw);
-    snapforge_free_string(raw);
 
     QList<HistoryEntry> entries = parseJson(json);
     m_allEntries = entries;
@@ -425,13 +424,13 @@ void HistoryWindow::onClearAll() {
 
     if (btn != QMessageBox::Yes) return;
 
-    snapforge_history_clear();
+    sf::historyClear();
     m_allEntries.clear();
     loadEntries({});
 }
 
 void HistoryWindow::onDeleteEntry(const QString &path) {
-    snapforge_history_delete(path.toUtf8().constData());
+    sf::historyDelete(path);
 
     // Remove from master list
     m_allEntries.erase(
@@ -473,21 +472,17 @@ void HistoryWindow::onCopyEntry(const QString &path) {
         }
         QImage rgba = watcher->result();
         if (!rgba.isNull()) {
-            // Clipboard-only use case: omit output_path.
-            QJsonObject req;
-            req[QStringLiteral("copy_to_clipboard")] = true;
-            QByteArray reqBytes = QJsonDocument(req).toJson(QJsonDocument::Compact);
-            char *resJson = snapforge_save_prerendered(
-                rgba.constBits(),
-                static_cast<size_t>(rgba.sizeInBytes()),
-                static_cast<uint32_t>(rgba.width()),
-                static_cast<uint32_t>(rgba.height()),
-                reqBytes.constData());
-            if (resJson) {
-                snapforge_free_string(resJson);
-            } else if (char *err = snapforge_app_last_error()) {
-                qWarning("History clipboard copy failed: %s", err);
-                snapforge_free_string(err);
+            // Clipboard-only use case: leave outputPath empty.
+            sf::SaveReq req;
+            req.copyToClipboard = true;
+            if (!sf::savePrerendered(rgba.constBits(),
+                                     static_cast<size_t>(rgba.sizeInBytes()),
+                                     static_cast<uint32_t>(rgba.width()),
+                                     static_cast<uint32_t>(rgba.height()),
+                                     req)) {
+                const QString err = sf::lastError();
+                if (!err.isEmpty())
+                    qWarning("History clipboard copy failed: %s", qUtf8Printable(err));
             }
         }
         watcher->deleteLater();
