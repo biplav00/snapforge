@@ -30,6 +30,10 @@ pub struct RecordConfig {
     /// Optional path to the FFmpeg binary (e.g., bundled resource path).
     /// If None, will search common locations and system PATH.
     pub ffmpeg_path: Option<PathBuf>,
+    /// When true, mouse-click ripples are composited into the recorded frames.
+    /// Requires Accessibility permission for the CGEventTap; if that's denied
+    /// the tap silently no-ops and no ripples are drawn.
+    pub show_clicks: bool,
 }
 
 /// Find the FFmpeg binary. Checks:
@@ -167,6 +171,7 @@ mod tests {
             fps: 30,
             quality: snapforge_storage::config::RecordingQuality::Medium,
             ffmpeg_path: None,
+            show_clicks: false,
         };
         assert_eq!(config.fps, 30);
         assert!(config.region.is_none());
@@ -187,6 +192,7 @@ mod tests {
             fps: 30,
             quality: snapforge_storage::config::RecordingQuality::High,
             ffmpeg_path: None,
+            show_clicks: false,
         };
         assert!(config.region.is_some());
         let r = config.region.unwrap();

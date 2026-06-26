@@ -52,6 +52,13 @@ public:
     QString filenamePattern() const { return m_filenamePattern ? m_filenamePattern->text() : QString(); }
     bool showClicksEnabled() const { return m_showClicks && m_showClicks->isChecked(); }
 
+    // Remembered region (window-local coords), persisted across restarts. Empty
+    // if none saved yet.
+    QRect lastRegion() const { return m_lastRegion; }
+    // Persist a new remembered region immediately (merge-saved so it doesn't
+    // clobber unsaved edits in the open prefs window).
+    void setLastRegion(const QRect &region);
+
 signals:
     void configSaved();
 
@@ -101,6 +108,8 @@ private:
     QCheckBox   *m_autoCopy       = nullptr;
     QCheckBox   *m_showNotif      = nullptr;
     QCheckBox   *m_rememberRegion = nullptr;
+    // Persisted remembered region (not a widget — loaded/saved with the config).
+    QRect        m_lastRegion;
 
     // Screenshots tab — card buttons in exclusive group
     QButtonGroup *m_screenshotFmtGroup = nullptr;

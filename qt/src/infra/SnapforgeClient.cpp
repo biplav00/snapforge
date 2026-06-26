@@ -145,6 +145,7 @@ RecHandle recordStart(const RecordReq &req) {
     o["quality"] = req.quality;
     if (req.ffmpegPath) o["ffmpeg_path"] = *req.ffmpegPath;
     o["add_to_history_on_stop"] = req.addToHistoryOnStop;
+    o["show_clicks"] = req.showClicks;
     return RecHandle{snapforge_record_start(toJson(o).constData())};
 }
 

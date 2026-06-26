@@ -1288,6 +1288,15 @@ void PreferencesWindow::loadConfig()
     m_showNotif->setChecked(obj.value(QStringLiteral("show_notification")).toBool());
     m_rememberRegion->setChecked(obj.value(QStringLiteral("remember_last_region")).toBool());
 
+    // Remembered region (window-local rect). Persisted so it survives restarts.
+    QJsonObject lr = obj.value(QStringLiteral("last_region")).toObject();
+    if (!lr.isEmpty()) {
+        m_lastRegion = QRect(lr.value(QStringLiteral("x")).toInt(),
+                             lr.value(QStringLiteral("y")).toInt(),
+                             lr.value(QStringLiteral("w")).toInt(),
+                             lr.value(QStringLiteral("h")).toInt());
+    }
+
     // — Theme —
     QString themeName = obj.value(QStringLiteral("theme")).toString(QStringLiteral("Auto"));
     if (m_themeCombo) {
@@ -1374,13 +1383,26 @@ void PreferencesWindow::loadConfig()
 
 void PreferencesWindow::saveConfig()
 {
-    QJsonObject obj;
+    // Seed from the on-disk config so keys this function doesn't rewrite
+    // (last_region, and any Rust-only fields) survive instead of being dropped.
+    // The known keys below overwrite their stale values.
+    QJsonObject obj = QJsonDocument::fromJson(sf::configLoadJson()).object();
 
     // — General —
     obj[QStringLiteral("save_directory")]       = m_saveDir->text();
     obj[QStringLiteral("auto_copy_clipboard")]  = m_autoCopy->isChecked();
     obj[QStringLiteral("show_notification")]    = m_showNotif->isChecked();
     obj[QStringLiteral("remember_last_region")] = m_rememberRegion->isChecked();
+    // last_region is carried forward by the seed above; refresh it from the
+    // authoritative in-memory value (kept in sync by setLastRegion).
+    if (m_lastRegion.isValid()) {
+        QJsonObject lr;
+        lr[QStringLiteral("x")] = m_lastRegion.x();
+        lr[QStringLiteral("y")] = m_lastRegion.y();
+        lr[QStringLiteral("w")] = m_lastRegion.width();
+        lr[QStringLiteral("h")] = m_lastRegion.height();
+        obj[QStringLiteral("last_region")] = lr;
+    }
 
     // — Theme —
     if (m_themeCombo) {
@@ -1431,6 +1453,25 @@ void PreferencesWindow::saveConfig()
     } else {
         m_statusLabel->setText(QStringLiteral("Error: failed to save config."));
     }
+}
+
+void PreferencesWindow::setLastRegion(const QRect &region)
+{
+    if (!region.isValid()) return;
+    m_lastRegion = region;
+
+    // Merge-save: load the existing config and overwrite only last_region, so a
+    // capture committed while the prefs window has unsaved edits doesn't persist
+    // those edits (which a full saveConfig() would).
+    QByteArray jsonBytes = sf::configLoadJson();
+    QJsonObject obj = QJsonDocument::fromJson(jsonBytes).object();
+    QJsonObject lr;
+    lr[QStringLiteral("x")] = region.x();
+    lr[QStringLiteral("y")] = region.y();
+    lr[QStringLiteral("w")] = region.width();
+    lr[QStringLiteral("h")] = region.height();
+    obj[QStringLiteral("last_region")] = lr;
+    sf::configSave(QJsonDocument(obj).toJson(QJsonDocument::Compact));
 }
 
 // ===========================================================================

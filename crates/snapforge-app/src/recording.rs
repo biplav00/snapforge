@@ -24,6 +24,8 @@ pub struct RecordingRequest {
     /// If true, after a successful `stop_recording` the output file is added
     /// to the screenshot history index (skipped if it's an incomplete mp4).
     pub add_to_history_on_stop: bool,
+    /// If true, composite mouse-click ripples into the recording.
+    pub show_clicks: bool,
 }
 
 impl Default for RecordingRequest {
@@ -37,6 +39,7 @@ impl Default for RecordingRequest {
             quality: RecordingQuality::default(),
             ffmpeg_path: None,
             add_to_history_on_stop: false,
+            show_clicks: false,
         }
     }
 }
@@ -100,6 +103,7 @@ pub fn start_recording(req: RecordingRequest) -> Result<RecordingHandle, AppErro
         fps: req.fps,
         quality: req.quality,
         ffmpeg_path: req.ffmpeg_path,
+        show_clicks: req.show_clicks,
     };
     let inner = ffmpeg::start_recording(cfg)?;
     Ok(RecordingHandle {
@@ -178,6 +182,7 @@ mod tests {
             quality: RecordingQuality::Medium,
             ffmpeg_path: None,
             add_to_history_on_stop: false,
+            show_clicks: false,
         };
         let res = start_recording(req);
         let Err(err) = res else {
@@ -202,6 +207,7 @@ mod tests {
             quality: RecordingQuality::Medium,
             ffmpeg_path: None,
             add_to_history_on_stop: false,
+            show_clicks: false,
         };
         let res = start_recording(req);
         let Err(err) = res else {
