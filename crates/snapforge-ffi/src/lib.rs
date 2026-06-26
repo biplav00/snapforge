@@ -465,11 +465,12 @@ impl SnapforgeErrorCode {
     /// category without string-matching the message.
     fn from_app_error(err: &snapforge_app::AppError) -> Self {
         use snapforge_app::AppError;
-        use snapforge_core::capture::CaptureError;
-        use snapforge_core::record::RecordError;
-        // Keep one arm per AppError variant so the variant -> error-code mapping
-        // stays exhaustive and self-documenting; do not merge arms that happen to
-        // share a code (the codes are independent and may diverge later).
+        use snapforge_capture::capture::CaptureError;
+        use snapforge_encode::record::RecordError;
+        // Keep one arm per *concrete* error variant — no `_` catch-alls inside a
+        // sub-crate error — so adding a variant to any of these enums fails to
+        // compile here until its error-code category is chosen. The codes are
+        // independent and may diverge later, so don't merge same-code arms.
         #[allow(clippy::match_same_arms)]
         match err {
             AppError::InvalidRequest(_) => SnapforgeErrorCode::InvalidInput,
@@ -478,7 +479,8 @@ impl SnapforgeErrorCode {
             AppError::Clipboard(_) => SnapforgeErrorCode::Internal,
             AppError::Storage(_) => SnapforgeErrorCode::Io,
             AppError::Capture(CaptureError::NoDisplay(_)) => SnapforgeErrorCode::NotFound,
-            AppError::Capture(_) => SnapforgeErrorCode::Capture,
+            AppError::Capture(CaptureError::CaptureFailed) => SnapforgeErrorCode::Capture,
+            AppError::Capture(CaptureError::ImageDataFailed) => SnapforgeErrorCode::Capture,
             AppError::Recording(RecordError::FfmpegNotFound) => SnapforgeErrorCode::NotFound,
             AppError::Recording(RecordError::WriteFailed(_)) => SnapforgeErrorCode::Io,
             AppError::Recording(RecordError::CaptureFailed(_)) => SnapforgeErrorCode::Capture,
