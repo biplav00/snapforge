@@ -9,6 +9,8 @@
 #include <QFuture>
 #include <atomic>
 
+#include "SnapforgeClient.h"
+
 class RecordingManager : public QObject {
     Q_OBJECT
 public:
@@ -51,7 +53,9 @@ private:
 
     // Atomic so dtor and stopRecording cannot both observe the same non-null
     // pointer and end up double-stopping / double-freeing it. Whoever swaps
-    // it to nullptr first owns the teardown.
+    // it to nullptr first owns the teardown. We store the raw sf::RecHandle
+    // pointer (RecHandle is a thin void* wrapper) so the swap stays lock-free;
+    // call sites wrap it back into sf::RecHandle{} before calling sf::record*.
     std::atomic<void *> m_handle{nullptr};
     QString m_outputPath;
     QTimer *m_timer = nullptr;

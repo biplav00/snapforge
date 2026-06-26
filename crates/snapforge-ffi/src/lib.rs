@@ -8,7 +8,6 @@
 use std::collections::HashMap;
 use std::ffi::{c_char, c_int, c_void, CStr, CString};
 use std::hash::{BuildHasherDefault, Hasher};
-use std::path::PathBuf;
 use std::ptr;
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -95,10 +94,10 @@ fn cstring_sanitized(s: &str) -> Result<CString, std::ffi::NulError> {
     }
 }
 
-use snapforge_core::capture;
-use snapforge_core::config::{AppConfig, RecordingFormat, RecordingQuality};
-use snapforge_core::history::ScreenshotHistory;
-use snapforge_core::types::{CaptureFormat, Rect};
+use snapforge_capture::capture;
+use snapforge_domain::Rect;
+use snapforge_storage::config::AppConfig;
+use snapforge_storage::history::ScreenshotHistory;
 
 /// Captured image data returned to C callers.
 /// The caller must free `data` via `snapforge_free_buffer`.
@@ -272,11 +271,11 @@ pub extern "C" fn snapforge_display_scale_factor() -> f64 {
 /// Returns NULL on error.
 #[no_mangle]
 pub extern "C" fn snapforge_default_save_path() -> *mut c_char {
-    let config = match snapforge_core::config::AppConfig::load() {
+    let config = match AppConfig::load() {
         Ok(c) => c,
         Err(e) => {
             tracing::warn!("[snapforge] default_save_path: config load failed: {}", e);
-            snapforge_core::config::AppConfig::default()
+            AppConfig::default()
         }
     };
     let dir = &config.save_directory;
@@ -369,7 +368,7 @@ pub unsafe extern "C" fn snapforge_is_incomplete_mp4(path: *const c_char) -> c_i
     let Ok(path_str) = CStr::from_ptr(path).to_str() else {
         return -1;
     };
-    c_int::from(snapforge_core::history::is_incomplete_mp4(path_str))
+    c_int::from(snapforge_storage::history::is_incomplete_mp4(path_str))
 }
 
 // ---------------------------------------------------------------------------
@@ -465,11 +464,12 @@ impl SnapforgeErrorCode {
     /// category without string-matching the message.
     fn from_app_error(err: &snapforge_app::AppError) -> Self {
         use snapforge_app::AppError;
-        use snapforge_core::capture::CaptureError;
-        use snapforge_core::record::RecordError;
-        // Keep one arm per AppError variant so the variant -> error-code mapping
-        // stays exhaustive and self-documenting; do not merge arms that happen to
-        // share a code (the codes are independent and may diverge later).
+        use snapforge_capture::capture::CaptureError;
+        use snapforge_encode::record::RecordError;
+        // Keep one arm per *concrete* error variant — no `_` catch-alls inside a
+        // sub-crate error — so adding a variant to any of these enums fails to
+        // compile here until its error-code category is chosen. The codes are
+        // independent and may diverge later, so don't merge same-code arms.
         #[allow(clippy::match_same_arms)]
         match err {
             AppError::InvalidRequest(_) => SnapforgeErrorCode::InvalidInput,
@@ -478,7 +478,8 @@ impl SnapforgeErrorCode {
             AppError::Clipboard(_) => SnapforgeErrorCode::Internal,
             AppError::Storage(_) => SnapforgeErrorCode::Io,
             AppError::Capture(CaptureError::NoDisplay(_)) => SnapforgeErrorCode::NotFound,
-            AppError::Capture(_) => SnapforgeErrorCode::Capture,
+            AppError::Capture(CaptureError::CaptureFailed) => SnapforgeErrorCode::Capture,
+            AppError::Capture(CaptureError::ImageDataFailed) => SnapforgeErrorCode::Capture,
             AppError::Recording(RecordError::FfmpegNotFound) => SnapforgeErrorCode::NotFound,
             AppError::Recording(RecordError::WriteFailed(_)) => SnapforgeErrorCode::Io,
             AppError::Recording(RecordError::CaptureFailed(_)) => SnapforgeErrorCode::Capture,
@@ -707,27 +708,6 @@ pub unsafe extern "C" fn snapforge_set_log_callback(callback: Option<SnapforgeLo
     });
 }
 
-/// Parse a `Rect` from the `region` field of a JSON value. Returns `Ok(None)`
-/// when the field is absent / not an object, `Ok(Some(_))` when valid, and
-/// `Err(_)` when width or height is zero (which the underlying capture would
-/// reject anyway, but we want a clean error message at the FFI boundary).
-fn parse_optional_region(v: &serde_json::Value) -> Result<Option<Rect>, String> {
-    if !v.is_object() {
-        return Ok(None);
-    }
-    let width = v["width"].as_u64().unwrap_or(0) as u32;
-    let height = v["height"].as_u64().unwrap_or(0) as u32;
-    if width == 0 || height == 0 {
-        return Err("region has zero width or height".into());
-    }
-    Ok(Some(Rect {
-        x: v["x"].as_i64().unwrap_or(0) as i32,
-        y: v["y"].as_i64().unwrap_or(0) as i32,
-        width,
-        height,
-    }))
-}
-
 /// Take a screenshot.
 ///
 /// `req_json` is a null-terminated UTF-8 JSON string with fields:
@@ -752,47 +732,19 @@ pub unsafe extern "C" fn snapforge_screenshot(req_json: *const c_char) -> *mut c
         set_app_error("internal: req_json is not valid UTF-8");
         return ptr::null_mut();
     };
-    let v = match serde_json::from_str::<serde_json::Value>(json_str) {
-        Ok(v) => v,
+    // The request schema lives once, in `snapforge-app` (serde). Deserialize
+    // straight into it — no field-by-field re-parsing, no second copy of the
+    // defaults or the enum spellings. A missing `output_path` arrives as the
+    // empty path and is rejected by `take_screenshot`, as before.
+    let mut req: app_screenshot::ScreenshotRequest = match serde_json::from_str(json_str) {
+        Ok(r) => r,
         Err(e) => {
             set_app_error(format!("invalid request JSON: {}", e));
             return ptr::null_mut();
         }
     };
-
-    let display = v["display"].as_u64().unwrap_or(0) as usize;
-    let region = match parse_optional_region(&v["region"]) {
-        Ok(r) => r,
-        Err(e) => {
-            set_app_error(e);
-            return ptr::null_mut();
-        }
-    };
-    let output_path = match v["output_path"].as_str() {
-        Some(s) if !s.is_empty() => PathBuf::from(s),
-        _ => {
-            set_app_error("output_path is missing or empty");
-            return ptr::null_mut();
-        }
-    };
-    let format = match v["format"].as_str().unwrap_or("png") {
-        "jpg" | "jpeg" => CaptureFormat::Jpg,
-        "webp" => CaptureFormat::WebP,
-        _ => CaptureFormat::Png,
-    };
-    let quality = v["quality"].as_u64().unwrap_or(90).clamp(1, 100) as u8;
-    let copy_to_clipboard = v["copy_to_clipboard"].as_bool().unwrap_or(false);
-    let add_to_history = v["add_to_history"].as_bool().unwrap_or(false);
-
-    let req = app_screenshot::ScreenshotRequest {
-        display,
-        region,
-        output_path,
-        format,
-        quality,
-        copy_to_clipboard,
-        add_to_history,
-    };
+    // Preserve the historical lenient clamp on quality (1..=100).
+    req.quality = req.quality.clamp(1, 100);
 
     match app_screenshot::take_screenshot(req) {
         Ok(result) => {
@@ -860,8 +812,11 @@ pub unsafe extern "C" fn snapforge_save_prerendered(
         set_app_error("internal: req_json is not valid UTF-8");
         return ptr::null_mut();
     };
-    let v = match serde_json::from_str::<serde_json::Value>(json_str) {
-        Ok(v) => v,
+    // Deserialize the JSON half of the request into the canonical schema. The
+    // pixel buffer + dims come from the FFI args (not JSON) and are filled in
+    // below; their struct fields are `#[serde(skip)]`.
+    let mut req: app_screenshot::SavePrerenderedRequest = match serde_json::from_str(json_str) {
+        Ok(r) => r,
         Err(e) => {
             set_app_error(format!("invalid request JSON: {}", e));
             return ptr::null_mut();
@@ -884,34 +839,11 @@ pub unsafe extern "C" fn snapforge_save_prerendered(
     }
     // Copy the caller's bytes into an owned Vec so the use-case can hand the
     // buffer to the `image` crate. The caller keeps ownership of `rgba`.
-    let bytes = std::slice::from_raw_parts(rgba, rgba_len).to_vec();
+    req.rgba = std::slice::from_raw_parts(rgba, rgba_len).to_vec();
+    req.width = width;
+    req.height = height;
+    req.quality = req.quality.clamp(1, 100);
 
-    let output_path = v["output_path"].as_str().and_then(|s| {
-        if s.is_empty() {
-            None
-        } else {
-            Some(PathBuf::from(s))
-        }
-    });
-    let format = match v["format"].as_str().unwrap_or("png") {
-        "jpg" | "jpeg" => CaptureFormat::Jpg,
-        "webp" => CaptureFormat::WebP,
-        _ => CaptureFormat::Png,
-    };
-    let quality = v["quality"].as_u64().unwrap_or(90).clamp(1, 100) as u8;
-    let copy_to_clipboard = v["copy_to_clipboard"].as_bool().unwrap_or(false);
-    let add_to_history = v["add_to_history"].as_bool().unwrap_or(false);
-
-    let req = app_screenshot::SavePrerenderedRequest {
-        rgba: bytes,
-        width,
-        height,
-        output_path,
-        format,
-        quality,
-        copy_to_clipboard,
-        add_to_history,
-    };
     match app_screenshot::save_prerendered(req) {
         Ok(result) => {
             clear_app_error();
@@ -1015,52 +947,17 @@ pub unsafe extern "C" fn snapforge_record_start(req_json: *const c_char) -> *mut
         set_app_error("internal: req_json is not valid UTF-8");
         return ptr::null_mut();
     };
-    let v = match serde_json::from_str::<serde_json::Value>(json_str) {
-        Ok(v) => v,
+    // One canonical schema (serde, in `snapforge-app`). An empty/missing
+    // `output_path` is rejected by `start_recording`, as before.
+    let mut req: app_recording::RecordingRequest = match serde_json::from_str(json_str) {
+        Ok(r) => r,
         Err(e) => {
             set_app_error(format!("invalid request JSON: {}", e));
             return ptr::null_mut();
         }
     };
-
-    let display = v["display"].as_u64().unwrap_or(0) as usize;
-    let region = match parse_optional_region(&v["region"]) {
-        Ok(r) => r,
-        Err(e) => {
-            set_app_error(e);
-            return ptr::null_mut();
-        }
-    };
-    let output_path = match v["output_path"].as_str() {
-        Some(s) if !s.is_empty() => PathBuf::from(s),
-        _ => {
-            set_app_error("output_path is missing or empty");
-            return ptr::null_mut();
-        }
-    };
-    let format = match v["format"].as_str() {
-        Some("gif") => RecordingFormat::Gif,
-        _ => RecordingFormat::Mp4,
-    };
-    let fps = v["fps"].as_u64().unwrap_or(30).clamp(1, 240) as u32;
-    let quality = match v["quality"].as_str() {
-        Some("low") => RecordingQuality::Low,
-        Some("high") => RecordingQuality::High,
-        _ => RecordingQuality::Medium,
-    };
-    let ffmpeg_path = v["ffmpeg_path"].as_str().map(PathBuf::from);
-    let add_to_history_on_stop = v["add_to_history_on_stop"].as_bool().unwrap_or(false);
-
-    let req = app_recording::RecordingRequest {
-        display,
-        region,
-        output_path,
-        format,
-        fps,
-        quality,
-        ffmpeg_path,
-        add_to_history_on_stop,
-    };
+    // Preserve the historical lenient clamp on fps (1..=240).
+    req.fps = req.fps.clamp(1, 240);
 
     match app_recording::start_recording(req) {
         Ok(handle) => {
@@ -1499,7 +1396,7 @@ mod app_ffi_tests {
             SnapforgeErrorCode::from_app_error(&AppError::InvalidRequest("x".into())),
             SnapforgeErrorCode::InvalidInput
         );
-        let cfg_err = AppError::Config(snapforge_core::config::ConfigError::Parse(
+        let cfg_err = AppError::Config(snapforge_storage::config::ConfigError::Parse(
             serde_json::from_str::<serde_json::Value>("{").unwrap_err(),
         ));
         assert_eq!(

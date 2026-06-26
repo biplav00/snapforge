@@ -12,9 +12,8 @@ Scalable target for when growth hurts. Phases below are ordered by cost. Don't d
 │   ├── snapforge-capture/       Screen capture (SCK; later X11/Wayland) + global click tap
 │   ├── snapforge-encode/        Image format + ffmpeg wrapper + codec presets
 │   ├── snapforge-storage/       History index, config, clipboard
-│   ├── snapforge-app/           Use-case layer: TakeScreenshot, StartRecording, StartClickTracking. Orchestrates the above
-│   ├── snapforge-core/          Back-compat facade re-exporting the leaf crates (delete once nothing depends on it)
-│   ├── snapforge-ffi/           Thin C ABI. Translates types. No logic
+│   ├── snapforge-app/           Use-case layer: TakeScreenshot, StartRecording, StartClickTracking. Orchestrates the above. Owns the canonical request schema (serde DTOs)
+│   ├── snapforge-ffi/           Thin C ABI. Translates types + deserializes request JSON into the app DTOs. No logic
 │   └── snapforge-cli/           (future) shell binary on top of snapforge-app
 ├── clients/
 │   └── qt/                      (renamed from /qt)
@@ -65,7 +64,7 @@ Scalable target for when growth hurts. Phases below are ordered by cost. Don't d
 
 | Move | Effort | Buys | Status |
 |------|--------|------|--------|
-| `snapforge-core` → `snapforge-domain` + `snapforge-capture` + `snapforge-encode` + `snapforge-storage` + `snapforge-app` | High | Per-crate testing, parallel work, swappable platform impls | Done (Phase 2A). `snapforge-core` is now a thin facade kept for back-compat. |
+| `snapforge-core` → `snapforge-domain` + `snapforge-capture` + `snapforge-encode` + `snapforge-storage` + `snapforge-app` | High | Per-crate testing, parallel work, swappable platform impls | Done (Phase 2A); facade **deleted** once the FFI was repointed at the leaf crates — nothing else depended on it. |
 | Convert FFI to use-case surface | Medium | Frontends decoupled from internals | Done (Phases 2B–2D). Use cases: `snapforge_screenshot`, `snapforge_save_prerendered`, `snapforge_record_*`, `snapforge_clicks_*`. Errors flow through a single `snapforge_app_last_error()`. |
 | Extract `clicks.rs` → `snapforge-clicks` equivalent. Delete `qt/src/ClickEventTap.{h,mm}`. Wire Qt overlay through `snapforge_clicks_start(callback)` FFI | Low–medium | Removes duplicated CGEventTap impl | Done (Phase 2C). Clicks live in `snapforge-capture` / `snapforge-app`; Qt uses `ClickTap` over the new FFI. |
 | Delete deprecated primitive FFI (`snapforge_save_image`, `snapforge_copy_to_clipboard`, `snapforge_history_add`, recording-primitive set, `snapforge_last_recording_error`) | Low | Single error path, no parallel surface to keep in sync | Done (Phase 2D). |
@@ -84,6 +83,7 @@ Resolved (kept here for changelog context):
 - ~~`ClickEventTap.{h,mm}` duplicates `crates/snapforge-core/src/clicks.rs`~~ — deleted in Phase 2C; clicks live in `snapforge-capture::clicks` with a thin Qt `controllers/ClickTap` wrapper.
 - ~~Primitive `snapforge_save_image` / `snapforge_copy_to_clipboard` / `snapforge_history_add` / recording-primitive FFI~~ — deleted in Phase 2D; every Qt callsite now uses the use-case surface.
 - ~~`snapforge-core` god-crate~~ — split into domain / capture / encode / storage / app in Phase 2A.
+- ~~`snapforge-core` back-compat facade lingering in the dep graph~~ — deleted; the FFI (its only consumer) now imports the leaf crates directly, and the duplicate `screenshot_fullscreen`/`screenshot_region` orchestrators + dead `ScreenError` went with it.
 - ~~`main.cpp` god-file~~ — Phase 1 extractions of `TrayIcon` and `RecordingController` brought it from ~849 LOC down to ~560 LOC of DI + hotkey wiring.
 - ~~Inline tray-menu builders and recording-signal slot bodies in `main.cpp`~~ — moved to `ui/tray/TrayIcon` and `controllers/RecordingController`.
 - ~~`qt/scripts/` mixed with frontend source~~ — moved to `packaging/macos/`.
@@ -92,7 +92,6 @@ Still outstanding:
 - **No tests on the Qt side.** Controllers now exist and are testable via QTest; nothing written yet.
 - **`ffmpeg` is arm64-only by default.** The build is now universal-*ready* (see [Universal binary](#universal-binary-arm64--x86_64) below): `SNAPFORGE_UNIVERSAL=1` produces a fat app + lipo'd Rust staticlib, and `bundle-ffmpeg.sh` fat-merges ffmpeg + dylibs when an x86_64 Homebrew is present. The maintainer must still supply the x86_64 Rust target (`rustup target add x86_64-apple-darwin`) and an x86_64 Homebrew ffmpeg; absent those, the default arm64-only `.dmg` is unchanged. A true universal `.dmg` is gated on a CI runner that has both.
 - **App is not notarized.** Users see Gatekeeper warning on first launch. Needs an Apple Developer ID + `notarytool` step in `packaging/macos/`.
-- **`snapforge-core` facade is still in the dep graph.** It re-exports everything from the leaf crates plus convenience helpers (`screenshot_fullscreen`, `screenshot_region`) so older internal call sites keep compiling. Once nothing depends on it the facade can be deleted; until then it's a thin layer.
 - **Phase 3 (second client) is the next milestone.** Layout is ready; no client yet.
 
 ## Universal binary (arm64 + x86_64)

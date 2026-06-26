@@ -116,7 +116,7 @@ Config failure:     NULL (load) or -1 (save)
 
 1. Add `#[no_mangle] pub extern "C" fn snapforge_<name>(...)` in `crates/snapforge-ffi/src/lib.rs`.
 2. Mirror the declaration in `crates/snapforge-ffi/snapforge_ffi.h` (hand-maintained).
-3. Prefer the use-case surface: take a JSON request, return a JSON string or opaque handle, surface errors via `snapforge_app_last_error()`. Add the underlying logic to `crates/snapforge-app`.
+3. Prefer the use-case surface: take a JSON request, return a JSON string or opaque handle, surface errors via `snapforge_app_last_error()`. Add the underlying logic to `crates/snapforge-app`. Define the request shape **once** as a `#[derive(Deserialize)]` DTO in `snapforge-app` and `serde_json::from_str` straight into it — do **not** hand-extract fields with `serde_json::Value` indexing in the FFI (that reintroduces the schema-drift the request DTOs were created to eliminate). Buffer/pointer args that don't come from JSON go on `#[serde(skip)]` fields, filled in after deserialization (see `SavePrerenderedRequest`).
 4. Match the conventions above — registry tracking for any opaque handle, NUL-safe strings, length-checked buffers.
 5. Add a smoke test in `crates/snapforge-ffi/tests/abi.rs`.
 6. Update this doc's tables.

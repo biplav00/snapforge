@@ -1,4 +1,13 @@
-use snapforge_core::types::{CaptureFormat, Rect};
+//! Real-display screenshot round-trips through the `take_screenshot` use case.
+//!
+//! Ported from the deleted `snapforge-core` facade (which had its own
+//! `screenshot_fullscreen` / `screenshot_region` orchestrators) onto the
+//! single use-case entry point. Display-gated: skipped on headless runners
+//! unless `SNAPFORGE_REQUIRE_DISPLAY=1`.
+
+use snapforge_app::screenshot::{take_screenshot, ScreenshotRequest};
+use snapforge_app::{CaptureFormat, Rect};
+use std::path::PathBuf;
 
 /// True when the developer / CI runner has asserted "I have a real display
 /// attached and capture is expected to succeed". Set on workstations and on
@@ -8,9 +17,8 @@ fn require_display() -> bool {
         .is_ok_and(|v| v == "1" || v.eq_ignore_ascii_case("true"))
 }
 
-/// Either unwrap (display required) or return None (headless). Replaces the
-/// old `if let Ok(...)` silent skip so a regression on a runner that DOES
-/// have a display can fail CI.
+/// Either unwrap (display required) or return None (headless). A regression on
+/// a runner that DOES have a display fails CI rather than silently skipping.
 fn assert_or_skip<T>(name: &str, result: Result<T, impl std::fmt::Debug>) -> Option<T> {
     match result {
         Ok(v) => Some(v),
@@ -30,21 +38,38 @@ fn assert_or_skip<T>(name: &str, result: Result<T, impl std::fmt::Debug>) -> Opt
     }
 }
 
+fn request(
+    region: Option<Rect>,
+    path: PathBuf,
+    format: CaptureFormat,
+    quality: u8,
+) -> ScreenshotRequest {
+    ScreenshotRequest {
+        display: 0,
+        region,
+        output_path: path,
+        format,
+        quality,
+        copy_to_clipboard: false,
+        add_to_history: false,
+    }
+}
+
 #[test]
 fn test_fullscreen_screenshot_png() {
     let tmp = tempfile::tempdir().unwrap();
     let path = tmp.path().join("fullscreen.png");
 
-    let result = snapforge_core::screenshot_fullscreen(0, &path, CaptureFormat::Png, 90, false);
+    let result = take_screenshot(request(None, path, CaptureFormat::Png, 90));
 
-    let Some(saved_path) = assert_or_skip("test_fullscreen_screenshot_png", result) else {
+    let Some(res) = assert_or_skip("test_fullscreen_screenshot_png", result) else {
         return;
     };
-    assert!(saved_path.exists());
-    let metadata = std::fs::metadata(&saved_path).unwrap();
+    assert!(res.saved_path.exists());
+    let metadata = std::fs::metadata(&res.saved_path).unwrap();
     assert!(metadata.len() > 100, "PNG should be more than 100 bytes");
 
-    let img = image::open(&saved_path).unwrap();
+    let img = image::open(&res.saved_path).unwrap();
     assert!(img.width() > 0);
     assert!(img.height() > 0);
 }
@@ -60,13 +85,13 @@ fn test_region_screenshot_jpg() {
         height: 150,
     };
 
-    let result = snapforge_core::screenshot_region(0, region, &path, CaptureFormat::Jpg, 85, false);
+    let result = take_screenshot(request(Some(region), path, CaptureFormat::Jpg, 85));
 
-    let Some(saved_path) = assert_or_skip("test_region_screenshot_jpg", result) else {
+    let Some(res) = assert_or_skip("test_region_screenshot_jpg", result) else {
         return;
     };
-    assert!(saved_path.exists());
-    let img = image::open(&saved_path).unwrap();
+    assert!(res.saved_path.exists());
+    let img = image::open(&res.saved_path).unwrap();
     assert_eq!(img.width(), 200);
     assert_eq!(img.height(), 150);
 }
@@ -82,13 +107,12 @@ fn test_region_screenshot_webp() {
         height: 100,
     };
 
-    let result =
-        snapforge_core::screenshot_region(0, region, &path, CaptureFormat::WebP, 90, false);
+    let result = take_screenshot(request(Some(region), path, CaptureFormat::WebP, 90));
 
-    let Some(saved_path) = assert_or_skip("test_region_screenshot_webp", result) else {
+    let Some(res) = assert_or_skip("test_region_screenshot_webp", result) else {
         return;
     };
-    assert!(saved_path.exists());
-    let metadata = std::fs::metadata(&saved_path).unwrap();
+    assert!(res.saved_path.exists());
+    let metadata = std::fs::metadata(&res.saved_path).unwrap();
     assert!(metadata.len() > 0);
 }

@@ -18,7 +18,7 @@
 #include "ClickTap.h"
 #include "Logger.h"
 #include "Shortcuts.h"
-#include "snapforge_ffi.h"
+#include "SnapforgeClient.h"
 #ifdef Q_OS_MAC
 #include "WorkspaceSleepObserver.h"
 #include "SpaceChangeObserver.h"
@@ -258,12 +258,12 @@ static void rustLogCallback(int level, const char *msg) noexcept {
     if (!msg) return;
     QtMsgType qtLevel;
     switch (level) {
-        case SNAPFORGE_LOG_TRACE:
-        case SNAPFORGE_LOG_DEBUG: qtLevel = QtDebugMsg;    break;
-        case SNAPFORGE_LOG_INFO:  qtLevel = QtInfoMsg;     break;
-        case SNAPFORGE_LOG_WARN:  qtLevel = QtWarningMsg;  break;
-        case SNAPFORGE_LOG_ERROR: qtLevel = QtCriticalMsg; break;
-        default:                  qtLevel = QtInfoMsg;     break;
+        case sf::LogTrace:
+        case sf::LogDebug: qtLevel = QtDebugMsg;    break;
+        case sf::LogInfo:  qtLevel = QtInfoMsg;     break;
+        case sf::LogWarn:  qtLevel = QtWarningMsg;  break;
+        case sf::LogError: qtLevel = QtCriticalMsg; break;
+        default:           qtLevel = QtInfoMsg;     break;
     }
     Logger::instance()->log(qtLevel, QStringLiteral("rust"),
                             QString::fromUtf8(msg));
@@ -308,9 +308,8 @@ static void saveImage(const QImage &img) {
     if (g_prefsRef && !g_prefsRef->saveDirectory().isEmpty()) {
         dir = g_prefsRef->saveDirectory();
     } else {
-        char *saveDir = snapforge_default_save_path();
-        dir = saveDir ? QString::fromUtf8(saveDir) : QDir::homePath() + "/Pictures/Snapforge";
-        if (saveDir) snapforge_free_string(saveDir);
+        const QString saveDir = sf::defaultSavePath();
+        dir = !saveDir.isEmpty() ? saveDir : QDir::homePath() + "/Pictures/Snapforge";
     }
 
     // Fix #16: if the directory doesn't exist, try to create it. We skip the
@@ -340,20 +339,18 @@ static void saveImage(const QImage &img) {
     // We pass the Qt-composited RGBA bytes verbatim — same input the
     // deprecated snapforge_save_image used to take.
     static const char *kFmtNames[] = { "png", "jpg", "webp" };
-    QJsonObject req;
-    req[QStringLiteral("output_path")] = path;
-    req[QStringLiteral("format")] = QString::fromLatin1(kFmtNames[qBound(0, fmt, 2)]);
-    req[QStringLiteral("quality")] = quality;
-    req[QStringLiteral("copy_to_clipboard")] = false; // copyImage handles that separately
-    req[QStringLiteral("add_to_history")] = true;
-    QByteArray reqBytes = QJsonDocument(req).toJson(QJsonDocument::Compact);
+    sf::SaveReq req;
+    req.outputPath = path;
+    req.format = QString::fromLatin1(kFmtNames[qBound(0, fmt, 2)]);
+    req.quality = quality;
+    req.copyToClipboard = false; // copyImage handles that separately
+    req.addToHistory = true;
 
-    char *resJson = snapforge_save_prerendered(rgba.constBits(),
-                                               static_cast<size_t>(rgba.sizeInBytes()),
-                                               rgba.width(), rgba.height(),
-                                               reqBytes.constData());
-    if (resJson) {
-        snapforge_free_string(resJson);
+    const std::optional<QString> saved =
+        sf::savePrerendered(rgba.constBits(),
+                            static_cast<size_t>(rgba.sizeInBytes()),
+                            rgba.width(), rgba.height(), req);
+    if (saved) {
         qDebug("Saved: %s", qPrintable(path));
 
         // Show notification if enabled
@@ -366,11 +363,7 @@ static void saveImage(const QImage &img) {
             }
         }
     } else {
-        QString errDetail;
-        if (char *err = snapforge_app_last_error()) {
-            errDetail = QString::fromUtf8(err);
-            snapforge_free_string(err);
-        }
+        const QString errDetail = sf::lastError();
         auto *tray = qobject_cast<QSystemTrayIcon *>(
             qApp->property("systemTray").value<QObject *>());
         if (tray) {
@@ -378,7 +371,7 @@ static void saveImage(const QImage &img) {
                               "Could not write " + filename + " (disk full or permission denied?)",
                               QSystemTrayIcon::Warning, 5000);
         }
-        qWarning("Save failed: snapforge_save_prerendered returned NULL for %s: %s",
+        qWarning("Save failed: savePrerendered failed for %s: %s",
                  qPrintable(path), qPrintable(errDetail));
     }
 }
@@ -387,25 +380,22 @@ static void copyImage(const QImage &img) {
     if (img.isNull()) return;
     QImage rgba = img.convertToFormat(QImage::Format_RGBA8888);
 
-    // Clipboard-only: omit output_path so the use case skips encode + write
-    // + history and only touches NSPasteboard.
-    QJsonObject req;
-    req[QStringLiteral("copy_to_clipboard")] = true;
-    QByteArray reqBytes = QJsonDocument(req).toJson(QJsonDocument::Compact);
-    char *resJson = snapforge_save_prerendered(rgba.constBits(),
-                                               static_cast<size_t>(rgba.sizeInBytes()),
-                                               rgba.width(), rgba.height(),
-                                               reqBytes.constData());
-    if (resJson) {
-        snapforge_free_string(resJson);
+    // Clipboard-only: leave outputPath empty so the use case skips encode +
+    // write + history and only touches NSPasteboard.
+    sf::SaveReq req;
+    req.copyToClipboard = true;
+    const std::optional<QString> res =
+        sf::savePrerendered(rgba.constBits(),
+                            static_cast<size_t>(rgba.sizeInBytes()),
+                            rgba.width(), rgba.height(), req);
+    if (res) {
         qDebug("Copied to clipboard");
     } else {
-        if (char *err = snapforge_app_last_error()) {
-            qWarning("Clipboard copy failed: %s", err);
-            snapforge_free_string(err);
-        } else {
+        const QString err = sf::lastError();
+        if (!err.isEmpty())
+            qWarning("Clipboard copy failed: %s", qUtf8Printable(err));
+        else
             qWarning("Clipboard copy failed");
-        }
     }
 }
 
@@ -420,7 +410,7 @@ int main(int argc, char *argv[]) {
 
     // Route Rust `tracing` diagnostics into the same log file. Done right after
     // Logger::install so any Rust call below (permission check, etc.) is logged.
-    snapforge_set_log_callback(rustLogCallback);
+    sf::setLogCallback(rustLogCallback);
 
     QApplication app(argc, argv);
     app.setApplicationName("Snapforge");
@@ -457,8 +447,8 @@ int main(int argc, char *argv[]) {
 #endif
 
     // Request permission if needed
-    if (!snapforge_has_permission()) {
-        snapforge_request_permission();
+    if (!sf::hasPermission()) {
+        sf::requestPermission();
     }
 
     // Pre-create overlay and warm up the window server registration
@@ -499,9 +489,8 @@ int main(int argc, char *argv[]) {
     // Connect recording requested from overlay
     QObject::connect(&overlay, &OverlayWindow::recordingRequested,
                      [&](int display, QRect region) {
-        char *saveDir = snapforge_default_save_path();
-        QString dir = saveDir ? QString::fromUtf8(saveDir) : QDir::homePath() + "/Movies/Snapforge";
-        if (saveDir) snapforge_free_string(saveDir);
+        const QString saveDir = sf::defaultSavePath();
+        QString dir = !saveDir.isEmpty() ? saveDir : QDir::homePath() + "/Movies/Snapforge";
         recording.startRecording(display, region, dir);
     });
     g_recording = &recording;

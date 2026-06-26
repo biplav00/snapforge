@@ -11,7 +11,7 @@
 #include <chrono>
 #include <cstdlib>
 
-#include "snapforge_ffi.h"
+#include "SnapforgeClient.h"
 
 RecordingManager::RecordingManager(QObject *parent)
     : QObject(parent)
@@ -39,8 +39,9 @@ RecordingManager::~RecordingManager()
     std::future<void> doneFuture = donePromise->get_future();
 
     std::thread worker([handle, donePromise]() {
-        snapforge_record_stop(handle);
-        snapforge_record_free_handle(handle);
+        sf::RecHandle h{handle};
+        sf::recordStop(h);
+        sf::recordFreeHandle(h);
         donePromise->set_value();
     });
 
@@ -97,7 +98,7 @@ void RecordingManager::pauseRecording()
 {
     void *h = m_handle.load();
     if (!h || m_paused) return;
-    if (snapforge_record_pause(h) != 0) {
+    if (!sf::recordPause(sf::RecHandle{h})) {
         // Non-fatal: the handle stays alive and the recording continues, so
         // surface a warning instead of recordingError (which resets the UI
         // to idle and hides the stop control while we're still recording).
@@ -117,7 +118,7 @@ void RecordingManager::resumeRecording()
 {
     void *h = m_handle.load();
     if (!h || !m_paused) return;
-    if (snapforge_record_resume(h) != 0) {
+    if (!sf::recordResume(sf::RecHandle{h})) {
         // Non-fatal: still paused but the recording session is alive — see
         // pauseRecording above.
         emit recordingWarning(QStringLiteral("Failed to resume recording"));
@@ -141,9 +142,9 @@ void RecordingManager::reloadPrefs()
     m_prefFps     = 30;
     m_prefQuality = QStringLiteral("medium");
 
-    if (char *cfgJson = snapforge_config_load()) {
-        QJsonDocument doc = QJsonDocument::fromJson(QByteArray(cfgJson));
-        snapforge_free_string(cfgJson);
+    QByteArray cfg = sf::configLoadJson();
+    if (!cfg.isEmpty()) {
+        QJsonDocument doc = QJsonDocument::fromJson(cfg);
         QJsonObject rec = doc.object().value(QStringLiteral("recording")).toObject();
         // Rust serializes enums as unit variants ("Mp4"/"Gif", "Low"/"Medium"/"High").
         QString recFmt = rec.value(QStringLiteral("format")).toString();
@@ -184,40 +185,35 @@ void RecordingManager::startRecording(int display, QRect region, QString outputD
     QString timestamp = QDateTime::currentDateTime().toString(QStringLiteral("yyyy-MM-dd_HH-mm-ss"));
     m_outputPath = outputDir + QStringLiteral("/recording_") + timestamp + QStringLiteral(".") + fmt;
 
-    // Build JSON config
-    QJsonObject config;
-    config[QStringLiteral("display")] = display;
-    config[QStringLiteral("output_path")] = m_outputPath;
-    config[QStringLiteral("format")] = fmt;
-    config[QStringLiteral("fps")] = fps;
-    config[QStringLiteral("quality")] = quality;
-    config[QStringLiteral("ffmpeg_path")] = QJsonValue::Null;
-
+    // Build the typed request; the client serializes the JSON internally.
+    sf::RecordReq req;
+    req.display    = static_cast<uint32_t>(display);
+    req.outputPath = m_outputPath;
+    req.format     = fmt;
+    req.fps        = static_cast<uint32_t>(fps);
+    req.quality    = quality;
+    // ffmpegPath left as nullopt -> the client emits a null ffmpeg_path, same
+    // as the old QJsonValue::Null we passed.
     if (!region.isNull()) {
-        QJsonObject regionObj;
-        regionObj[QStringLiteral("x")] = region.x();
-        regionObj[QStringLiteral("y")] = region.y();
-        regionObj[QStringLiteral("width")] = region.width();
-        regionObj[QStringLiteral("height")] = region.height();
-        config[QStringLiteral("region")] = regionObj;
-    } else {
-        config[QStringLiteral("region")] = QJsonValue::Null;
+        req.region = sf::Region{
+            region.x(),
+            region.y(),
+            static_cast<uint32_t>(region.width()),
+            static_cast<uint32_t>(region.height()),
+        };
     }
-
-    // Use-case FFI handles history indexing on successful stop. Qt still does
-    // its own existence/incomplete-mp4 sanity checks below so the user gets a
+    // Use-case handles history indexing on successful stop. Qt still does its
+    // own existence/incomplete-mp4 sanity checks below so the user gets a
     // specific error message instead of a silent skip.
-    config[QStringLiteral("add_to_history_on_stop")] = true;
+    req.addToHistoryOnStop = true;
 
-    QByteArray jsonBytes = QJsonDocument(config).toJson(QJsonDocument::Compact);
-
-    void *newHandle = snapforge_record_start(jsonBytes.constData());
-    m_handle.store(newHandle);
-    if (!newHandle) {
+    sf::RecHandle newHandle = sf::recordStart(req);
+    m_handle.store(newHandle.p);
+    if (!newHandle.valid()) {
         QString detail = QStringLiteral("Failed to start recording");
-        if (char *errMsg = snapforge_app_last_error()) {
-            detail = QStringLiteral("Recording failed: %1").arg(QString::fromUtf8(errMsg));
-            snapforge_free_string(errMsg);
+        QString err = sf::lastError();
+        if (!err.isEmpty()) {
+            detail = QStringLiteral("Recording failed: %1").arg(err);
         }
         emit recordingError(detail);
         return;
@@ -249,14 +245,14 @@ void RecordingManager::stopRecording()
     // add_to_history_on_stop in startRecording). Qt still validates the file
     // afterward so the user sees a clear error if disk-full / truncation
     // produced an unusable output.
-    int rc = snapforge_record_stop(h);
-    snapforge_record_free_handle(h);
+    const bool ok = sf::recordStop(sf::RecHandle{h});
+    sf::recordFreeHandle(sf::RecHandle{h});
 
-    if (rc != 0) {
+    if (!ok) {
         QString detail = QStringLiteral("Recording failed during finalization");
-        if (char *errMsg = snapforge_app_last_error()) {
-            detail = QStringLiteral("Recording failed: %1").arg(QString::fromUtf8(errMsg));
-            snapforge_free_string(errMsg);
+        QString err = sf::lastError();
+        if (!err.isEmpty()) {
+            detail = QStringLiteral("Recording failed: %1").arg(err);
         }
         qCritical("Recording finalize failed: %s", qUtf8Printable(detail));
         emit recordingError(detail);
@@ -271,7 +267,7 @@ void RecordingManager::stopRecording()
         emit recordingError(QStringLiteral("Recording output is empty or missing (disk full?)"));
         return;
     }
-    if (snapforge_is_incomplete_mp4(m_outputPath.toUtf8().constData()) == 1) {
+    if (sf::isIncompleteMp4(m_outputPath)) {
         emit recordingError(QStringLiteral("Recording output is corrupt (missing moov atom)"));
         return;
     }

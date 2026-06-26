@@ -4,6 +4,8 @@
 #include <QObject>
 #include <QPoint>
 
+#include "SnapforgeClient.h"
+
 // Platform-agnostic global mouse-down listener. Wraps the
 // snapforge_clicks_* use-case FFI (which owns the platform-specific event
 // tap inside snapforge-app). Emits clicked() on the Qt main thread for
@@ -38,7 +40,7 @@ private:
     static void onClickStatic(double x, double y, int rightClick,
                               void *userData);
 
-    void *m_handle = nullptr;
+    sf::ClickHandle m_handle;
 };
 
 #endif // CLICKTAP_H

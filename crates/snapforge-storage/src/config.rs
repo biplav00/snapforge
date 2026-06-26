@@ -12,18 +12,27 @@ pub enum ConfigError {
     Parse(#[from] serde_json::Error),
 }
 
+// Serializes as the variant name ("Mp4"/"Gif", "Low"/"Medium"/"High") — the
+// representation already on disk and in the Qt config bridge. The `alias`
+// attributes also accept the lowercase spellings the recording request JSON
+// sends, so the two wire paths share one serde definition and can't drift.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub enum RecordingFormat {
     #[default]
+    #[serde(alias = "mp4")]
     Mp4,
+    #[serde(alias = "gif")]
     Gif,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub enum RecordingQuality {
+    #[serde(alias = "low")]
     Low,
     #[default]
+    #[serde(alias = "medium")]
     Medium,
+    #[serde(alias = "high")]
     High,
 }
 

@@ -1,6 +1,6 @@
 #include "AnnotationCanvas.h"
 #include "AnnotationRenderer.h"
-#include "snapforge_ffi.h"
+#include "SnapforgeClient.h"
 
 #include <QPainter>
 #include <QPaintEvent>
@@ -113,7 +113,7 @@ double AnnotationCanvas::effectiveDpr() const {
         dpr = scr->devicePixelRatio();
     }
     if (dpr <= 0.0) {
-        dpr = snapforge_display_scale_factor();
+        dpr = sf::displayScaleFactor();
     }
     return dpr > 0.0 ? dpr : 1.0;
 }

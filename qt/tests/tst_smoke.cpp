@@ -7,7 +7,7 @@
 // exercises the FFI <-> JSON <-> Qt boundary end to end.
 //
 // A second test attempts a real headless capture probe but is GATED on
-// SNAPFORGE_REQUIRE_DISPLAY, mirroring crates/snapforge-core/tests/integration.rs:
+// SNAPFORGE_REQUIRE_DISPLAY, mirroring crates/snapforge-app/tests/integration.rs:
 // unset (the CI default) -> QSKIP; set -> the start must actually succeed.
 //
 // NOTE: this test is deliberately READ-ONLY against the user's config. It never

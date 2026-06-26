@@ -26,7 +26,7 @@
 #include <QScrollBar>
 #include <QUrl>
 
-#include "snapforge_ffi.h"
+#include "SnapforgeClient.h"
 #include "Logger.h"
 
 // ===========================================================================
@@ -856,7 +856,7 @@ QWidget *PreferencesWindow::buildPermissionsTab()
     connect(m_screenRecRequestBtn, &QPushButton::clicked, this, [this]() {
         // Triggers the system prompt the first time; subsequent calls are
         // no-ops at the OS level (the platform only asks once per bundle).
-        snapforge_request_permission();
+        sf::requestPermission();
         refreshPermissionStatus();
     });
 
@@ -917,7 +917,7 @@ QWidget *PreferencesWindow::buildPermissionsTab()
 void PreferencesWindow::refreshPermissionStatus()
 {
     if (!m_screenRecStatusBadge) return;
-    const bool granted = snapforge_has_permission() == 1;
+    const bool granted = sf::hasPermission();
     if (granted) {
         m_screenRecStatusBadge->setText(QStringLiteral("Granted"));
         m_screenRecStatusBadge->setStyleSheet(QStringLiteral(
@@ -1267,14 +1267,11 @@ void PreferencesWindow::applyTheme()
 
 void PreferencesWindow::loadConfig()
 {
-    char *raw = snapforge_config_load();
-    if (!raw) {
+    QByteArray jsonBytes = sf::configLoadJson();
+    if (jsonBytes.isEmpty()) {
         m_statusLabel->setText(QStringLiteral("Failed to load config."));
         return;
     }
-
-    QByteArray jsonBytes(raw);
-    snapforge_free_string(raw);
 
     QJsonParseError err;
     QJsonDocument doc = QJsonDocument::fromJson(jsonBytes, &err);
@@ -1427,8 +1424,8 @@ void PreferencesWindow::saveConfig()
     obj[QStringLiteral("hotkeys")] = hotkeys;
 
     QByteArray jsonBytes = QJsonDocument(obj).toJson(QJsonDocument::Compact);
-    int result = snapforge_config_save(jsonBytes.constData());
-    if (result == 0) {
+    bool ok = sf::configSave(jsonBytes);
+    if (ok) {
         m_statusLabel->setText(QStringLiteral("Saved."));
         QTimer::singleShot(3000, this, [this]() { m_statusLabel->clear(); });
     } else {

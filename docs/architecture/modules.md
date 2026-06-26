@@ -6,7 +6,7 @@ Authoritative map of every code location. Update when adding/removing modules.
 
 ### Rust crate layout (post Phase 2)
 
-The single old `snapforge-core` crate has been split into focused crates plus a use-case layer. `snapforge-core` is now a thin facade that re-exports its parts for backwards compatibility; new code should depend on the leaf crates or on `snapforge-app`.
+The single old `snapforge-core` crate was split into focused crates plus a use-case layer. The back-compat facade has since been deleted (it was a pass-through whose only consumer was the FFI); code now depends on the leaf crates directly or on `snapforge-app`.
 
 | Crate | Purpose | Key items |
 |-------|---------|-----------|
@@ -14,8 +14,7 @@ The single old `snapforge-core` crate has been split into focused crates plus a 
 | `crates/snapforge-capture` | Screen capture backends + global click tap. | `capture::capture_fullscreen`, `capture::capture_region`, `display_count`, `has/request_permission`, `display_at_point`, `display_scale_factor`, `clicks::macos_tap` (CGEventTap on its own CFRunLoop thread; tracks left + right via the `right_click: bool` field) |
 | `crates/snapforge-encode` | Image and video encoding. | `format::save_image`, `format::encode_image`, `record::ffmpeg::{start_recording, RecordingHandle}`, `record::RecordConfig` |
 | `crates/snapforge-storage` | Persistent I/O — config, clipboard, history. | `clipboard::copy_image_to_clipboard`, `config::AppConfig`, `history::ScreenshotHistory`, `history::is_incomplete_mp4` |
-| `crates/snapforge-core` | Facade that re-exports the above. Kept for in-tree call sites that haven't been migrated yet. | re-exports + convenience `screenshot_fullscreen` / `screenshot_region` |
-| `crates/snapforge-app` | High-level use cases — orchestrate the leaf crates into single end-to-end operations. **This is what `snapforge-ffi` wraps.** | `screenshot::{take_screenshot, save_prerendered}`, `recording::{start_recording, stop_recording, pause_recording, resume_recording, RecordingHandle}`, `clicks::start_click_tracking` (forwarder thread polls the capture tracker at ~60Hz), `AppError` |
+| `crates/snapforge-app` | High-level use cases — orchestrate the leaf crates into single end-to-end operations. **This is what `snapforge-ffi` wraps.** | `screenshot::{take_screenshot, save_prerendered}`, `recording::{start_recording, stop_recording, pause_recording, resume_recording, RecordingHandle}`, `clicks::start_click_tracking` (forwarder thread blocks on the capture tracker's event-sink channel — no polling), `AppError`. The `*Request` DTOs (`ScreenshotRequest`, `SavePrerenderedRequest`, `RecordingRequest`) are the **canonical serde schema** the FFI deserializes JSON straight into — one definition of every field, default, and enum spelling. |
 
 ### `crates/snapforge-ffi`
 
@@ -41,6 +40,7 @@ Grouped subfolders. Restructure Phase 1 + Phase 1 part 2 (tray + recording contr
 |------|---------|
 | `app/main.cpp` | App entry, DI, hotkey registration, top-level object lifetimes. ~560 LOC — no more icon drawing, menu builders, or recording-signal slot bodies inline (down from ~849 LOC pre-Phase-1). |
 | `infra/Logger.{h,cpp}` | App-wide log buffer surfaced in Preferences → Logs tab |
+| `infra/SnapforgeClient.{h,cpp}` | The Qt-side **FFI seam adapter** — the only TU that `#include`s `snapforge_ffi.h`. Exposes typed `sf::` calls (`takeScreenshot`, `recordStart`, `clicksStart`, `configLoadJson`, …) that hide JSON assembly, `snapforge_app_last_error()` retrieval, and string/buffer freeing. `SnapforgeClientFake.cpp` (+ `SnapforgeClientTesting.h`) is a second adapter swapped in at **link time** for tests — no real FFI, display, or TCC grant. Adoption is **complete** — every Qt consumer (`main.cpp`, `OverlayWindow`, `RecordingManager`, `PreferencesWindow`, `HistoryWindow`, `ClickTap`, `Shortcuts`, `AnnotationCanvas`) goes through `sf::`, and `SnapforgeClient.cpp` is the only translation unit that `#include`s `snapforge_ffi.h`. Fake-backed tests: `tst_clicktap`, `tst_recordingmanager`, `tst_preferences`; real-adapter tests: `tst_snapforgeclient`, `tst_smoke`. See `CONTEXT.md`. |
 
 ### Capture surface (`src/capture/`, `src/ui/overlay/`)
 
@@ -82,7 +82,7 @@ Self-contained. Used after a screenshot before save.
 | File | Purpose |
 |------|---------|
 | `controllers/RecordingController.{h,cpp}` | Wires `RecordingManager`'s `recordingStarted/Stopped/Paused/Resumed/Error/elapsedChanged` signals to tray state, click overlay + click-tap toggling, clipboard-copy-on-stop of the finished file URL, and the deferred `QMessageBox` error modal. Constructed in main with refs to `RecordingManager`, `TrayIcon`, `ClickIndicatorOverlay`, `ClickTap` (all platforms), and `PreferencesWindow`. |
-| `controllers/ClickTap.{h,cpp}` | Platform-agnostic global mouse-down listener. Thin wrapper around the `snapforge_clicks_*` use-case FFI — the platform tap lives in `snapforge-app`/`snapforge-core`. Re-dispatches the FFI callback (Rust-owned thread) to the Qt main thread via `QMetaObject::invokeMethod`. Emits `clicked(QPoint, bool rightClick)`. Replaces the previous macOS-only `ClickEventTap.{h,mm}` (Phase 2C). |
+| `controllers/ClickTap.{h,cpp}` | Platform-agnostic global mouse-down listener. Calls the clicks use case through `SnapforgeClient` (`sf::clicksStart/Stop/FreeHandle`) rather than raw FFI — so it's unit-testable against the fake (`tst_clicktap`) — the platform tap lives in `snapforge-capture::clicks`. Re-dispatches the FFI callback (Rust-owned thread) to the Qt main thread via `QMetaObject::invokeMethod`. Emits `clicked(QPoint, bool rightClick)`. Replaces the previous macOS-only `ClickEventTap.{h,mm}` (Phase 2C). |
 
 ### Click visualizer (`src/ui/overlay/`)
 

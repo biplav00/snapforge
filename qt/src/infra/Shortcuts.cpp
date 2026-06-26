@@ -5,7 +5,7 @@
 #include <QHash>
 #include <QKeySequence>
 
-#include "snapforge_ffi.h"
+#include "SnapforgeClient.h"
 
 #ifdef Q_OS_MAC
 #include <Carbon/Carbon.h>
@@ -24,11 +24,9 @@ static QString defaultChordFor(const QString &actionKey) {
 // Stored chord for hotkeys.<section>.<actionKey>, or empty if the config is
 // missing/unparseable or the row was never saved.
 static QString storedChord(const QString &section, const QString &actionKey) {
-    char *raw = snapforge_config_load();
-    if (!raw)
+    QByteArray bytes = sf::configLoadJson();
+    if (bytes.isEmpty())
         return {};
-    QByteArray bytes(raw);
-    snapforge_free_string(raw);
 
     QJsonParseError err{};
     QJsonDocument doc = QJsonDocument::fromJson(bytes, &err);

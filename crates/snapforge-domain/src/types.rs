@@ -6,11 +6,19 @@ pub struct Rect {
     pub height: u32,
 }
 
+// Serializes as the variant name ("Png"/"Jpg"/"WebP"), which is what the
+// on-disk config and the Qt config bridge persist. The `alias` attributes let
+// deserialization also accept the lowercase spellings the screenshot/record
+// request JSON uses, so a single serde definition covers both wire paths and
+// the two spellings can no longer drift apart.
 #[derive(Debug, Clone, Copy, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum CaptureFormat {
     #[default]
+    #[serde(alias = "png")]
     Png,
+    #[serde(alias = "jpg", alias = "jpeg")]
     Jpg,
+    #[serde(alias = "webp")]
     WebP,
 }
 

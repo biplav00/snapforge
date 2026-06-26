@@ -1,8 +1,9 @@
 //! Click-tracking use case.
 //!
 //! Wraps the macOS `ClickTracker` event tap and exposes a closure-based API
-//! that fires on every global mouse click. Internally a forwarder thread
-//! polls the tracker's queue and invokes the user-supplied callback.
+//! that fires on every global mouse click. The tracker pushes each click into
+//! a channel as it happens; a forwarder thread blocks on that channel and
+//! invokes the user-supplied callback — no polling, no dedup watermark.
 //!
 //! ## Threading
 //!
@@ -15,10 +16,8 @@ use snapforge_capture::clicks::ClickTracker;
 #[cfg(target_os = "macos")]
 use snapforge_capture::clicks::MacOSClickTapHandle;
 
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::mpsc;
 use std::thread;
-use std::time::{Duration, Instant};
 
 use crate::AppError;
 
@@ -34,21 +33,27 @@ pub struct ClickEvent {
 
 /// Opaque handle. Drop to stop the event tap and join the forwarder thread.
 pub struct ClickHandle {
-    stop: Arc<AtomicBool>,
     forwarder: Option<thread::JoinHandle<()>>,
     // The tap handle drops the underlying CGEventTap; keep it alive for the
-    // lifetime of the use case. Only present on macOS.
+    // lifetime of the use case, and drop it explicitly in `Drop` to close the
+    // event channel. Only present on macOS.
     #[cfg(target_os = "macos")]
-    _tap: Option<MacOSClickTapHandle>,
+    tap: Option<MacOSClickTapHandle>,
 }
 
 impl Drop for ClickHandle {
     fn drop(&mut self) {
-        self.stop.store(true, Ordering::SeqCst);
+        // Drop the tap FIRST. It holds the last `ClickTracker` clone, so
+        // tearing it down releases the event Sender, which disconnects the
+        // channel and lets the forwarder's blocking `recv()` return. Joining
+        // before this would deadlock the forwarder against a live channel.
+        #[cfg(target_os = "macos")]
+        {
+            self.tap.take();
+        }
         if let Some(j) = self.forwarder.take() {
             let _ = j.join();
         }
-        // _tap drops here, which disables the CGEventTap and joins its thread.
     }
 }
 
@@ -66,6 +71,12 @@ where
     F: Fn(ClickEvent) + Send + 'static,
 {
     let tracker = ClickTracker::new();
+    // Each click is pushed onto this channel by `ClickTracker::add` (called
+    // from the tap's run-loop thread). The Sender lives inside the tracker,
+    // shared by its clones — chiefly the one the macOS tap owns — so the
+    // channel stays open exactly as long as the tap does.
+    let (tx, rx) = mpsc::channel::<snapforge_capture::clicks::ClickEvent>();
+    tracker.set_sink(tx);
 
     #[cfg(target_os = "macos")]
     let tap = tracker.start_macos_tap().ok_or_else(|| {
@@ -74,50 +85,34 @@ where
         )
     })?;
 
-    let stop = Arc::new(AtomicBool::new(false));
-    let stop_thread = Arc::clone(&stop);
-    let tracker_thread = tracker.clone();
-
     let forwarder = thread::Builder::new()
         .name("snapforge-click-forwarder".into())
         .spawn(move || {
-            // Watermark of the last event we've already forwarded, so we don't
-            // re-emit a click on every poll. `Instant` is monotonic, which is
-            // exactly what we want for a "have I seen this yet" check.
-            let mut last_seen: Option<Instant> = None;
-            let mut buf: Vec<snapforge_capture::clicks::ClickEvent> = Vec::with_capacity(32);
-            while !stop_thread.load(Ordering::SeqCst) {
-                // Look back over the last second — events older than that are
-                // ones the tracker would drop anyway, and we only care about
-                // brand-new ones (filtered by `last_seen`).
-                tracker_thread.recent_into(1000, &mut buf);
-                for ev in &buf {
-                    if last_seen.is_none_or(|t| ev.timestamp > t) {
-                        callback(ClickEvent {
-                            x: ev.x,
-                            y: ev.y,
-                            right_click: ev.right_click,
-                        });
-                        last_seen = Some(ev.timestamp);
-                    }
-                }
-                thread::sleep(Duration::from_millis(16));
+            // Block until each click arrives — event-driven, no poll loop and
+            // no dedup watermark. The loop ends when the last Sender drops
+            // (tap teardown), which disconnects the channel.
+            while let Ok(ev) = rx.recv() {
+                callback(ClickEvent {
+                    x: ev.x,
+                    y: ev.y,
+                    right_click: ev.right_click,
+                });
             }
         })
         .map_err(|e| AppError::InvalidRequest(format!("failed to spawn forwarder: {}", e)))?;
 
     Ok(ClickHandle {
-        stop,
         forwarder: Some(forwarder),
         #[cfg(target_os = "macos")]
-        _tap: Some(tap),
+        tap: Some(tap),
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
+    use std::sync::{Arc, Mutex};
+    use std::time::Duration;
 
     #[ignore = "real event tap needs Accessibility permission; not available in CI/sandbox"]
     #[test]

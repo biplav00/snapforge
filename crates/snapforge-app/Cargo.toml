@@ -10,6 +10,7 @@ snapforge-capture = { path = "../snapforge-capture" }
 snapforge-encode = { path = "../snapforge-encode" }
 snapforge-storage = { path = "../snapforge-storage" }
 image = { version = "0.25", default-features = false }
+serde = { version = "1", features = ["derive"] }
 thiserror = "2"
 
 [lints]
@@ -17,4 +18,5 @@ workspace = true
 
 [dev-dependencies]
 tempfile = "3"
-image = { version = "0.25", default-features = false, features = ["png"] }
+serde_json = "1"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }

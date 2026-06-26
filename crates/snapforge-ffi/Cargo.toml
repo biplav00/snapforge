@@ -10,7 +10,10 @@ publish = false
 crate-type = ["staticlib", "rlib"]
 
 [dependencies]
-snapforge-core = { path = "../snapforge-core" }
+snapforge-domain = { path = "../snapforge-domain" }
+snapforge-capture = { path = "../snapforge-capture" }
+snapforge-encode = { path = "../snapforge-encode" }
+snapforge-storage = { path = "../snapforge-storage" }
 snapforge-app = { path = "../snapforge-app" }
 image = { version = "0.25", default-features = false, features = ["png"] }
 serde_json = "1"
