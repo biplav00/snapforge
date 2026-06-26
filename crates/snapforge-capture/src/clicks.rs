@@ -3,7 +3,7 @@
 //! Captures global mouse click events via CGEventTap on macOS.
 //! Maintains a queue of recent clicks that can be composited into recording frames.
 
-use std::sync::{Arc, Mutex};
+use std::sync::{mpsc, Arc, Mutex};
 use std::time::Instant;
 
 #[derive(Debug, Clone, Copy)]
@@ -19,31 +19,59 @@ pub struct ClickEvent {
 }
 
 /// Thread-safe queue of recent click events.
+///
+/// Two consumers read from a tracker: the recording frame compositor polls
+/// [`recent_into`](Self::recent_into) (it samples the most-recent clicks every
+/// frame), while an event-driven consumer can install a [sink](Self::set_sink)
+/// to be pushed each click as it happens. The bounded `Vec` always retains the
+/// last 64 clicks regardless of whether a sink is attached.
 #[derive(Clone, Default)]
 pub struct ClickTracker {
     clicks: Arc<Mutex<Vec<ClickEvent>>>,
+    /// Optional event sink: when set, every `add` also forwards the click here.
+    /// Shared across clones so the macOS tap's clone feeds the same channel.
+    sink: Arc<Mutex<Option<mpsc::Sender<ClickEvent>>>>,
 }
 
 impl ClickTracker {
     pub fn new() -> Self {
         Self {
             clicks: Arc::new(Mutex::new(Vec::new())),
+            sink: Arc::new(Mutex::new(None)),
         }
     }
 
-    /// Add a click to the queue.
+    /// Install (or replace) an event sink. Every subsequent [`add`](Self::add)
+    /// also sends the click to `tx`, letting a consumer react as events arrive
+    /// instead of polling. A disconnected receiver simply drops events — the
+    /// bounded queue still caps memory.
+    pub fn set_sink(&self, tx: mpsc::Sender<ClickEvent>) {
+        if let Ok(mut sink) = self.sink.lock() {
+            *sink = Some(tx);
+        }
+    }
+
+    /// Add a click to the queue (and forward it to the sink, if any).
     pub fn add(&self, x: f64, y: f64, right_click: bool) {
+        let event = ClickEvent {
+            x,
+            y,
+            right_click,
+            timestamp: Instant::now(),
+        };
         if let Ok(mut clicks) = self.clicks.lock() {
-            clicks.push(ClickEvent {
-                x,
-                y,
-                right_click,
-                timestamp: Instant::now(),
-            });
+            clicks.push(event);
             // Keep only the last 64 clicks to bound memory
             if clicks.len() > 64 {
                 let drop = clicks.len() - 64;
                 clicks.drain(0..drop);
+            }
+        }
+        // Forward event-driven. Held briefly and never together with the
+        // `clicks` lock above, so the two can't deadlock.
+        if let Ok(sink) = self.sink.lock() {
+            if let Some(tx) = sink.as_ref() {
+                let _ = tx.send(event);
             }
         }
     }
@@ -113,6 +141,26 @@ mod tests {
         let r = t.recent(10_000);
         assert_eq!(r.len(), 1);
         assert!(r[0].right_click);
+    }
+
+    #[test]
+    fn set_sink_forwards_each_add_and_still_queues() {
+        // Event-driven path: a click is pushed to the sink as it happens, and
+        // the Vec consumer (recording compositor) still sees it too.
+        let t = ClickTracker::new();
+        let (tx, rx) = std::sync::mpsc::channel();
+        t.set_sink(tx);
+        t.add(3.0, 4.0, true);
+        let ev = rx
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .expect("click should be forwarded to the sink");
+        assert_eq!(ev.x, 3.0);
+        assert!(ev.right_click);
+        assert_eq!(
+            t.recent(10_000).len(),
+            1,
+            "Vec consumer still sees the click"
+        );
     }
 
     #[test]
