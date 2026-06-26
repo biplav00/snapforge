@@ -48,16 +48,21 @@ RecordingController::RecordingController(RecordingManager      *recording,
 void RecordingController::onStarted(const QString & /*path*/) {
     m_tray->enterRecordingState(/*paused=*/false);
 
-    if (m_prefs && m_prefs->showClicksEnabled()) {
-        m_clickOverlay->showOverlay();
-        if (m_clickTap && !m_clickTap->start()) {
+    // Click ripples are baked into the recording by the encoder (gated by the
+    // same "show clicks" pref). Showing the on-screen overlay would double-draw
+    // them into the captured video, so we don't. ClickTap is used only to probe
+    // Accessibility permission up front and warn — the encoder's own tap fails
+    // silently otherwise.
+    // ponytail: probe-then-stop; the encoder owns rendering now.
+    if (m_prefs && m_prefs->showClicksEnabled() && m_clickTap) {
+        if (!m_clickTap->start()) {
             m_tray->showMessage(
-                "Snapforge — Click indicator unavailable",
-                "Grant Input Monitoring permission in System Settings → "
+                "Snapforge — Clicks won't show in the recording",
+                "Grant Accessibility permission in System Settings → "
                 "Privacy & Security to show clicks in recordings.",
                 QSystemTrayIcon::Warning, 5000);
-            m_clickOverlay->hideOverlay();
         }
+        m_clickTap->stop();
     }
 }
 

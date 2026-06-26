@@ -85,6 +85,7 @@ struct RecordReq {
     QString quality = QStringLiteral("medium"); // "low"/"medium"/"high"
     std::optional<QString> ffmpegPath;
     bool addToHistoryOnStop = false;
+    bool showClicks = false;  // composite click ripples into the recording
 };
 
 // --- Error channel ----------------------------------------------------------

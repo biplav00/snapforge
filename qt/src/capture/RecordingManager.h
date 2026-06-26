@@ -68,6 +68,7 @@ private:
     QString m_prefFormat  = QStringLiteral("mp4");
     int     m_prefFps     = 30;
     QString m_prefQuality = QStringLiteral("medium");
+    bool    m_prefShowClicks = false;
 };
 
 #endif // RECORDINGMANAGER_H

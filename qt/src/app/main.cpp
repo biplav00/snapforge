@@ -532,11 +532,16 @@ int main(int argc, char *argv[]) {
     // Sync prefs → overlay
     auto syncPrefsToOverlay = [&]() {
         overlay.setRememberRegion(prefs.rememberRegionEnabled());
+        // Restore the remembered region persisted from a previous run.
+        overlay.setLastRegion(prefs.lastRegion());
         // Overlay-local shortcuts (tools/sizes/actions) follow a prefs save
         // just like the global Carbon chords do.
         overlay.reloadKeyBindings();
     };
     QObject::connect(&prefs, &PreferencesWindow::configSaved, syncPrefsToOverlay);
+    // Persist the region whenever a capture commits with "remember region" on.
+    QObject::connect(&overlay, &OverlayWindow::lastRegionChanged,
+                     &prefs, &PreferencesWindow::setLastRegion);
     // M13: when prefs change, re-read recording config into RecordingManager.
     QObject::connect(&prefs, &PreferencesWindow::configSaved,
                      &recording, &RecordingManager::reloadPrefs);

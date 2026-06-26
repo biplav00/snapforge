@@ -668,7 +668,8 @@ impl CaptureContext {
                 config.setWidth(out_w);
                 config.setHeight(out_h);
             }
-            config.setShowsCursor(false);
+            // Recordings show the live cursor; screenshots stay cursor-free.
+            config.setShowsCursor(true);
             config
         };
 

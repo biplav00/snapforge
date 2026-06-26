@@ -141,6 +141,7 @@ void RecordingManager::reloadPrefs()
     m_prefFormat  = QStringLiteral("mp4");
     m_prefFps     = 30;
     m_prefQuality = QStringLiteral("medium");
+    m_prefShowClicks = false;
 
     QByteArray cfg = sf::configLoadJson();
     if (!cfg.isEmpty()) {
@@ -165,6 +166,7 @@ void RecordingManager::reloadPrefs()
         } else if (recQual.compare(QStringLiteral("Medium"), Qt::CaseInsensitive) == 0) {
             m_prefQuality = QStringLiteral("medium");
         }
+        m_prefShowClicks = rec.value(QStringLiteral("show_clicks")).toBool();
     }
     m_prefsLoaded = true;
 }
@@ -192,6 +194,7 @@ void RecordingManager::startRecording(int display, QRect region, QString outputD
     req.format     = fmt;
     req.fps        = static_cast<uint32_t>(fps);
     req.quality    = quality;
+    req.showClicks = m_prefShowClicks;
     // ffmpegPath left as nullopt -> the client emits a null ffmpeg_path, same
     // as the old QJsonValue::Null we passed.
     if (!region.isNull()) {

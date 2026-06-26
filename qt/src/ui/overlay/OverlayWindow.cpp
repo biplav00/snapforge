@@ -373,6 +373,31 @@ void OverlayWindow::activateFullscreen() {
 void OverlayWindow::activateForRecording() {
     m_purpose = Record;
     activateInternal();
+    // If we restored a remembered region, jump straight to the confirm state
+    // with it pre-selected, mirroring the screenshot path's annotate entry.
+    if (m_rememberRegion && (m_startPos != m_endPos)) {
+        QRect sel = selectedRect();
+        if (sel.width() > 5 && sel.height() > 5) {
+            enterRecordSelectMode();
+        }
+    }
+}
+
+// Persist the just-committed region (window-local) so it survives a restart.
+// No-op unless "remember region" is on. Emits lastRegionChanged so main.cpp can
+// write it to config.
+void OverlayWindow::rememberCurrentRegion() {
+    if (!m_rememberRegion) return;
+    m_lastStartPos = m_startPos;
+    m_lastEndPos = m_endPos;
+    emit lastRegionChanged(selectedRect());
+}
+
+void OverlayWindow::setLastRegion(const QRect &region) {
+    if (region.isValid()) {
+        m_lastStartPos = region.topLeft();
+        m_lastEndPos = region.bottomRight();
+    }
 }
 
 QRect OverlayWindow::selectedRect() const {
@@ -670,6 +695,9 @@ void OverlayWindow::emitRecordRegion() {
         return;
     }
 
+    // Persist before exitRecordSelectMode clears the selection.
+    rememberCurrentRegion();
+
     // sel is in WIDGET-LOCAL coords (0-based), and the overlay is sized to
     // exactly one display, so the region is always within that one display —
     // no cross-display span is possible. Use THIS overlay's screen for the DPR.
@@ -773,7 +801,7 @@ void OverlayWindow::handleSave() {
     QImage composited = m_canvas->compositeImage();
     if (composited.isNull()) return;
 
-    if (m_rememberRegion) { m_lastStartPos = m_startPos; m_lastEndPos = m_endPos; }
+    rememberCurrentRegion();
     m_hasRegion = false;
     m_drawing = false;
     exitAnnotateMode();
@@ -790,7 +818,7 @@ void OverlayWindow::handleCopy() {
     QImage composited = m_canvas->compositeImage();
     if (composited.isNull()) return;
 
-    if (m_rememberRegion) { m_lastStartPos = m_startPos; m_lastEndPos = m_endPos; }
+    rememberCurrentRegion();
     m_hasRegion = false;
     m_drawing = false;
     exitAnnotateMode();
@@ -807,7 +835,7 @@ void OverlayWindow::handleSaveAndCopy() {
     QImage composited = m_canvas->compositeImage();
     if (composited.isNull()) return;
 
-    if (m_rememberRegion) { m_lastStartPos = m_startPos; m_lastEndPos = m_endPos; }
+    rememberCurrentRegion();
     m_hasRegion = false;
     m_drawing = false;
     exitAnnotateMode();

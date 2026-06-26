@@ -455,9 +455,13 @@ fn start_recording_macos_bgra(
     let frame_interval = Duration::from_secs_f64(1.0 / config.fps as f64);
     let display = config.display;
 
-    // Click tracking
-    let click_tracker = ClickTracker::new();
-    let _click_tap_handle = click_tracker.start_macos_tap();
+    // Click tracking — only when the "show clicks" pref is on. When off, the
+    // tap is never started and `click_snapshot` stays empty, so the hot-path
+    // below writes captured frames straight through with no overlay.
+    let click_tracker = config.show_clicks.then(ClickTracker::new);
+    let _click_tap_handle = click_tracker
+        .as_ref()
+        .and_then(ClickTracker::start_macos_tap);
 
     // Clicks come in GLOBAL desktop points (CGEventGetLocation); convert to
     // scaled-frame pixels of the TARGET display: translate by the display's
@@ -571,8 +575,11 @@ fn start_recording_macos_bgra(
 
                 // Refresh the click snapshot once per captured frame, not per
                 // output frame. The lock + filter cost is amortized across all
-                // duplicated frames written below.
-                click_tracker.recent_into(CLICK_LIFETIME_MS, &mut click_snapshot);
+                // duplicated frames written below. With no tracker (clicks off)
+                // the snapshot stays empty and the overlay is skipped entirely.
+                if let Some(tracker) = click_tracker.as_ref() {
+                    tracker.recent_into(CLICK_LIFETIME_MS, &mut click_snapshot);
+                }
 
                 let effective_elapsed = start
                     .elapsed()
@@ -1044,6 +1051,7 @@ mod tests {
             fps: 10,
             quality: RecordingQuality::Low,
             ffmpeg_path: None,
+            show_clicks: false,
         }
     }
 
@@ -1140,6 +1148,7 @@ mod tests {
             fps: 10,
             quality: RecordingQuality::Low,
             ffmpeg_path: Some(PathBuf::from("/nonexistent/ffmpeg")),
+            show_clicks: false,
         };
         // This may succeed if system ffmpeg exists, or fail — either is fine
         let _ = start_recording(config);

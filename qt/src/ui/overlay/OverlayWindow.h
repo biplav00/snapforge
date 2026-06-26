@@ -20,6 +20,9 @@ public:
     void activateFullscreen();
     void activateForRecording();
     void setRememberRegion(bool enabled) { m_rememberRegion = enabled; }
+    // Seed the remembered region (restored from config at startup). Window-local
+    // coords of the display it was captured on.
+    void setLastRegion(const QRect &region);
 
     // Re-read the overlay-local shortcuts (hotkeys.tools/sizes/actions in the
     // shared config) and re-parse them into matchable chords. Called at
@@ -38,6 +41,9 @@ signals:
     void cancelled();
     void recordingRequested(int display, QRect region);
     void regionInvalid(QString reason);
+    // Emitted whenever a capture commits while "remember region" is on, so the
+    // region can be persisted to config and survive a restart.
+    void lastRegionChanged(QRect region);
 
 protected:
     void paintEvent(QPaintEvent *event) override;
@@ -76,6 +82,9 @@ private:
     void handleSave();
     void handleCopy();
     void handleSaveAndCopy();
+    // Save the current region into m_last* and emit lastRegionChanged, if the
+    // "remember region" pref is on. Called from every commit path.
+    void rememberCurrentRegion();
     void hideOverlay();
     // Hold/release an application override crosshair for the draw-a-region phase
     // (Select mode, no region yet). Idempotent and driven purely by state, so it
