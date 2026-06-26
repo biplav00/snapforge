@@ -28,7 +28,12 @@ jobs:
         id: ver
         run: |
           set -euo pipefail
-          CURRENT=$(grep -m1 '^version = ' crates/snapforge-core/Cargo.toml | sed -E 's/version = "([^"]+)".*/\1/')
+          # Anchor on the latest release tag — the source of truth for the
+          # shipped version. (Previously read crates/snapforge-core/Cargo.toml,
+          # which was deleted in the snapforge-core facade removal.) checkout
+          # above uses fetch-depth: 0, so all tags are present.
+          CURRENT=$(git describe --tags --abbrev=0 --match 'v*' 2>/dev/null | sed 's/^v//')
+          CURRENT=${CURRENT:-0.0.0}
           IFS='.' read -r MAJOR MINOR PATCH <<<"$CURRENT"
           NEXT="$MAJOR.$MINOR.$((PATCH + 1))"
           echo "current=$CURRENT" >>"$GITHUB_OUTPUT"
@@ -36,22 +41,17 @@ jobs:
           echo "tag=v$NEXT" >>"$GITHUB_OUTPUT"
           echo "Bumping $CURRENT -> $NEXT"
 
-      - name: Bump version in Cargo.toml and CMakeLists.txt
+      - name: Bump version in CMakeLists.txt
         env:
           NEXT: ${{ steps.ver.outputs.next }}
         run: |
           set -euo pipefail
-          sed -i.bak -E "0,/^version = \"[^\"]+\"/{s//version = \"$NEXT\"/}" crates/snapforge-core/Cargo.toml
+          # All three version fields move together (SNAPFORGE_VERSION used to be
+          # left behind, drifting out of sync with the bundle versions/tags).
+          sed -i.bak -E "s/(SNAPFORGE_VERSION \")[^\"]+(\")/\1$NEXT\2/" qt/CMakeLists.txt
           sed -i.bak -E "s/(MACOSX_BUNDLE_BUNDLE_VERSION \")[^\"]+(\")/\1$NEXT\2/" qt/CMakeLists.txt
           sed -i.bak -E "s/(MACOSX_BUNDLE_SHORT_VERSION_STRING \")[^\"]+(\")/\1$NEXT\2/" qt/CMakeLists.txt
-          rm -f crates/snapforge-core/Cargo.toml.bak qt/CMakeLists.txt.bak
-
-      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable as of 2026-03-27
-
-      - name: Sync Cargo.lock
-        env:
-          NEXT: ${{ steps.ver.outputs.next }}
-        run: cargo update -p snapforge-core --precise "$NEXT" --offline || cargo update -p snapforge-core --precise "$NEXT"
+          rm -f qt/CMakeLists.txt.bak
 
       - name: Commit, tag, push
         env:
@@ -60,7 +60,7 @@ jobs:
           set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add crates/snapforge-core/Cargo.toml qt/CMakeLists.txt Cargo.lock
+          git add qt/CMakeLists.txt
           git commit -m "chore(release): v$NEXT"
           git tag "v$NEXT"
           git push origin main "v$NEXT"
