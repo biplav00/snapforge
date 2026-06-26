@@ -3,13 +3,21 @@
 
 use crate::AppError;
 use image::RgbaImage;
+use serde::Deserialize;
 use snapforge_capture::capture;
 use snapforge_domain::{CaptureFormat, Rect};
 use snapforge_encode::format;
 use snapforge_storage::{clipboard, history::ScreenshotHistory};
 use std::path::PathBuf;
 
-#[derive(Debug, Clone)]
+/// The canonical screenshot-request schema. The FFI deserializes its JSON
+/// request straight into this — there is no second hand-written parser, so the
+/// field names, defaults, and enum spellings live in exactly one place.
+/// `#[serde(default)]` makes every field optional in the JSON (a missing
+/// `output_path` deserializes to the empty path and is rejected by
+/// [`take_screenshot`], matching the old behaviour).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
 pub struct ScreenshotRequest {
     pub display: usize,
     /// None = fullscreen capture, Some = capture this rect.
@@ -19,6 +27,20 @@ pub struct ScreenshotRequest {
     pub quality: u8,
     pub copy_to_clipboard: bool,
     pub add_to_history: bool,
+}
+
+impl Default for ScreenshotRequest {
+    fn default() -> Self {
+        Self {
+            display: 0,
+            region: None,
+            output_path: PathBuf::new(),
+            format: CaptureFormat::default(),
+            quality: 90,
+            copy_to_clipboard: false,
+            add_to_history: false,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -69,11 +91,17 @@ pub fn take_screenshot(req: ScreenshotRequest) -> Result<ScreenshotResult, AppEr
 /// pixel bytes (e.g. Qt has rendered annotations on top of a captured
 /// backdrop) and wants to save / copy / index that result. We do **not**
 /// re-capture; the bytes are taken at face value.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
 pub struct SavePrerenderedRequest {
-    /// RGBA8 byte buffer, length must equal `width * height * 4`.
+    /// RGBA8 byte buffer, length must equal `width * height * 4`. Supplied by
+    /// the caller out-of-band (the FFI raw pointer), never from JSON — hence
+    /// `#[serde(skip)]`.
+    #[serde(skip)]
     pub rgba: Vec<u8>,
+    #[serde(skip)]
     pub width: u32,
+    #[serde(skip)]
     pub height: u32,
     /// `None` means clipboard-only — nothing is written to disk and
     /// `add_to_history` is ignored.
@@ -84,6 +112,21 @@ pub struct SavePrerenderedRequest {
     pub copy_to_clipboard: bool,
     /// Only honoured when a file was actually written.
     pub add_to_history: bool,
+}
+
+impl Default for SavePrerenderedRequest {
+    fn default() -> Self {
+        Self {
+            rgba: Vec::new(),
+            width: 0,
+            height: 0,
+            output_path: None,
+            format: CaptureFormat::default(),
+            quality: 90,
+            copy_to_clipboard: false,
+            add_to_history: false,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -140,6 +183,39 @@ pub fn save_prerendered(req: SavePrerenderedRequest) -> Result<SavePrerenderedRe
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn deserializes_lowercase_and_pascalcase_format_to_same_value() {
+        // The drift fix: the request path historically sent "webp" while the
+        // config path sends "WebP". One serde schema must accept both and land
+        // on the same variant.
+        let lower: ScreenshotRequest =
+            serde_json::from_str(r#"{"output_path":"/tmp/x.png","format":"webp"}"#).unwrap();
+        let pascal: ScreenshotRequest =
+            serde_json::from_str(r#"{"output_path":"/tmp/x.png","format":"WebP"}"#).unwrap();
+        assert_eq!(lower.format, CaptureFormat::WebP);
+        assert_eq!(pascal.format, CaptureFormat::WebP);
+    }
+
+    #[test]
+    fn deserialize_defaults_missing_fields() {
+        // A bare request fills the documented defaults (quality 90, png, etc.).
+        let req: ScreenshotRequest = serde_json::from_str(r#"{"display":2}"#).unwrap();
+        assert_eq!(req.display, 2);
+        assert_eq!(req.quality, 90);
+        assert_eq!(req.format, CaptureFormat::Png);
+        assert!(req.region.is_none());
+        assert!(!req.copy_to_clipboard);
+    }
+
+    #[test]
+    fn deserialize_rejects_unknown_format() {
+        // An unrecognised spelling is now a hard error surfaced to the caller,
+        // not a silent fallback to Png.
+        let r: Result<ScreenshotRequest, _> =
+            serde_json::from_str(r#"{"output_path":"/tmp/x.png","format":"tiff"}"#);
+        assert!(r.is_err());
+    }
 
     #[test]
     fn rejects_empty_output_path() {

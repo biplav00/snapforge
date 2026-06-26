@@ -2,13 +2,17 @@
 //! finished file in the history store.
 
 use crate::AppError;
+use serde::Deserialize;
 use snapforge_domain::Rect;
 use snapforge_encode::record::{ffmpeg, RecordConfig};
 use snapforge_storage::config::{RecordingFormat, RecordingQuality};
 use snapforge_storage::history::{is_incomplete_mp4, ScreenshotHistory};
 use std::path::PathBuf;
 
-#[derive(Debug, Clone)]
+/// The canonical recording-request schema — the FFI deserializes its JSON
+/// straight into this. One serde definition, shared by every wire path.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(default)]
 pub struct RecordingRequest {
     pub display: usize,
     pub region: Option<Rect>,
@@ -20,6 +24,21 @@ pub struct RecordingRequest {
     /// If true, after a successful `stop_recording` the output file is added
     /// to the screenshot history index (skipped if it's an incomplete mp4).
     pub add_to_history_on_stop: bool,
+}
+
+impl Default for RecordingRequest {
+    fn default() -> Self {
+        Self {
+            display: 0,
+            region: None,
+            output_path: PathBuf::new(),
+            format: RecordingFormat::default(),
+            fps: 30,
+            quality: RecordingQuality::default(),
+            ffmpeg_path: None,
+            add_to_history_on_stop: false,
+        }
+    }
 }
 
 /// Opaque handle returned by [`start_recording`]. Keep it alive for the
@@ -121,6 +140,32 @@ pub fn resume_recording(handle: &RecordingHandle) -> Result<(), AppError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn deserializes_lowercase_and_pascalcase_enums() {
+        // Request path sends "gif"/"high"; config path uses "Gif"/"High". One
+        // schema, both accepted, same variants.
+        let lower: RecordingRequest =
+            serde_json::from_str(r#"{"output_path":"/tmp/x.mp4","format":"gif","quality":"high"}"#)
+                .unwrap();
+        let pascal: RecordingRequest =
+            serde_json::from_str(r#"{"output_path":"/tmp/x.mp4","format":"Gif","quality":"High"}"#)
+                .unwrap();
+        assert!(matches!(lower.format, RecordingFormat::Gif));
+        assert!(matches!(lower.quality, RecordingQuality::High));
+        assert!(matches!(pascal.format, RecordingFormat::Gif));
+        assert!(matches!(pascal.quality, RecordingQuality::High));
+    }
+
+    #[test]
+    fn deserialize_defaults_missing_fields() {
+        let req: RecordingRequest =
+            serde_json::from_str(r#"{"output_path":"/tmp/x.mp4"}"#).unwrap();
+        assert_eq!(req.fps, 30);
+        assert!(matches!(req.format, RecordingFormat::Mp4));
+        assert!(matches!(req.quality, RecordingQuality::Medium));
+        assert!(!req.add_to_history_on_stop);
+    }
 
     #[test]
     fn rejects_empty_output_path() {
