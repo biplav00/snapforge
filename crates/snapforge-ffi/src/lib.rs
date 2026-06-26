@@ -95,10 +95,10 @@ fn cstring_sanitized(s: &str) -> Result<CString, std::ffi::NulError> {
     }
 }
 
-use snapforge_core::capture;
-use snapforge_core::config::{AppConfig, RecordingFormat, RecordingQuality};
-use snapforge_core::history::ScreenshotHistory;
-use snapforge_core::types::{CaptureFormat, Rect};
+use snapforge_capture::capture;
+use snapforge_domain::Rect;
+use snapforge_storage::config::AppConfig;
+use snapforge_storage::history::ScreenshotHistory;
 
 /// Captured image data returned to C callers.
 /// The caller must free `data` via `snapforge_free_buffer`.
@@ -272,11 +272,11 @@ pub extern "C" fn snapforge_display_scale_factor() -> f64 {
 /// Returns NULL on error.
 #[no_mangle]
 pub extern "C" fn snapforge_default_save_path() -> *mut c_char {
-    let config = match snapforge_core::config::AppConfig::load() {
+    let config = match AppConfig::load() {
         Ok(c) => c,
         Err(e) => {
             tracing::warn!("[snapforge] default_save_path: config load failed: {}", e);
-            snapforge_core::config::AppConfig::default()
+            AppConfig::default()
         }
     };
     let dir = &config.save_directory;
@@ -369,7 +369,7 @@ pub unsafe extern "C" fn snapforge_is_incomplete_mp4(path: *const c_char) -> c_i
     let Ok(path_str) = CStr::from_ptr(path).to_str() else {
         return -1;
     };
-    c_int::from(snapforge_core::history::is_incomplete_mp4(path_str))
+    c_int::from(snapforge_storage::history::is_incomplete_mp4(path_str))
 }
 
 // ---------------------------------------------------------------------------
@@ -1499,7 +1499,7 @@ mod app_ffi_tests {
             SnapforgeErrorCode::from_app_error(&AppError::InvalidRequest("x".into())),
             SnapforgeErrorCode::InvalidInput
         );
-        let cfg_err = AppError::Config(snapforge_core::config::ConfigError::Parse(
+        let cfg_err = AppError::Config(snapforge_storage::config::ConfigError::Parse(
             serde_json::from_str::<serde_json::Value>("{").unwrap_err(),
         ));
         assert_eq!(
