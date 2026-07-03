@@ -185,15 +185,14 @@ impl ScreenshotHistory {
     }
 }
 
-/// FNV-1a hash of a path string. Used to make thumbnail filenames unique per
-/// FULL source path, not just per file stem.
+/// Hash of a path string. Used to make thumbnail filenames unique per FULL
+/// source path, not just per file stem. Only the derived filename is persisted
+/// (in the entry's `thumbnail_path`), so cross-run/version stability is not required.
 fn path_hash(path: &str) -> u64 {
-    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-    for b in path.as_bytes() {
-        h ^= u64::from(*b);
-        h = h.wrapping_mul(0x0000_0100_0000_01b3);
-    }
-    h
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    path.hash(&mut h);
+    h.finish()
 }
 
 /// Heuristic check for "ffmpeg was killed mid-write" — a file whose first 8

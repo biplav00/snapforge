@@ -1,6 +1,5 @@
 #include "RecordingController.h"
 
-#include "ClickIndicatorOverlay.h"
 #include "ClickTap.h"
 #include "PreferencesWindow.h"
 #include "RecordingManager.h"
@@ -17,16 +16,14 @@
 #include <QTimer>
 #include <QUrl>
 
-RecordingController::RecordingController(RecordingManager      *recording,
-                                         TrayIcon              *tray,
-                                         ClickIndicatorOverlay *clickOverlay,
-                                         ClickTap              *clickTap,
-                                         PreferencesWindow     *prefs,
-                                         QObject               *parent)
+RecordingController::RecordingController(RecordingManager  *recording,
+                                         TrayIcon          *tray,
+                                         ClickTap          *clickTap,
+                                         PreferencesWindow *prefs,
+                                         QObject           *parent)
     : QObject(parent),
       m_recording(recording),
       m_tray(tray),
-      m_clickOverlay(clickOverlay),
       m_clickTap(clickTap),
       m_prefs(prefs) {
     QObject::connect(m_recording, &RecordingManager::recordingStarted,
@@ -70,7 +67,6 @@ void RecordingController::onStopped(const QString &path) {
     m_tray->leaveRecordingState();
 
     if (m_clickTap) m_clickTap->stop();
-    m_clickOverlay->hideOverlay();
 
     // Copy the finished recording file to the clipboard as a file URL so the
     // user can paste it into Finder, Messages, Slack, etc.
@@ -101,7 +97,6 @@ void RecordingController::onError(const QString &message) {
     // for a recording that never began, which then no-ops confusingly.
     m_tray->leaveRecordingState();
     if (m_clickTap) m_clickTap->stop();
-    m_clickOverlay->hideOverlay();
     m_tray->showMessage("Snapforge — Recording Failed", message,
                         QSystemTrayIcon::Warning, 5000);
     // Defer the modal so the recordingError signal completes its delivery

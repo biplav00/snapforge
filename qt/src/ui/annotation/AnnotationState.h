@@ -16,7 +16,6 @@ public:
     void commitAnnotation(const Annotation &a);
     void updateAnnotation(const QString &id, const Annotation &a);
     void clearAnnotations();
-    void offsetAnnotations(double dx, double dy);
 
     const std::optional<Annotation> &activeAnnotation() const { return m_active; }
     void setActiveAnnotation(const Annotation &a);

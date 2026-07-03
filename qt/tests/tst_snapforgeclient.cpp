@@ -10,11 +10,6 @@
 class TestSnapforgeClient : public QObject {
     Q_OBJECT
 private slots:
-    void lastErrorCode_startsNone() {
-        // No use-case call has failed in this fresh process.
-        QCOMPARE(sf::lastErrorCode(), 0);
-    }
-
     void configLoad_returnsJsonObject() {
         const QByteArray json = sf::configLoadJson();
         QVERIFY(!json.isEmpty());

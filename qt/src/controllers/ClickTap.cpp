@@ -1,9 +1,5 @@
 #include "ClickTap.h"
 
-#include <QMetaObject>
-#include <QPointer>
-#include <Qt>
-
 #include "SnapforgeClient.h"
 
 ClickTap::ClickTap(QObject *parent)
@@ -30,20 +26,9 @@ void ClickTap::stop() {
     m_handle = sf::ClickHandle{};
 }
 
-void ClickTap::onClickStatic(double x, double y, int rightClick,
-                             void *userData) {
-    auto *self = static_cast<ClickTap *>(userData);
-    QPoint p(static_cast<int>(x), static_cast<int>(y));
-    bool right = rightClick != 0;
-    // QPointer survives the hop to the Qt main thread — if `self` is
-    // destroyed between the FFI thread firing this callback and the queued
-    // slot running, we drop the click silently instead of dereferencing a
-    // dangling pointer.
-    QPointer<ClickTap> guard(self);
-    QMetaObject::invokeMethod(
-        self,
-        [guard, p, right]() {
-            if (guard) emit guard->clicked(p, right);
-        },
-        Qt::QueuedConnection);
+void ClickTap::onClickStatic(double /*x*/, double /*y*/, int /*rightClick*/,
+                             void * /*userData*/) {
+    // No-op: click ripples are baked into the recording by the Rust encoder.
+    // ClickTap only installs the tap to probe the permission grant, so the
+    // per-click events are intentionally dropped here.
 }

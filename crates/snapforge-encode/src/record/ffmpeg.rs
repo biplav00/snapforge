@@ -63,6 +63,7 @@ impl RecordingHandle {
         self.state.store(STATE_RUNNING, Ordering::SeqCst);
     }
 
+    #[cfg(test)]
     pub fn is_paused(&self) -> bool {
         self.state.load(Ordering::SeqCst) == STATE_PAUSED
     }

@@ -124,34 +124,6 @@ pub fn primary_display_scale_factor() -> f64 {
     }
 }
 
-/// Get the native pixel width of the primary display.
-pub fn primary_display_pixel_width() -> usize {
-    unsafe {
-        let display_id = CGMainDisplayID();
-        let mode = CGDisplayCopyDisplayMode(display_id);
-        if mode.is_null() {
-            return 0;
-        }
-        let w = CGDisplayModeGetPixelWidth(mode);
-        CGDisplayModeRelease(mode);
-        w
-    }
-}
-
-/// Get the native pixel height of the primary display.
-pub fn primary_display_pixel_height() -> usize {
-    unsafe {
-        let display_id = CGMainDisplayID();
-        let mode = CGDisplayCopyDisplayMode(display_id);
-        if mode.is_null() {
-            return 0;
-        }
-        let h = CGDisplayModeGetPixelHeight(mode);
-        CGDisplayModeRelease(mode);
-        h
-    }
-}
-
 /// Resolve a display index (in our SCK ordering) to its CGDirectDisplayID.
 fn display_id_for_index(display: usize) -> Result<u32, CaptureError> {
     get_display_ids_cached()
@@ -679,11 +651,6 @@ impl CaptureContext {
             output_width: out_w as u32,
             output_height: out_h as u32,
         })
-    }
-
-    /// Capture a single frame as an RGBA image (slower — performs BGRA→RGBA conversion).
-    pub fn capture_frame(&self) -> Result<RgbaImage, CaptureError> {
-        capture_with_filter(self.filter.as_ref(), self.config.as_ref())
     }
 
     /// Capture a single frame and return raw BGRA bytes — fast path for recording.

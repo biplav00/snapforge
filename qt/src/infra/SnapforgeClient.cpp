@@ -47,7 +47,6 @@ std::optional<QString> parseSavedPath(char *resultJson) {
 } // namespace
 
 QString lastError() { return takeOwnedString(snapforge_app_last_error()); }
-int lastErrorCode() { return snapforge_app_last_error_code(); }
 
 std::optional<QImage> captureFullscreen(uint32_t display) {
     return [&]() -> std::optional<QImage> {
@@ -107,18 +106,6 @@ QByteArray configLoadJson() {
 }
 bool configSave(const QByteArray &json) {
     return snapforge_config_save(json.constData()) == 0;
-}
-
-std::optional<QString> takeScreenshot(const ScreenshotReq &req) {
-    QJsonObject o;
-    o["display"] = static_cast<qint64>(req.display);
-    putRegion(o, req.region);
-    o["output_path"] = req.outputPath;
-    o["format"] = req.format;
-    o["quality"] = req.quality;
-    o["copy_to_clipboard"] = req.copyToClipboard;
-    o["add_to_history"] = req.addToHistory;
-    return parseSavedPath(snapforge_screenshot(toJson(o).constData()));
 }
 
 std::optional<QString> savePrerendered(const uint8_t *rgba, std::size_t rgbaLen,
