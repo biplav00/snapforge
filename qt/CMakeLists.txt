@@ -63,7 +63,6 @@ qt_add_resources(SNAPFORGE_QRC_FILES
 set(SNAPFORGE_SOURCES
     src/app/main.cpp
     src/infra/Logger.cpp
-    src/infra/LogCategories.cpp
     src/infra/Shortcuts.cpp
     src/infra/SnapforgeClient.cpp
     src/ui/overlay/OverlayWindow.cpp
@@ -74,7 +73,6 @@ set(SNAPFORGE_SOURCES
     src/capture/RecordingManager.cpp
     src/ui/windows/HistoryWindow.cpp
     src/ui/windows/PreferencesWindow.cpp
-    src/ui/overlay/ClickIndicatorOverlay.cpp
     src/ui/tray/TrayIcon.cpp
     src/controllers/RecordingController.cpp
     src/controllers/ClickTap.cpp
@@ -83,8 +81,7 @@ set(SNAPFORGE_SOURCES
 if(APPLE)
     list(APPEND SNAPFORGE_SOURCES
         src/platform/macos/WorkspaceSleepObserver.mm
-        src/platform/macos/SpaceChangeObserver.mm
-        src/ui/overlay/ClickIndicatorOverlayMac.mm)
+        src/platform/macos/SpaceChangeObserver.mm)
     # The .mm files use ARC's __bridge_retained / __bridge_transfer; enable ARC.
     set_source_files_properties(src/platform/macos/WorkspaceSleepObserver.mm
         PROPERTIES COMPILE_FLAGS "-fobjc-arc")
@@ -290,9 +287,9 @@ if(BUILD_TESTING)
         src/infra/SnapforgeClient.cpp
     )
 
-    # ClickTap tested through the SnapforgeClient seam against the fake — a
-    # simulated system click must surface as a clicked() signal on the Qt main
-    # thread, with no Input Monitoring grant or real event tap.
+    # ClickTap permission probe tested through the SnapforgeClient seam against
+    # the fake — start/stop toggles the tap with no Input Monitoring grant or
+    # real event tap.
     snapforge_add_fake_test(tst_clicktap
         tests/tst_clicktap.cpp
         src/controllers/ClickTap.cpp
@@ -312,7 +309,6 @@ if(BUILD_TESTING)
         tests/tst_preferences.cpp
         src/ui/windows/PreferencesWindow.cpp
         src/infra/Logger.cpp
-        src/infra/LogCategories.cpp
     )
     target_link_libraries(tst_preferences PRIVATE Qt6::Widgets)
     set_tests_properties(tst_preferences PROPERTIES

@@ -54,12 +54,6 @@ pub struct RecordingHandle {
 }
 
 impl RecordingHandle {
-    pub fn is_running(&self) -> bool {
-        self.inner
-            .as_ref()
-            .is_some_and(snapforge_encode::record::ffmpeg::RecordingHandle::is_running)
-    }
-
     pub fn pause(&self) -> Result<(), AppError> {
         match self.inner.as_ref() {
             Some(h) => {

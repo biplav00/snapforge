@@ -30,15 +30,6 @@ impl CaptureFormat {
             CaptureFormat::WebP => "webp",
         }
     }
-
-    pub fn from_extension(ext: &str) -> Option<Self> {
-        match ext.to_lowercase().as_str() {
-            "png" => Some(CaptureFormat::Png),
-            "jpg" | "jpeg" => Some(CaptureFormat::Jpg),
-            "webp" => Some(CaptureFormat::WebP),
-            _ => None,
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -56,31 +47,6 @@ mod tests {
         assert_eq!(CaptureFormat::Png.extension(), "png");
         assert_eq!(CaptureFormat::Jpg.extension(), "jpg");
         assert_eq!(CaptureFormat::WebP.extension(), "webp");
-    }
-
-    #[test]
-    fn test_capture_format_from_extension() {
-        assert_eq!(
-            CaptureFormat::from_extension("png"),
-            Some(CaptureFormat::Png)
-        );
-        assert_eq!(
-            CaptureFormat::from_extension("PNG"),
-            Some(CaptureFormat::Png)
-        );
-        assert_eq!(
-            CaptureFormat::from_extension("jpg"),
-            Some(CaptureFormat::Jpg)
-        );
-        assert_eq!(
-            CaptureFormat::from_extension("jpeg"),
-            Some(CaptureFormat::Jpg)
-        );
-        assert_eq!(
-            CaptureFormat::from_extension("webp"),
-            Some(CaptureFormat::WebP)
-        );
-        assert_eq!(CaptureFormat::from_extension("bmp"), None);
     }
 
     #[test]

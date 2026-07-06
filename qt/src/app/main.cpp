@@ -12,7 +12,6 @@
 #include "RecordingManager.h"
 #include "HistoryWindow.h"
 #include "PreferencesWindow.h"
-#include "ClickIndicatorOverlay.h"
 #include "TrayIcon.h"
 #include "RecordingController.h"
 #include "ClickTap.h"
@@ -269,10 +268,13 @@ static void rustLogCallback(int level, const char *msg) noexcept {
                             QString::fromUtf8(msg));
 }
 
+// Screenshot format index (0/1/2) → file extension. Shared by buildFilename
+// and saveImage so the two can't drift.
+static const char *kFormatExt[] = { "png", "jpg", "webp" };
+
 static QString buildFilename(const QString &pattern, int fmt) {
     QString timestamp = QDateTime::currentDateTime().toString("yyyy-MM-dd_HH-mm-ss");
-    const char *extensions[] = { "png", "jpg", "webp" };
-    QString ext = extensions[qBound(0, fmt, 2)];
+    QString ext = kFormatExt[qBound(0, fmt, 2)];
 
     if (pattern.isEmpty()) {
         return QStringLiteral("screenshot_%1.%2").arg(timestamp, ext);
@@ -338,10 +340,9 @@ static void saveImage(const QImage &img) {
     // (optional) clipboard, and (optional) history indexing in one call.
     // We pass the Qt-composited RGBA bytes verbatim — same input the
     // deprecated snapforge_save_image used to take.
-    static const char *kFmtNames[] = { "png", "jpg", "webp" };
     sf::SaveReq req;
     req.outputPath = path;
-    req.format = QString::fromLatin1(kFmtNames[qBound(0, fmt, 2)]);
+    req.format = QString::fromLatin1(kFormatExt[qBound(0, fmt, 2)]);
     req.quality = quality;
     req.copyToClipboard = false; // copyImage handles that separately
     req.addToHistory = true;
@@ -519,15 +520,12 @@ int main(int argc, char *argv[]) {
     auto *paletteFilter = new PaletteFilter(&prefs, &app);
     app.installEventFilter(paletteFilter);
 
-    // Click visualizer: ripple overlay + global mouse-down tap.
-    // Tap is only started while recording AND the pref is on. Permission
-    // failure surfaces as a tray banner; the recording itself continues.
-    // ClickTap wraps the snapforge_clicks_* use-case FFI — the platform tap
-    // lives in Rust now, so this works on every platform Snapforge ships.
-    ClickIndicatorOverlay clickOverlay;
+    // Global mouse-down tap. Only started while recording AND the pref is on,
+    // purely to probe the permission grant — a failure surfaces as a tray
+    // banner while the recording continues. Click ripples themselves are baked
+    // into the video by the Rust encoder. ClickTap wraps the snapforge_clicks_*
+    // use-case FFI, so this works on every platform Snapforge ships.
     ClickTap clickTap;
-    QObject::connect(&clickTap, &ClickTap::clicked,
-                     &clickOverlay, &ClickIndicatorOverlay::addRipple);
 
     // Sync prefs → overlay
     auto syncPrefsToOverlay = [&]() {
@@ -605,7 +603,6 @@ int main(int argc, char *argv[]) {
     // overlay/tap toggling + clipboard copy on stop + error modal.
     RecordingController recordingController(&recording,
                                             &tray,
-                                            &clickOverlay,
                                             &clickTap,
                                             &prefs,
                                             &app);

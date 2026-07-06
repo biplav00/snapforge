@@ -116,11 +116,6 @@ pub fn find_ffmpeg(provided_path: Option<&PathBuf>) -> Result<PathBuf, RecordErr
     Err(RecordError::FfmpegNotFound)
 }
 
-/// Check if FFmpeg is available (bundled or system).
-pub fn check_ffmpeg() -> Result<(), RecordError> {
-    find_ffmpeg(None).map(|_| ())
-}
-
 /// Heuristic for "is this an ffmpeg binary in a location we'd expect?". Used
 /// only to gate a warning log — not as an authorization boundary.
 fn is_trusted_ffmpeg_location(path: &Path) -> bool {
@@ -214,12 +209,6 @@ mod tests {
         let result = find_ffmpeg(Some(&bad_path));
         // Should fall through to system PATH search, not panic
         let _ = result;
-    }
-
-    #[test]
-    fn test_check_ffmpeg() {
-        // Should not panic regardless of whether ffmpeg is installed
-        let _ = check_ffmpeg();
     }
 
     #[test]

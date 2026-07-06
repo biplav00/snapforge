@@ -1,7 +1,7 @@
 // In-memory SnapforgeClient fake. Linked into test targets INSTEAD of
 // SnapforgeClient.cpp (and instead of libsnapforge_ffi.a), so a unit under
 // test exercises no real FFI, no display, and no TCC grant. Behaviour is
-// driven through sf::test::state() / fireClick() (see SnapforgeClientTesting.h).
+// driven through sf::test::state() (see SnapforgeClientTesting.h).
 
 #include "SnapforgeClient.h"
 #include "SnapforgeClientTesting.h"
@@ -15,7 +15,6 @@ int kClickToken = 0;
 } // namespace
 
 QString lastError() { return test::state().lastError; }
-int lastErrorCode() { return test::state().lastErrorCode; }
 
 std::optional<QImage> captureFullscreen(uint32_t) {
     QImage img(2, 2, QImage::Format_RGBA8888);
@@ -49,10 +48,6 @@ bool configSave(const QByteArray &json) {
     return test::state().configSaveSucceeds;
 }
 
-std::optional<QString> takeScreenshot(const ScreenshotReq &req) {
-    test::state().lastScreenshotReq = req;
-    return test::state().screenshotResult;
-}
 std::optional<QString> savePrerendered(const uint8_t *, std::size_t, uint32_t,
                                        uint32_t, const SaveReq &) {
     return test::state().savePrerenderedResult;
@@ -67,13 +62,11 @@ bool recordPause(RecHandle handle) { return handle.valid(); }
 bool recordResume(RecHandle handle) { return handle.valid(); }
 void recordFreeHandle(RecHandle) {}
 
-ClickHandle clicksStart(ClickCallback callback, void *userData) {
+ClickHandle clicksStart(ClickCallback, void *) {
     if (!test::state().clicksStartSucceeds) {
         test::state().lastError = QStringLiteral("fake: clicks start refused");
         return ClickHandle{};
     }
-    test::state().clickCb = callback;
-    test::state().clickUserData = userData;
     test::state().clicksRunning = true;
     return ClickHandle{&kClickToken};
 }
@@ -81,10 +74,7 @@ bool clicksStop(ClickHandle handle) {
     test::state().clicksRunning = false;
     return handle.valid();
 }
-void clicksFreeHandle(ClickHandle) {
-    test::state().clickCb = nullptr;
-    test::state().clickUserData = nullptr;
-}
+void clicksFreeHandle(ClickHandle) {}
 
 void setLogCallback(LogCallback) {}
 
@@ -96,11 +86,6 @@ State &state() {
 }
 
 void reset() { state() = State{}; }
-
-void fireClick(double x, double y, bool rightClick) {
-    State &s = state();
-    if (s.clickCb) s.clickCb(x, y, rightClick ? 1 : 0, s.clickUserData);
-}
 
 } // namespace test
 } // namespace sf

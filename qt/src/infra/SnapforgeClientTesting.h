@@ -4,7 +4,7 @@
 // Control surface for the in-memory SnapforgeClient fake
 // (SnapforgeClientFake.cpp). Only test targets link the fake, so this header
 // is only meaningful there. Configure inputs and inspect captured calls via
-// sf::test::state(); drive the click stream via sf::test::fireClick().
+// sf::test::state().
 
 #include "SnapforgeClient.h"
 
@@ -15,13 +15,10 @@
 namespace sf::test {
 
 struct State {
-    // Error channel returned by sf::lastError()/lastErrorCode().
+    // Error channel returned by sf::lastError().
     QString lastError;
-    int lastErrorCode = 0;
 
-    // Click stream — clicksStart records these so fireClick() can drive them.
-    ClickCallback clickCb = nullptr;
-    void *clickUserData = nullptr;
+    // Click stream — start/stop toggles clicksRunning for the probe tests.
     bool clicksRunning = false;
     bool clicksStartSucceeds = true;
 
@@ -36,7 +33,6 @@ struct State {
     bool configSaveSucceeds = true;
 
     // Captured inputs for assertions.
-    std::optional<ScreenshotReq> lastScreenshotReq;
     std::optional<RecordReq> lastRecordReq;
 };
 
@@ -45,10 +41,6 @@ State &state();
 
 // Restore defaults between tests.
 void reset();
-
-// Simulate a system click arriving from the (faked) Rust tap: invokes the
-// callback registered via clicksStart, exactly as the real tap thread would.
-void fireClick(double x, double y, bool rightClick);
 
 } // namespace sf::test
 

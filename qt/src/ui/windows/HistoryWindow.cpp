@@ -147,10 +147,6 @@ HistoryCard::HistoryCard(const HistoryEntry &entry, QWidget *parent)
     root->addLayout(btnRow);
 }
 
-QString HistoryCard::fileName() const {
-    return QFileInfo(m_path).fileName();
-}
-
 bool HistoryCard::isImage() const {
     return extensionIsImage(QFileInfo(m_path).suffix());
 }

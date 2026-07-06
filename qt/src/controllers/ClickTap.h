@@ -2,21 +2,18 @@
 #define CLICKTAP_H
 
 #include <QObject>
-#include <QPoint>
 
 #include "SnapforgeClient.h"
 
-// Platform-agnostic global mouse-down listener. Wraps the
-// snapforge_clicks_* use-case FFI (which owns the platform-specific event
-// tap inside snapforge-app). Emits clicked() on the Qt main thread for
-// every left/right mouse-down system-wide while running.
+// Permission probe for the global mouse-down tap. Wraps the snapforge_clicks_*
+// use-case FFI (which owns the platform-specific event tap inside
+// snapforge-app). start() installs the tap and returns whether it succeeded;
+// the recording pipeline bakes click ripples in Rust, so nothing on the Qt
+// side consumes the events — this exists purely to detect a missing grant and
+// warn before recording.
 //
 // On macOS this requires the Input Monitoring TCC grant; start() returns
 // false when the grant is missing or the tap can't be created.
-//
-// Replaces the macOS-only ClickEventTap from Phase 2C — the platform code
-// now lives in Rust, so this class no longer needs an Objective-C++
-// translation unit.
 class ClickTap : public QObject {
     Q_OBJECT
 public:
@@ -30,13 +27,8 @@ public:
     void stop();
     bool isRunning() const;
 
-signals:
-    void clicked(QPoint globalPos, bool rightClick);
-
 private:
-    // Fires on a Rust-owned thread (NOT the Qt main thread). Re-dispatches
-    // to the Qt thread via QMetaObject::invokeMethod so signal subscribers
-    // can safely touch GUI state.
+    // Required FFI callback; the events are unused (ripples are baked in Rust).
     static void onClickStatic(double x, double y, int rightClick,
                               void *userData);
 
