@@ -41,11 +41,11 @@ else()
 endif()
 set(FFI_HEADER_DIR "${CMAKE_SOURCE_DIR}/../crates/snapforge-ffi")
 
-set(SNAPFORGE_VERSION "1.3.18")
+set(SNAPFORGE_VERSION "1.3.19")
 set(MACOSX_BUNDLE_BUNDLE_NAME "Snapforge")
 set(MACOSX_BUNDLE_GUI_IDENTIFIER "com.snapforge.app")
-set(MACOSX_BUNDLE_BUNDLE_VERSION "1.3.18")
-set(MACOSX_BUNDLE_SHORT_VERSION_STRING "1.3.18")
+set(MACOSX_BUNDLE_BUNDLE_VERSION "1.3.19")
+set(MACOSX_BUNDLE_SHORT_VERSION_STRING "1.3.19")
 set(MACOSX_BUNDLE_INFO_STRING "Snapforge Screenshot Tool")
 set(MACOSX_BUNDLE_ICON_FILE "AppIcon.icns")
 
@@ -63,7 +63,6 @@ qt_add_resources(SNAPFORGE_QRC_FILES
 set(SNAPFORGE_SOURCES
     src/app/main.cpp
     src/infra/Logger.cpp
-    src/infra/LogCategories.cpp
     src/infra/Shortcuts.cpp
     src/infra/SnapforgeClient.cpp
     src/ui/overlay/OverlayWindow.cpp
@@ -288,9 +287,9 @@ if(BUILD_TESTING)
         src/infra/SnapforgeClient.cpp
     )
 
-    # ClickTap tested through the SnapforgeClient seam against the fake — a
-    # simulated system click must surface as a clicked() signal on the Qt main
-    # thread, with no Input Monitoring grant or real event tap.
+    # ClickTap permission probe tested through the SnapforgeClient seam against
+    # the fake — start/stop toggles the tap with no Input Monitoring grant or
+    # real event tap.
     snapforge_add_fake_test(tst_clicktap
         tests/tst_clicktap.cpp
         src/controllers/ClickTap.cpp
@@ -310,7 +309,6 @@ if(BUILD_TESTING)
         tests/tst_preferences.cpp
         src/ui/windows/PreferencesWindow.cpp
         src/infra/Logger.cpp
-        src/infra/LogCategories.cpp
     )
     target_link_libraries(tst_preferences PRIVATE Qt6::Widgets)
     set_tests_properties(tst_preferences PROPERTIES

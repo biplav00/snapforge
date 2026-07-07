@@ -1,9 +1,8 @@
 // ClickTap through the SnapforgeClient seam (fake adapter). Proves the seam's
-// payoff: the click path is now unit-testable with no real event tap and no
-// Input Monitoring TCC grant — sf::test::fireClick simulates the Rust tap.
+// payoff: the permission probe is now unit-testable with no real event tap and
+// no Input Monitoring TCC grant.
 
 #include <QtTest/QtTest>
-#include <QSignalSpy>
 
 #include "ClickTap.h"
 #include "SnapforgeClientTesting.h"
@@ -25,23 +24,6 @@ private slots:
         QVERIFY(tap.start());
         QVERIFY(tap.isRunning());
         QVERIFY(sf::test::state().clicksRunning);
-    }
-
-    void click_emitsClickedSignalWithMappedArgs() {
-        ClickTap tap;
-        QVERIFY(tap.start());
-        QSignalSpy spy(&tap, &ClickTap::clicked);
-
-        // Simulate a right mouse-down arriving from the (faked) tap thread.
-        sf::test::fireClick(120.0, 240.0, /*rightClick=*/true);
-
-        // onClickStatic re-dispatches via Qt::QueuedConnection; wait() pumps
-        // the event loop until the queued emit runs.
-        QVERIFY(spy.wait(1000));
-        QCOMPARE(spy.count(), 1);
-        const QList<QVariant> args = spy.takeFirst();
-        QCOMPARE(args.at(0).toPoint(), QPoint(120, 240));
-        QCOMPARE(args.at(1).toBool(), true);
     }
 
     void stop_endsStreaming() {

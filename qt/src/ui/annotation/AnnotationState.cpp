@@ -51,43 +51,6 @@ void AnnotationState::clearAnnotations()
     emit changed();
 }
 
-void AnnotationState::offsetAnnotations(double dx, double dy)
-{
-    for (Annotation &ann : m_annotations) {
-        std::visit([dx, dy](auto &d) {
-            using T = std::decay_t<decltype(d)>;
-            if constexpr (std::is_same_v<T, ArrowData> ||
-                          std::is_same_v<T, LineData> ||
-                          std::is_same_v<T, DottedLineData> ||
-                          std::is_same_v<T, MeasureData>) {
-                d.startX += dx;
-                d.startY += dy;
-                d.endX   += dx;
-                d.endY   += dy;
-            } else if constexpr (std::is_same_v<T, RectData> ||
-                                 std::is_same_v<T, HighlightData> ||
-                                 std::is_same_v<T, BlurData>) {
-                d.x += dx;
-                d.y += dy;
-            } else if constexpr (std::is_same_v<T, CircleData>) {
-                d.cx += dx;
-                d.cy += dy;
-            } else if constexpr (std::is_same_v<T, FreehandData>) {
-                for (QPointF &pt : d.points) {
-                    pt.rx() += dx;
-                    pt.ry() += dy;
-                }
-            } else if constexpr (std::is_same_v<T, TextData> ||
-                                 std::is_same_v<T, StepsData> ||
-                                 std::is_same_v<T, ColorPickerData>) {
-                d.x += dx;
-                d.y += dy;
-            }
-        }, ann.data);
-    }
-    ++m_committedRevision;
-    emit changed();
-}
 
 void AnnotationState::setActiveAnnotation(const Annotation &a)
 {

@@ -16,11 +16,11 @@
 #include <QTimer>
 #include <QUrl>
 
-RecordingController::RecordingController(RecordingManager      *recording,
-                                         TrayIcon              *tray,
-                                         ClickTap              *clickTap,
-                                         PreferencesWindow     *prefs,
-                                         QObject               *parent)
+RecordingController::RecordingController(RecordingManager  *recording,
+                                         TrayIcon          *tray,
+                                         ClickTap          *clickTap,
+                                         PreferencesWindow *prefs,
+                                         QObject           *parent)
     : QObject(parent),
       m_recording(recording),
       m_tray(tray),

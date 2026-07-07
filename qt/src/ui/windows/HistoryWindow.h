@@ -23,9 +23,6 @@ class HistoryCard : public QFrame {
     Q_OBJECT
 public:
     explicit HistoryCard(const HistoryEntry &entry, QWidget *parent = nullptr);
-    const QString &filePath() const { return m_path; }
-    const QString &timestamp() const { return m_timestamp; }
-    QString fileName() const;
     bool isImage() const;
     bool isVideo() const;
 

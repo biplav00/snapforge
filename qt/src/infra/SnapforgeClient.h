@@ -14,10 +14,10 @@
 // returned C string / pixel buffer. Callers see typed Qt values only.
 //
 // Error model: a value call returns std::optional (empty == failed) and a
-// success/fail call returns bool; on failure read sf::lastError() /
-// sf::lastErrorCode() immediately (they reflect the most recent use-case call,
-// mirroring the FFI's single-error contract). Capture/config/history
-// primitives do not populate the use-case error channel.
+// success/fail call returns bool; on failure read sf::lastError() immediately
+// (it reflects the most recent use-case call, mirroring the FFI's single-error
+// contract). Capture/config/history primitives do not populate the use-case
+// error channel.
 
 #include <QByteArray>
 #include <QImage>
@@ -58,16 +58,6 @@ struct Region {
     uint32_t height = 0;
 };
 
-struct ScreenshotReq {
-    uint32_t display = 0;
-    std::optional<Region> region;          // nullopt == fullscreen
-    QString outputPath;
-    QString format = QStringLiteral("png"); // "png"/"jpg"/"webp"
-    int quality = 90;                        // 1..=100
-    bool copyToClipboard = false;
-    bool addToHistory = false;
-};
-
 struct SaveReq {
     QString outputPath;                      // empty == clipboard-only
     QString format = QStringLiteral("png");
@@ -90,7 +80,6 @@ struct RecordReq {
 
 // --- Error channel ----------------------------------------------------------
 QString lastError();      // message of the most recent failed use-case call
-int lastErrorCode();      // SnapforgeErrorCode category (0 == none)
 
 // --- Capture / permissions / display / paths --------------------------------
 std::optional<QImage> captureFullscreen(uint32_t display);
@@ -112,10 +101,8 @@ QByteArray configLoadJson();                 // empty QByteArray on error
 bool configSave(const QByteArray &json);
 
 // --- Use cases --------------------------------------------------------------
-// takeScreenshot/savePrerendered return the saved path. For savePrerendered a
-// present-but-empty string means a clipboard-only success (no file written);
-// nullopt means failure.
-std::optional<QString> takeScreenshot(const ScreenshotReq &req);
+// savePrerendered returns the saved path. A present-but-empty string means a
+// clipboard-only success (no file written); nullopt means failure.
 std::optional<QString> savePrerendered(const uint8_t *rgba, std::size_t rgbaLen,
                                        uint32_t width, uint32_t height,
                                        const SaveReq &req);

@@ -7,70 +7,16 @@
 
 use std::collections::HashMap;
 use std::ffi::{c_char, c_int, c_void, CStr, CString};
-use std::hash::{BuildHasherDefault, Hasher};
 use std::ptr;
 use std::sync::{Arc, Mutex, OnceLock};
-
-/// A tiny deterministic hasher for `usize` keys that are already raw memory
-/// addresses (and therefore uniformly distributed by the allocator). The
-/// pointer-keyed registries below don't need SipHash's DoS resistance — the
-/// keys are our own heap pointers, never attacker-chosen — so we trade it for
-/// a single multiply, which removes SipHash's per-key cost from the per-frame
-/// capture/free path.
-///
-/// This is an FxHash-style multiplicative hash (the `0x517c_c1b7_2722_0a95`
-/// constant is the well-known 64-bit golden-ratio mixer used by rustc's
-/// `FxHasher`). It changes *only* the hash function used to bucket keys; the
-/// map contents, equality semantics, and every safety check that reads them
-/// are byte-for-byte unchanged. Implemented inline to avoid an external dep.
-#[derive(Default)]
-struct PtrHasher(u64);
-
-impl Hasher for PtrHasher {
-    #[inline]
-    fn finish(&self) -> u64 {
-        self.0
-    }
-
-    #[inline]
-    fn write_usize(&mut self, i: usize) {
-        // The only `write_*` the map ever calls for a `usize` key.
-        self.0 = (i as u64).wrapping_mul(0x517c_c1b7_2722_0a95);
-    }
-
-    fn write(&mut self, bytes: &[u8]) {
-        // Defensive fallback: fold any byte stream through the same mixer so
-        // the hasher stays correct even if the key type ever changes. Not on
-        // the hot path (the registries are `usize`-keyed, which routes through
-        // `write_usize`).
-        for &b in bytes {
-            self.0 = (self.0 ^ u64::from(b)).wrapping_mul(0x517c_c1b7_2722_0a95);
-        }
-    }
-}
-
-type PtrBuildHasher = BuildHasherDefault<PtrHasher>;
-
-/// Expected number of simultaneously-live captured buffers. Qt holds a small,
-/// bounded set at once (typically one full-screen grab plus the odd region
-/// grab), so preallocating a handful of slots avoids the first few rehashes on
-/// the capture path without over-committing memory. This is a capacity hint
-/// only — the map still grows without bound if needed, so nothing is ever
-/// silently dropped (which would reintroduce the heap-corruption risk).
-const BUFFER_REGISTRY_PREALLOC: usize = 8;
 
 /// Tracks every live `(ptr, len)` returned by `snapforge_capture_*` so
 /// `snapforge_free_buffer` can detect a length mismatch (which would otherwise
 /// hand a wrong-layout `Box<[u8]>` to the global allocator and corrupt the heap).
-static BUFFER_REGISTRY: OnceLock<Mutex<HashMap<usize, usize, PtrBuildHasher>>> = OnceLock::new();
+static BUFFER_REGISTRY: OnceLock<Mutex<HashMap<usize, usize>>> = OnceLock::new();
 
-fn buffer_registry() -> &'static Mutex<HashMap<usize, usize, PtrBuildHasher>> {
-    BUFFER_REGISTRY.get_or_init(|| {
-        Mutex::new(HashMap::with_capacity_and_hasher(
-            BUFFER_REGISTRY_PREALLOC,
-            PtrBuildHasher::default(),
-        ))
-    })
+fn buffer_registry() -> &'static Mutex<HashMap<usize, usize>> {
+    BUFFER_REGISTRY.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 fn register_buffer(ptr: *mut u8, len: usize) {
@@ -895,12 +841,10 @@ struct FfiAppRecordingHandle {
 /// only remove the registry entry — deallocation is deferred until the last
 /// clone drops. The in-band magic word stays as a secondary defense against a
 /// registry entry pointing at corrupted memory.
-static RECORDING_HANDLE_REGISTRY: OnceLock<
-    Mutex<HashMap<usize, Arc<FfiAppRecordingHandle>, PtrBuildHasher>>,
-> = OnceLock::new();
+static RECORDING_HANDLE_REGISTRY: OnceLock<Mutex<HashMap<usize, Arc<FfiAppRecordingHandle>>>> =
+    OnceLock::new();
 
-fn recording_handle_registry(
-) -> &'static Mutex<HashMap<usize, Arc<FfiAppRecordingHandle>, PtrBuildHasher>> {
+fn recording_handle_registry() -> &'static Mutex<HashMap<usize, Arc<FfiAppRecordingHandle>>> {
     RECORDING_HANDLE_REGISTRY.get_or_init(|| Mutex::new(HashMap::default()))
 }
 
@@ -1129,10 +1073,10 @@ struct FfiClickHandle {
 
 /// Same Arc-in-registry scheme as `RECORDING_HANDLE_REGISTRY` — see the
 /// comment there for the TOCTOU rationale.
-static CLICK_HANDLE_REGISTRY: OnceLock<Mutex<HashMap<usize, Arc<FfiClickHandle>, PtrBuildHasher>>> =
+static CLICK_HANDLE_REGISTRY: OnceLock<Mutex<HashMap<usize, Arc<FfiClickHandle>>>> =
     OnceLock::new();
 
-fn click_handle_registry() -> &'static Mutex<HashMap<usize, Arc<FfiClickHandle>, PtrBuildHasher>> {
+fn click_handle_registry() -> &'static Mutex<HashMap<usize, Arc<FfiClickHandle>>> {
     CLICK_HANDLE_REGISTRY.get_or_init(|| Mutex::new(HashMap::default()))
 }
 
@@ -1303,10 +1247,9 @@ mod app_ffi_tests {
     //
     // These exercise the `register_buffer` / `snapforge_free_buffer` pairing
     // directly against a genuinely heap-allocated `Box<[u8]>`, so the free
-    // path actually runs `Box::from_raw`. They pin the four safety
-    // properties that the custom `PtrHasher` + capacity prealloc must not
-    // weaken, and run without a display (unlike the capture round-trips in
-    // tests/abi.rs).
+    // path actually runs `Box::from_raw`. They pin the four safety properties
+    // the length-checked registry guarantees, and run without a display
+    // (unlike the capture round-trips in tests/abi.rs).
 
     /// Allocate a real `Box<[u8]>` exactly as the capture path does and
     /// register it. Returns the raw pointer + len the caller would free.

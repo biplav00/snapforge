@@ -8,7 +8,6 @@
 #include <QEvent>
 #include <QJsonDocument>
 #include <QJsonObject>
-#include <QPointer>
 #include "OverlayWindow.h"
 #include "RecordingManager.h"
 #include "HistoryWindow.h"
@@ -202,13 +201,10 @@ static void registerAllChords() {
     EventHotKeyID hotKeyID;
     hotKeyID.signature = 'SNPF';
 
-    // One config load for all five chords.
-    const shortcuts::Snapshot cfg;
-
     int i = 0;
     for (const auto &action : shortcuts::kGlobalActions) {
         const QString key = QString::fromLatin1(action.actionKey);
-        const QString chord = cfg.chord(key);
+        const QString chord = shortcuts::chord(key);
         uint32_t vk = 0, mods = 0;
         hotKeyID.id = hotkeyIdFor(key);
         if (shortcuts::toCarbon(chord, &vk, &mods)) {
@@ -272,10 +268,13 @@ static void rustLogCallback(int level, const char *msg) noexcept {
                             QString::fromUtf8(msg));
 }
 
+// Screenshot format index (0/1/2) → file extension. Shared by buildFilename
+// and saveImage so the two can't drift.
+static const char *kFormatExt[] = { "png", "jpg", "webp" };
+
 static QString buildFilename(const QString &pattern, int fmt) {
     QString timestamp = QDateTime::currentDateTime().toString("yyyy-MM-dd_HH-mm-ss");
-    const char *extensions[] = { "png", "jpg", "webp" };
-    QString ext = extensions[qBound(0, fmt, 2)];
+    QString ext = kFormatExt[qBound(0, fmt, 2)];
 
     if (pattern.isEmpty()) {
         return QStringLiteral("screenshot_%1.%2").arg(timestamp, ext);
@@ -341,10 +340,9 @@ static void saveImage(const QImage &img) {
     // (optional) clipboard, and (optional) history indexing in one call.
     // We pass the Qt-composited RGBA bytes verbatim — same input the
     // deprecated snapforge_save_image used to take.
-    static const char *kFmtNames[] = { "png", "jpg", "webp" };
     sf::SaveReq req;
     req.outputPath = path;
-    req.format = QString::fromLatin1(kFmtNames[qBound(0, fmt, 2)]);
+    req.format = QString::fromLatin1(kFormatExt[qBound(0, fmt, 2)]);
     req.quality = quality;
     req.copyToClipboard = false; // copyImage handles that separately
     req.addToHistory = true;
@@ -509,10 +507,7 @@ int main(int argc, char *argv[]) {
     // on macOS dark mode flips). "Auto" follows; explicit Light/Dark ignore.
     class PaletteFilter : public QObject {
     public:
-        // QPointer: the filter is parented to the app and outlives the
-        // stack-allocated PreferencesWindow; a raw pointer would dangle for
-        // any palette change delivered during shutdown.
-        QPointer<PreferencesWindow> prefs;
+        PreferencesWindow *prefs;
         explicit PaletteFilter(PreferencesWindow *p, QObject *parent)
             : QObject(parent), prefs(p) {}
         bool eventFilter(QObject *obj, QEvent *event) override {
@@ -525,10 +520,11 @@ int main(int argc, char *argv[]) {
     auto *paletteFilter = new PaletteFilter(&prefs, &app);
     app.installEventFilter(paletteFilter);
 
-    // ClickTap wraps the snapforge_clicks_* use-case FFI. Clicks are baked
-    // into recordings by the Rust encoder; RecordingController only starts
-    // the tap briefly as an Accessibility permission probe so a missing grant
-    // surfaces as a tray banner instead of silently-missing click markers.
+    // Global mouse-down tap. Only started while recording AND the pref is on,
+    // purely to probe the permission grant — a failure surfaces as a tray
+    // banner while the recording continues. Click ripples themselves are baked
+    // into the video by the Rust encoder. ClickTap wraps the snapforge_clicks_*
+    // use-case FFI, so this works on every platform Snapforge ships.
     ClickTap clickTap;
 
     // Sync prefs → overlay
@@ -603,8 +599,8 @@ int main(int argc, char *argv[]) {
                          QSystemTrayIcon::Information, 3000);
     });
 
-    // Wire all RecordingManager lifecycle signals → tray feedback + click-tap
-    // permission probe + clipboard copy on stop + error modal.
+    // Wire all RecordingManager lifecycle signals → tray feedback + click
+    // overlay/tap toggling + clipboard copy on stop + error modal.
     RecordingController recordingController(&recording,
                                             &tray,
                                             &clickTap,

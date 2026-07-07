@@ -24,8 +24,6 @@ public:
     // Initial menu (normal/idle layout) + show. Call once at startup.
     void initialize();
 
-    QSystemTrayIcon *systemTray() { return m_tray; }
-
 public slots:
     // Swap to the pulsing-pill icon, switch menu to recording layout, start
     // the pulse timer, update tooltip.

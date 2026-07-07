@@ -274,16 +274,6 @@ impl AppConfig {
             .replace("{time}", &now.format("%H-%M-%S").to_string())
     }
 
-    pub fn recording_file_path(&self) -> PathBuf {
-        let now = chrono::Local::now();
-        let ext = match self.recording.format {
-            RecordingFormat::Mp4 => "mp4",
-            RecordingFormat::Gif => "gif",
-        };
-        let filename = format!("recording-{}.{}", now.format("%Y-%m-%d-%H-%M-%S"), ext);
-        self.save_directory.join(filename)
-    }
-
     pub fn save_file_path(&self) -> PathBuf {
         let filename = self.generate_filename();
         let ext = self.screenshot_format.extension();

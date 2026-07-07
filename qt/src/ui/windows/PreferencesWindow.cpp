@@ -605,6 +605,49 @@ QWidget *PreferencesWindow::buildRecordingTab()
 // Hotkeys tab
 // ===========================================================================
 
+// Canonical hotkey table: section, actionKey, displayName, defaultShortcut.
+// Single source of truth shared by buildHotkeysTab (builds the rows) and
+// onResetHotkeys (restores defaults) so the two can't drift.
+namespace {
+struct HotkeyDef {
+    const char *section;
+    const char *actionKey;
+    const char *displayName;
+    const char *defaultShortcut;
+};
+const HotkeyDef kHotkeyDefs[] = {
+    // Global
+    {"global", "screenshot",  "Screenshot",        "Cmd+Shift+S"},
+    {"global", "fullscreen",  "Capture Fullscreen", "Cmd+Shift+F"},
+    {"global", "record",      "Record",            "Cmd+Shift+R"},
+    {"global", "history",     "History",           "Cmd+Shift+H"},
+    {"global", "preferences", "Preferences",       "Cmd+,"},
+    // Tools
+    {"tools", "arrow",        "Arrow",          "A"},
+    {"tools", "rect",         "Rectangle",      "R"},
+    {"tools", "circle",       "Circle",         "C"},
+    {"tools", "line",         "Line",           "L"},
+    {"tools", "dottedline",   "Dotted Line",    "D"},
+    {"tools", "freehand",     "Freehand",       "F"},
+    {"tools", "text",         "Text",           "T"},
+    {"tools", "highlight",    "Highlight",      "H"},
+    {"tools", "blur",         "Blur",           "B"},
+    {"tools", "steps",        "Steps",          "N"},
+    {"tools", "colorpicker",  "Color Picker",   "I"},
+    {"tools", "measure",      "Measure",        "M"},
+    // Sizes
+    {"sizes", "small",        "Small",          "1"},
+    {"sizes", "medium",       "Medium",         "2"},
+    {"sizes", "large",        "Large",          "3"},
+    // Actions
+    {"actions", "save",       "Save",           "Cmd+S"},
+    {"actions", "copy",       "Copy",           "Cmd+C"},
+    {"actions", "undo",       "Undo",           "Cmd+Z"},
+    {"actions", "redo",       "Redo",           "Cmd+Shift+Z"},
+    {"actions", "cancel",     "Cancel",         "Escape"},
+};
+} // namespace
+
 QWidget *PreferencesWindow::buildHotkeysTab()
 {
     // Outer scroll area
@@ -624,45 +667,6 @@ QWidget *PreferencesWindow::buildHotkeysTab()
     layout->setContentsMargins(20, 20, 20, 20);
     layout->setSpacing(0);
 
-    // Default hotkey table: section, actionKey, displayName, defaultShortcut
-    struct HotkeyDef {
-        const char *section;
-        const char *actionKey;
-        const char *displayName;
-        const char *defaultShortcut;
-    };
-    static const HotkeyDef defs[] = {
-        // Global
-        {"global", "screenshot",  "Screenshot",        "Cmd+Shift+S"},
-        {"global", "fullscreen",  "Capture Fullscreen", "Cmd+Shift+F"},
-        {"global", "record",      "Record",            "Cmd+Shift+R"},
-        {"global", "history",     "History",           "Cmd+Shift+H"},
-        {"global", "preferences", "Preferences",       "Cmd+,"},
-        // Tools
-        {"tools", "arrow",        "Arrow",          "A"},
-        {"tools", "rect",         "Rectangle",      "R"},
-        {"tools", "circle",       "Circle",         "C"},
-        {"tools", "line",         "Line",           "L"},
-        {"tools", "dottedline",   "Dotted Line",    "D"},
-        {"tools", "freehand",     "Freehand",       "F"},
-        {"tools", "text",         "Text",           "T"},
-        {"tools", "highlight",    "Highlight",      "H"},
-        {"tools", "blur",         "Blur",           "B"},
-        {"tools", "steps",        "Steps",          "N"},
-        {"tools", "colorpicker",  "Color Picker",   "I"},
-        {"tools", "measure",      "Measure",        "M"},
-        // Sizes
-        {"sizes", "small",        "Small",          "1"},
-        {"sizes", "medium",       "Medium",         "2"},
-        {"sizes", "large",        "Large",          "3"},
-        // Actions
-        {"actions", "save",       "Save",           "Cmd+S"},
-        {"actions", "copy",       "Copy",           "Cmd+C"},
-        {"actions", "undo",       "Undo",           "Cmd+Z"},
-        {"actions", "redo",       "Redo",           "Cmd+Shift+Z"},
-        {"actions", "cancel",     "Cancel",         "Escape"},
-    };
-
     static const struct { const char *key; const char *label; } sectionLabels[] = {
         {"global",  "GLOBAL SHORTCUTS"},
         {"tools",   "ANNOTATION TOOLS"},
@@ -673,7 +677,7 @@ QWidget *PreferencesWindow::buildHotkeysTab()
     m_hotkeyRows.clear();
     const char *lastSection = nullptr;
 
-    for (const HotkeyDef &def : defs) {
+    for (const HotkeyDef &def : kHotkeyDefs) {
         // Section heading
         if (lastSection == nullptr || strcmp(def.section, lastSection) != 0) {
             lastSection = def.section;
@@ -1070,49 +1074,19 @@ void PreferencesWindow::refreshBadge(int rowIndex)
     HotkeyRow &row = m_hotkeyRows[rowIndex];
     if (!row.badgeWidget) return;
 
-    // Replace badge widget contents (delete old children, rebuild)
-    QLayoutItem *item;
-    while ((item = row.badgeWidget->layout()->takeAt(0)) != nullptr) {
-        if (item->widget()) item->widget()->deleteLater();
-        delete item;
-    }
-
-    // Rebuild using makeBadges logic inline on existing container. Built per
-    // call (not static) so it always reflects the CURRENT theme.
-    const QString badgeStyle = QStringLiteral(
-        "QLabel { background: %1; border: 1px solid %2; border-radius: 3px; padding: 1px 5px;"
-        "  font-size: 10px; font-family: 'JetBrains Mono', Menlo, monospace; color: %3; }")
-        .arg(g_theme.bgCard, g_theme.border, g_theme.textSec);
-
-    auto *rowLayout = qobject_cast<QHBoxLayout *>(row.badgeWidget->layout());
+    // Rebuild by swapping in a fresh makeBadges() widget rather than
+    // re-implementing the token→glyph rendering — that inline copy drifted
+    // from makeBadges (different padding/colors). One renderer, one look.
+    QWidget *parent = row.badgeWidget->parentWidget();
+    auto *rowLayout = parent ? qobject_cast<QHBoxLayout *>(parent->layout()) : nullptr;
     if (!rowLayout) return;
 
-    if (row.shortcut.isEmpty()) {
-        auto *empty = new QLabel(QStringLiteral("—"), row.badgeWidget);
-        empty->setStyleSheet(QStringLiteral(
-            "QLabel { color: %1; font-size: 12px; background: none; }").arg(g_theme.textFaint));
-        rowLayout->addWidget(empty);
-    } else {
-        QStringList tokens = row.shortcut.split('+', Qt::SkipEmptyParts);
-        for (const QString &tok : tokens) {
-            QString display = tok.trimmed();
-            if (display.compare("cmd", Qt::CaseInsensitive) == 0 ||
-                display.compare("command", Qt::CaseInsensitive) == 0)
-                display = QStringLiteral("⌘");
-            else if (display.compare("shift", Qt::CaseInsensitive) == 0)
-                display = QStringLiteral("⇧");
-            else if (display.compare("alt", Qt::CaseInsensitive) == 0 ||
-                     display.compare("opt", Qt::CaseInsensitive) == 0 ||
-                     display.compare("option", Qt::CaseInsensitive) == 0)
-                display = QStringLiteral("⌥");
-            else if (display.compare("ctrl", Qt::CaseInsensitive) == 0 ||
-                     display.compare("control", Qt::CaseInsensitive) == 0)
-                display = QStringLiteral("⌃");
-            auto *badge = new QLabel(display, row.badgeWidget);
-            badge->setStyleSheet(badgeStyle);
-            rowLayout->addWidget(badge);
-        }
-    }
+    int idx = rowLayout->indexOf(row.badgeWidget);
+    rowLayout->removeWidget(row.badgeWidget);
+    row.badgeWidget->deleteLater();
+
+    row.badgeWidget = makeBadges(row.shortcut, parent);
+    rowLayout->insertWidget(idx < 0 ? 1 : idx, row.badgeWidget, 0, Qt::AlignVCenter);
 }
 
 // Convert Qt key + modifiers to a shortcut string like "Cmd+Shift+S"
@@ -1167,40 +1141,12 @@ void PreferencesWindow::onScreenshotFormatChanged()
 
 void PreferencesWindow::onResetHotkeys()
 {
-    static const struct { const char *section; const char *key; const char *shortcut; } defaults[] = {
-        {"global", "screenshot",  "Cmd+Shift+S"},
-        {"global", "fullscreen",  "Cmd+Shift+F"},
-        {"global", "record",      "Cmd+Shift+R"},
-        {"global", "history",     "Cmd+Shift+H"},
-        {"global", "preferences", "Cmd+,"},
-        {"tools",  "arrow",       "A"},
-        {"tools",  "rect",        "R"},
-        {"tools",  "circle",      "C"},
-        {"tools",  "line",        "L"},
-        {"tools",  "dottedline",  "D"},
-        {"tools",  "freehand",    "F"},
-        {"tools",  "text",        "T"},
-        {"tools",  "highlight",   "H"},
-        {"tools",  "blur",        "B"},
-        {"tools",  "steps",       "N"},
-        {"tools",  "colorpicker", "I"},
-        {"tools",  "measure",     "M"},
-        {"sizes",  "small",       "1"},
-        {"sizes",  "medium",      "2"},
-        {"sizes",  "large",       "3"},
-        {"actions","save",        "Cmd+S"},
-        {"actions","copy",        "Cmd+C"},
-        {"actions","undo",        "Cmd+Z"},
-        {"actions","redo",        "Cmd+Shift+Z"},
-        {"actions","cancel",      "Escape"},
-    };
-
     for (int i = 0; i < (int)m_hotkeyRows.size(); ++i) {
         HotkeyRow &row = m_hotkeyRows[i];
-        for (const auto &d : defaults) {
+        for (const HotkeyDef &d : kHotkeyDefs) {
             if (row.section == QString::fromLatin1(d.section) &&
-                row.actionKey == QString::fromLatin1(d.key)) {
-                row.shortcut = QString::fromLatin1(d.shortcut);
+                row.actionKey == QString::fromLatin1(d.actionKey)) {
+                row.shortcut = QString::fromLatin1(d.defaultShortcut);
                 refreshBadge(i);
                 break;
             }

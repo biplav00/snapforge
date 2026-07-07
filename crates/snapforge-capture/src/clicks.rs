@@ -77,6 +77,8 @@ impl ClickTracker {
     }
 
     /// Get clicks from within the last `max_age_ms` milliseconds.
+    /// Test-only convenience wrapper; production callers use `recent_into`.
+    #[cfg(test)]
     pub fn recent(&self, max_age_ms: u64) -> Vec<ClickEvent> {
         let mut out = Vec::new();
         self.recent_into(max_age_ms, &mut out);
