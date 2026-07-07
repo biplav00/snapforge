@@ -27,6 +27,20 @@
 #ifdef Q_OS_MAC
 #include <objc/runtime.h>
 #include <objc/message.h>
+
+// Set the native crosshair NSCursor directly. On the borderless overlay panel
+// AppKit resets the cursor to the default arrow on every pointer move (no
+// tracking area/cursor rect is registered), and neither Qt's override cursor
+// nor a per-widget setCursor() survives that re-evaluation. A native
+// [NSCursor set] from inside the move handler sticks until the next reset, and
+// since motion is a continuous stream of moves the crosshair holds.
+static void setNativeCrosshair() {
+    id cur = ((id (*)(id, SEL))objc_msgSend)(
+        (id)objc_getClass("NSCursor"), sel_registerName("crosshairCursor"));
+    ((void (*)(id, SEL))objc_msgSend)(cur, sel_registerName("set"));
+}
+#else
+static void setNativeCrosshair() {}
 #endif
 
 // --- Rebindable overlay shortcuts ---
@@ -49,13 +63,14 @@ bool OverlayWindow::KeyBinding::matches(const QKeyEvent *event) const {
     return key == Qt::Key_Return && event->key() == Qt::Key_Enter;
 }
 
-OverlayWindow::KeyBinding OverlayWindow::bindingFor(const char *section,
+OverlayWindow::KeyBinding OverlayWindow::bindingFor(const shortcuts::Snapshot &cfg,
+                                                    const char *section,
                                                     const char *actionId,
                                                     const char *defaultChord) {
     KeyBinding b;
-    const QString c = shortcuts::chord(QLatin1String(section),
-                                       QLatin1String(actionId),
-                                       QLatin1String(defaultChord));
+    const QString c = cfg.chord(QLatin1String(section),
+                                QLatin1String(actionId),
+                                QLatin1String(defaultChord));
     if (!shortcuts::toQtKey(c, &b.key, &b.mods)) {
         // Unparseable user chord — fall back to the built-in default so the
         // action never goes dead.
@@ -81,19 +96,23 @@ void OverlayWindow::reloadKeyBindings() {
         {"colorpicker", "I", ToolType::ColorPicker},
         {"measure",     "M", ToolType::Measure},
     };
+    // One Snapshot for the whole batch — ~20 lookups would otherwise each
+    // re-load and re-parse the config from disk.
+    const shortcuts::Snapshot cfg;
+
     m_toolBindings.clear();
     for (const auto &t : kTools)
-        m_toolBindings.append(qMakePair(bindingFor("tools", t.id, t.def), t.tool));
+        m_toolBindings.append(qMakePair(bindingFor(cfg, "tools", t.id, t.def), t.tool));
 
-    m_bindSizeSmall  = bindingFor("sizes", "small",  "1");
-    m_bindSizeMedium = bindingFor("sizes", "medium", "2");
-    m_bindSizeLarge  = bindingFor("sizes", "large",  "3");
+    m_bindSizeSmall  = bindingFor(cfg, "sizes", "small",  "1");
+    m_bindSizeMedium = bindingFor(cfg, "sizes", "medium", "2");
+    m_bindSizeLarge  = bindingFor(cfg, "sizes", "large",  "3");
 
-    m_bindSave   = bindingFor("actions", "save",   "Cmd+S");
-    m_bindCopy   = bindingFor("actions", "copy",   "Cmd+C");
-    m_bindUndo   = bindingFor("actions", "undo",   "Cmd+Z");
-    m_bindRedo   = bindingFor("actions", "redo",   "Cmd+Shift+Z");
-    m_bindCancel = bindingFor("actions", "cancel", "Escape");
+    m_bindSave   = bindingFor(cfg, "actions", "save",   "Cmd+S");
+    m_bindCopy   = bindingFor(cfg, "actions", "copy",   "Cmd+C");
+    m_bindUndo   = bindingFor(cfg, "actions", "undo",   "Cmd+Z");
+    m_bindRedo   = bindingFor(cfg, "actions", "redo",   "Cmd+Shift+Z");
+    m_bindCancel = bindingFor(cfg, "actions", "cancel", "Escape");
 }
 
 // --- OverlayWindow ---
@@ -215,6 +234,21 @@ void OverlayWindow::activateInternal() {
     // monitor (see the helper for the full rationale).
     if (screen) {
         repositionToScreen(screen);
+    }
+
+    // A remembered region was captured in a previous display's coordinate space.
+    // If that display was larger, the restored points can now fall outside this
+    // overlay — clamp them (now that repositionToScreen has sized us to the
+    // current display) so the selection, and the pixel region we later hand the
+    // encoder or the screenshot cropper, stays within bounds. No-op for the
+    // fresh-activation default (both points 0,0).
+    if (m_startPos != m_endPos) {
+        const int maxX = std::max(0, width() - 1);
+        const int maxY = std::max(0, height() - 1);
+        m_startPos.setX(std::clamp(m_startPos.x(), 0, maxX));
+        m_startPos.setY(std::clamp(m_startPos.y(), 0, maxY));
+        m_endPos.setX(std::clamp(m_endPos.x(), 0, maxX));
+        m_endPos.setY(std::clamp(m_endPos.y(), 0, maxY));
     }
 
     // Show the overlay BEFORE capturing. Previously snapforge_capture_fullscreen
@@ -504,6 +538,8 @@ void OverlayWindow::applyResize(QPoint pos) {
         if (m_toolbar) {
             m_toolbar->positionRelativeTo(sel.x(), sel.y(), sel.width(), sel.height());
         }
+    } else if (m_mode == RecordSelect) {
+        positionRecordButtons(selectedRect());
     }
 
     update();
@@ -630,6 +666,18 @@ void OverlayWindow::enterRecordSelectMode() {
         });
     }
 
+    positionRecordButtons(sel);
+
+    update();
+    syncSelectCursor();
+}
+
+// Lay out (and show) the record-mode action buttons under `sel`. Called on
+// enter and again on every edge-resize, so the buttons track the region instead
+// of staying anchored under the original rectangle.
+void OverlayWindow::positionRecordButtons(const QRect &sel) {
+    if (!m_btnRecordRegion || !m_btnRecordFullscreen || !m_btnRecordCancel) return;
+
     // Adjust button sizes so we can position them
     m_btnRecordRegion->adjustSize();
     m_btnRecordFullscreen->adjustSize();
@@ -649,14 +697,18 @@ void OverlayWindow::enterRecordSelectMode() {
     int startY = sel.bottom() + yOffset;
 
     // Clamp so buttons stay within the overlay. startX/startY are WIDGET-LOCAL
-    // coords and the overlay spans exactly the cursor's screen, so clamp
-    // against our own size — the primary screen's geometry is the wrong bound
-    // on a secondary display with a different resolution.
+    // coords and the overlay spans exactly the cursor's screen, so clamp against
+    // our own size. Clamp the far edge FIRST, then the near edge, so a region
+    // wider/taller than the overlay floors at 4 instead of going off-screen
+    // negative (which the old near-edge-first order allowed).
     const int overlayW = width();
     const int overlayH = height();
-    if (startX < 4) startX = 4;
     if (startX + totalWidth > overlayW - 4) startX = overlayW - 4 - totalWidth;
+    if (startX < 4) startX = 4;
+    // No room below the region → place above it; if that's also off-screen
+    // (region hugging the top), floor at 4.
     if (startY + btnHeight > overlayH - 4) startY = sel.top() - btnHeight - yOffset;
+    if (startY < 4) startY = 4;
 
     int x = startX;
     m_btnRecordRegion->setGeometry(x, startY, m_btnRecordRegion->sizeHint().width(), btnHeight);
@@ -671,9 +723,6 @@ void OverlayWindow::enterRecordSelectMode() {
     m_btnRecordFullscreen->raise();
     m_btnRecordCancel->show();
     m_btnRecordCancel->raise();
-
-    update();
-    syncSelectCursor();
 }
 
 void OverlayWindow::exitRecordSelectMode() {
@@ -790,30 +839,13 @@ void OverlayWindow::handleCaptureFailure(const char *reason) {
                        "Recording, then try again."));
 }
 
-void OverlayWindow::handleSave() {
-    if (!m_canvas) return;
-    // Capture hasn't landed yet (user hit save while the async fullscreen grab
-    // was still in flight — possible via remembered-region/fullscreen, which
-    // enter annotate mode before the screenshot resolves). compositeImage()
-    // would be blank. Ignore the save and keep the overlay up; the completion
-    // handler refreshes the canvas, so a second save works.
-    if (m_captureInFlight) return;
-    QImage composited = m_canvas->compositeImage();
-    if (composited.isNull()) return;
-
-    rememberCurrentRegion();
-    m_hasRegion = false;
-    m_drawing = false;
-    exitAnnotateMode();
-    hideOverlay();
-
-    emit screenshotReady(composited, composited.width(), composited.height());
-}
-
 void OverlayWindow::handleCopy() {
     if (!m_canvas) return;
-    // See handleSave: skip while the async capture is still pending so a blank
-    // composite isn't copied; retry works once the canvas refreshes.
+    // Capture hasn't landed yet (user acted while the async fullscreen grab
+    // was still in flight — possible via remembered-region/fullscreen, which
+    // enter annotate mode before the screenshot resolves). compositeImage()
+    // would be blank. Ignore and keep the overlay up; the completion handler
+    // refreshes the canvas, so a retry works.
     if (m_captureInFlight) return;
     QImage composited = m_canvas->compositeImage();
     if (composited.isNull()) return;
@@ -829,7 +861,7 @@ void OverlayWindow::handleCopy() {
 
 void OverlayWindow::handleSaveAndCopy() {
     if (!m_canvas) return;
-    // See handleSave: skip while the async capture is still pending so a blank
+    // See handleCopy: skip while the async capture is still pending so a blank
     // composite isn't saved/copied; retry works once the canvas refreshes.
     if (m_captureInFlight) return;
     QImage composited = m_canvas->compositeImage();
@@ -1016,15 +1048,17 @@ void OverlayWindow::mouseMoveEvent(QMouseEvent *event) {
                 break;
             case EdgeNone:
             default:
-                if (m_mode == Select && !m_hasRegion) {
-                    setCursor(Qt::CrossCursor);
-                } else {
-                    setCursor(Qt::ArrowCursor);
-                }
+                // This branch is guarded by m_hasRegion above, so the old
+                // "Select && !m_hasRegion → crosshair" case was unreachable;
+                // the crosshair path lives in the else-if below.
+                setCursor(Qt::ArrowCursor);
                 break;
         }
     } else if (m_mode == Select) {
-        setCursor(Qt::CrossCursor);
+        // Pre-draw hover in select mode: AppKit resets to arrow on move, so set
+        // the native crosshair directly rather than relying on the (stale on
+        // this window) override/widget cursor. See setNativeCrosshair().
+        setNativeCrosshair();
     }
 }
 
@@ -1039,6 +1073,8 @@ void OverlayWindow::mouseReleaseEvent(QMouseEvent *event) {
             if (m_toolbar) {
                 m_toolbar->positionRelativeTo(sel.x(), sel.y(), sel.width(), sel.height());
             }
+        } else if (m_mode == RecordSelect) {
+            positionRecordButtons(selectedRect());
         }
         update();
         return;
@@ -1170,6 +1206,12 @@ void OverlayWindow::keyPressEvent(QKeyEvent *event) {
         m_drawing = false;
         hideOverlay();
         emit cancelled();
+        // hide() only *queues* the panel's removal with the window server;
+        // capturing immediately can still grab a frame containing the dim
+        // layer/marching-ants border. (The Enter/confirm path is immune — it
+        // composites from the screenshot pre-captured at activation instead
+        // of re-capturing.) Defer ~2 frames so the panel is actually gone.
+        QTimer::singleShot(35, this, [displayIndex, px, py, pw, ph]() {
         QThreadPool::globalInstance()->start([displayIndex, px, py, pw, ph]() {
             // Raw capture stays on the primitive (snapforge_capture_region):
             // this is the unmodified desktop bitmap with no annotations to
@@ -1194,5 +1236,6 @@ void OverlayWindow::keyPressEvent(QKeyEvent *event) {
                 }
             }
         });
+        }); // singleShot
     }
 }

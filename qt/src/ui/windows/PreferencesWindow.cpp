@@ -192,7 +192,8 @@ static QWidget *makeBadges(const QString &shortcut, QWidget *parent) {
 
     if (shortcut.isEmpty()) {
         auto *empty = new QLabel(QStringLiteral("—"), container);
-        empty->setStyleSheet("QLabel { color: #555; font-size: 12px; background: none; }");
+        empty->setStyleSheet(QStringLiteral("QLabel { color: %1; font-size: 12px; background: none; }")
+                                 .arg(g_theme.textMuted));
         row->addWidget(empty, 0, Qt::AlignVCenter);
     } else {
         // Split "Cmd+Shift+S" → ["Cmd","Shift","S"] and render each token
@@ -266,15 +267,15 @@ void PreferencesWindow::buildUi()
     root->setSpacing(0);
 
     // Tab widget
-    auto *tabs = new QTabWidget(this);
-    tabs->setStyleSheet(tabStyle());
-    tabs->addTab(buildGeneralTab(),     QStringLiteral("General"));
-    tabs->addTab(buildScreenshotsTab(), QStringLiteral("Screenshots"));
-    tabs->addTab(buildRecordingTab(),   QStringLiteral("Recording"));
-    tabs->addTab(buildHotkeysTab(),     QStringLiteral("Hotkeys"));
-    tabs->addTab(buildPermissionsTab(), QStringLiteral("Permissions"));
-    tabs->addTab(buildLogsTab(),        QStringLiteral("Logs"));
-    root->addWidget(tabs, 1);
+    m_tabs = new QTabWidget(this);
+    m_tabs->setStyleSheet(tabStyle());
+    m_tabs->addTab(buildGeneralTab(),     QStringLiteral("General"));
+    m_tabs->addTab(buildScreenshotsTab(), QStringLiteral("Screenshots"));
+    m_tabs->addTab(buildRecordingTab(),   QStringLiteral("Recording"));
+    m_tabs->addTab(buildHotkeysTab(),     QStringLiteral("Hotkeys"));
+    m_tabs->addTab(buildPermissionsTab(), QStringLiteral("Permissions"));
+    m_tabs->addTab(buildLogsTab(),        QStringLiteral("Logs"));
+    root->addWidget(m_tabs, 1);
 
     // Dark separator
     root->addWidget(makeSeparator(this));
@@ -286,7 +287,9 @@ void PreferencesWindow::buildUi()
 
     m_statusLabel = new QLabel(this);
     m_statusLabel->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
-    m_statusLabel->setStyleSheet("QLabel { color: #22c55e; font-size: 12px; font-family: 'JetBrains Mono', monospace; background: transparent; }");
+    m_statusLabel->setStyleSheet(QStringLiteral(
+        "QLabel { color: %1; font-size: 12px; font-family: 'JetBrains Mono', monospace; background: transparent; }"
+    ).arg(g_theme.success));
 
     auto *saveBtn = new QPushButton(QStringLiteral("Save Settings"), this);
     saveBtn->setStyleSheet(saveBtnStyle());
@@ -449,7 +452,9 @@ QWidget *PreferencesWindow::buildScreenshotsTab()
     m_quality->setStyleSheet(sliderStyle());
     m_qualityLabel = new QLabel(QStringLiteral("90"), w);
     m_qualityLabel->setFixedWidth(30);
-    m_qualityLabel->setStyleSheet("QLabel { color: #8b95ab; font-family: 'JetBrains Mono', monospace; background: transparent; }");
+    m_qualityLabel->setStyleSheet(QStringLiteral(
+        "QLabel { color: %1; font-family: 'JetBrains Mono', monospace; background: transparent; }"
+    ).arg(g_theme.textSec));
     qualRow->addWidget(m_quality, 1);
     qualRow->addWidget(m_qualityLabel);
     layout->addLayout(qualRow);
@@ -606,10 +611,12 @@ QWidget *PreferencesWindow::buildHotkeysTab()
     auto *scroll = new QScrollArea;
     scroll->setWidgetResizable(true);
     scroll->setFrameShape(QFrame::NoFrame);
-    scroll->setStyleSheet("QScrollArea { background: #0c0e12; border: none; }"
-                          "QScrollBar:vertical { background: #13161c; width: 8px; }"
-                          "QScrollBar::handle:vertical { background: #3a4460; border-radius: 4px; min-height: 20px; }"
-                          "QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }");
+    scroll->setStyleSheet(QStringLiteral(
+        "QScrollArea { background: %1; border: none; }"
+        "QScrollBar:vertical { background: %2; width: 8px; }"
+        "QScrollBar::handle:vertical { background: %3; border-radius: 4px; min-height: 20px; }"
+        "QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }"
+    ).arg(g_theme.bg, g_theme.bgPanel, g_theme.borderStrong));
 
     auto *w = new QWidget;
     w->setStyleSheet("QWidget { background: " + g_theme.bg + "; }");
@@ -676,11 +683,11 @@ QWidget *PreferencesWindow::buildHotkeysTab()
             for (const auto &sl : sectionLabels) {
                 if (strcmp(sl.key, def.section) == 0) {
                     auto *sectionLbl = new QLabel(QString::fromLatin1(sl.label), w);
-                    sectionLbl->setStyleSheet(
-                        "QLabel { color: #3d4660; font-size: 10px; font-weight: 700;"
+                    sectionLbl->setStyleSheet(QStringLiteral(
+                        "QLabel { color: %1; font-size: 10px; font-weight: 700;"
                         "  letter-spacing: 1.5px; background: transparent;"
                         "  font-family: 'JetBrains Mono', Menlo, monospace;"
-                        "  padding-bottom: 6px; }");
+                        "  padding-bottom: 6px; }").arg(g_theme.textFaint));
                     layout->addWidget(sectionLbl);
                     // Column header
                     auto *hdr = new QWidget(w);
@@ -689,16 +696,18 @@ QWidget *PreferencesWindow::buildHotkeysTab()
                     auto *hdrLayout = new QHBoxLayout(hdr);
                     hdrLayout->setContentsMargins(14, 0, 14, 0);
                     hdrLayout->setSpacing(8);
+                    const QString hdrStyle = QStringLiteral(
+                        "QLabel { color: %1; font-size: 10px;"
+                        " font-family: 'JetBrains Mono', monospace; background: transparent; }")
+                        .arg(g_theme.textFaint);
                     auto *hAction = new QLabel(
                         strcmp(def.section, "tools") == 0 ? QStringLiteral("Tool") :
                         strcmp(def.section, "sizes") == 0 ? QStringLiteral("Size") :
                         QStringLiteral("Action"), hdr);
-                    hAction->setStyleSheet("QLabel { color: #3d4660; font-size: 10px;"
-                        " font-family: 'JetBrains Mono', monospace; background: transparent; }");
+                    hAction->setStyleSheet(hdrStyle);
                     hAction->setFixedWidth(150);
                     auto *hShortcut = new QLabel(QStringLiteral("Shortcut"), hdr);
-                    hShortcut->setStyleSheet("QLabel { color: #3d4660; font-size: 10px;"
-                        " font-family: 'JetBrains Mono', monospace; background: transparent; }");
+                    hShortcut->setStyleSheet(hdrStyle);
                     hdrLayout->addWidget(hAction);
                     hdrLayout->addWidget(hShortcut, 1);
                     hdrLayout->addSpacing(80); // space for Change button column
@@ -706,7 +715,8 @@ QWidget *PreferencesWindow::buildHotkeysTab()
                     // Separator under header
                     auto *sep = new QFrame(w);
                     sep->setFrameShape(QFrame::HLine);
-                    sep->setStyleSheet("QFrame { background: #262d3d; border: none; max-height: 1px; }");
+                    sep->setStyleSheet(QStringLiteral(
+                        "QFrame { background: %1; border: none; max-height: 1px; }").arg(g_theme.border));
                     layout->addWidget(sep);
                     break;
                 }
@@ -732,9 +742,9 @@ QWidget *PreferencesWindow::buildHotkeysTab()
 
         // Action label
         auto *nameLabel = new QLabel(row.displayName, rowWidget);
-        nameLabel->setStyleSheet(
-            "QLabel { color: #e8ecf4; font-size: 13px; font-weight: 450;"
-            "  background: transparent; }");
+        nameLabel->setStyleSheet(QStringLiteral(
+            "QLabel { color: %1; font-size: 13px; font-weight: 450;"
+            "  background: transparent; }").arg(g_theme.text));
         nameLabel->setFixedWidth(150);
 
         // Badge widget (shortcut display)
@@ -743,12 +753,14 @@ QWidget *PreferencesWindow::buildHotkeysTab()
         // Change button
         int rowIndex = m_hotkeyRows.size();
         auto *changeBtn = new QPushButton(QStringLiteral("Change"), rowWidget);
-        changeBtn->setStyleSheet(
-            "QPushButton { background: transparent; border: 1px solid #262d3d;"
-            "  border-radius: 4px; padding: 3px 12px; color: #5a6580; font-size: 10px;"
+        changeBtn->setStyleSheet(QStringLiteral(
+            "QPushButton { background: transparent; border: 1px solid %1;"
+            "  border-radius: 4px; padding: 3px 12px; color: %2; font-size: 10px;"
             "  font-family: 'JetBrains Mono', monospace; }"
-            "QPushButton:hover { color: #60a5fa; border-color: #3b82f6;"
-            "  background: rgba(59,130,246,0.08); }");
+            "QPushButton:hover { color: %3; border-color: %4;"
+            "  background: %5; }")
+            .arg(g_theme.border, g_theme.textMuted, g_theme.accentBright,
+                 g_theme.accent, g_theme.accentGlow));
         changeBtn->setFixedWidth(70);
         row.changeBtn = changeBtn;
 
@@ -762,7 +774,8 @@ QWidget *PreferencesWindow::buildHotkeysTab()
         // Thin separator between rows
         auto *rowSep = new QFrame(w);
         rowSep->setFrameShape(QFrame::HLine);
-        rowSep->setStyleSheet("QFrame { background: #1e2330; border: none; max-height: 1px; }");
+        rowSep->setStyleSheet(QStringLiteral(
+            "QFrame { background: %1; border: none; max-height: 1px; }").arg(g_theme.borderSubtle));
         layout->addWidget(rowSep);
 
         m_hotkeyRows.append(row);
@@ -921,12 +934,14 @@ void PreferencesWindow::refreshPermissionStatus()
     if (granted) {
         m_screenRecStatusBadge->setText(QStringLiteral("Granted"));
         m_screenRecStatusBadge->setStyleSheet(QStringLiteral(
-            "QLabel { color: #22c55e; font-size: 13px; font-weight: 600; background: transparent; }"
-        ));
+            "QLabel { color: %1; font-size: 13px; font-weight: 600; background: transparent; }"
+        ).arg(g_theme.success));
         if (m_screenRecHelpText) m_screenRecHelpText->setVisible(false);
         if (m_screenRecRequestBtn) m_screenRecRequestBtn->setEnabled(false);
     } else {
         m_screenRecStatusBadge->setText(QStringLiteral("Not Granted"));
+        // ponytail: semantic status red (like logLevelColor's error/warn hues)
+        // stays literal — it reads fine on both themes.
         m_screenRecStatusBadge->setStyleSheet(QStringLiteral(
             "QLabel { color: #ef4444; font-size: 13px; font-weight: 600; background: transparent; }"
         ));
@@ -1012,10 +1027,11 @@ void PreferencesWindow::startRecording(int rowIndex)
     row.recording = true;
 
     row.changeBtn->setText(QStringLiteral("Press a key..."));
-    row.changeBtn->setStyleSheet(
-        "QPushButton { background: rgba(59,130,246,0.15); border: 1px solid #3b82f6;"
-        "  border-radius: 5px; padding: 4px 12px; color: #60a5fa; font-size: 12px;"
-        "  font-family: 'JetBrains Mono', monospace; }");
+    row.changeBtn->setStyleSheet(QStringLiteral(
+        "QPushButton { background: %1; border: 1px solid %2;"
+        "  border-radius: 5px; padding: 4px 12px; color: %3; font-size: 12px;"
+        "  font-family: 'JetBrains Mono', monospace; }")
+        .arg(g_theme.accentGlow, g_theme.accent, g_theme.accentBright));
     row.changeBtn->setFixedWidth(110);
 
     // Grab keyboard focus
@@ -1036,11 +1052,13 @@ void PreferencesWindow::stopRecording(int rowIndex, bool accept, const QString &
     }
 
     row.changeBtn->setText(QStringLiteral("Change"));
-    row.changeBtn->setStyleSheet(
-        "QPushButton { background: #151920; border: 1px solid #262d3d;"
-        "  border-radius: 5px; padding: 4px 12px; color: #5a6580; font-size: 12px;"
+    row.changeBtn->setStyleSheet(QStringLiteral(
+        "QPushButton { background: %1; border: 1px solid %2;"
+        "  border-radius: 5px; padding: 4px 12px; color: %3; font-size: 12px;"
         "  font-family: 'JetBrains Mono', monospace; }"
-        "QPushButton:hover { color: #60a5fa; border-color: #3b82f6; background: rgba(59,130,246,0.1); }");
+        "QPushButton:hover { color: %4; border-color: %5; background: %6; }")
+        .arg(g_theme.bgInput, g_theme.border, g_theme.textMuted,
+             g_theme.accentBright, g_theme.accent, g_theme.accentGlow));
     row.changeBtn->setFixedWidth(80);
 
     m_recordingRowIndex = -1;
@@ -1059,17 +1077,20 @@ void PreferencesWindow::refreshBadge(int rowIndex)
         delete item;
     }
 
-    // Rebuild using makeBadges logic inline on existing container
-    static const QString badgeStyle =
-        "QLabel { background: #1e2330; border: 1px solid #262d3d; border-radius: 3px; padding: 1px 5px;"
-        "  font-size: 10px; font-family: 'JetBrains Mono', Menlo, monospace; color: #8b95ab; }";
+    // Rebuild using makeBadges logic inline on existing container. Built per
+    // call (not static) so it always reflects the CURRENT theme.
+    const QString badgeStyle = QStringLiteral(
+        "QLabel { background: %1; border: 1px solid %2; border-radius: 3px; padding: 1px 5px;"
+        "  font-size: 10px; font-family: 'JetBrains Mono', Menlo, monospace; color: %3; }")
+        .arg(g_theme.bgCard, g_theme.border, g_theme.textSec);
 
     auto *rowLayout = qobject_cast<QHBoxLayout *>(row.badgeWidget->layout());
     if (!rowLayout) return;
 
     if (row.shortcut.isEmpty()) {
         auto *empty = new QLabel(QStringLiteral("—"), row.badgeWidget);
-        empty->setStyleSheet("QLabel { color: #3d4660; font-size: 12px; background: none; }");
+        empty->setStyleSheet(QStringLiteral(
+            "QLabel { color: %1; font-size: 12px; background: none; }").arg(g_theme.textFaint));
         rowLayout->addWidget(empty);
     } else {
         QStringList tokens = row.shortcut.split('+', Qt::SkipEmptyParts);
@@ -1232,33 +1253,125 @@ void PreferencesWindow::applyTheme()
     if (!m_themeCombo) return;
 
     int idx = m_themeCombo->currentIndex();
+    Theme next;
     if (idx == 0) {
         // Auto — detect system appearance
 #ifdef Q_OS_MAC
         // Check macOS dark mode
         QPalette pal = QApplication::palette();
         bool sysDark = pal.color(QPalette::Window).lightness() < 128;
-        g_theme = sysDark ? darkTheme() : lightTheme();
+        next = sysDark ? darkTheme() : lightTheme();
 #else
-        g_theme = darkTheme();
+        next = darkTheme();
 #endif
     } else if (idx == 1) {
-        g_theme = lightTheme();
+        next = lightTheme();
     } else {
-        g_theme = darkTheme();
+        next = darkTheme();
     }
+
+    // bg differs between the two palettes, so it's a sufficient identity.
+    const bool changed = next.bg != g_theme.bg;
+    g_theme = next;
 
     // Re-apply the window stylesheet — this cascades to all children
     setStyleSheet(windowStyle());
 
-    // M14: instead of hiding/showing (which visibly flickers + moves the
-    // window), force the style engine to re-evaluate rules on the root
-    // widget. This re-polishes every child automatically.
-    if (QStyle *s = style()) {
-        s->unpolish(this);
-        s->polish(this);
+    if (!changed) {
+        // Same palette: nothing baked into the children is stale.
+        update();
+        return;
     }
-    update();
+
+    // Every tab baked the previous g_theme into its children's own
+    // setStyleSheet() strings at construction; restyling only the root left
+    // them dark forever (the "light theme does nothing" bug). Rebuild the tab
+    // contents with the new theme, preserving tab index + unsaved edits.
+    rebuildThemedUi();
+}
+
+void PreferencesWindow::rebuildThemedUi()
+{
+    // Abort an in-flight hotkey capture — its row widgets are about to die
+    // (also releases the keyboard grab).
+    if (m_recordingRowIndex >= 0)
+        stopRecording(m_recordingRowIndex, false);
+
+    // ---- Snapshot visible tab + unsaved edits --------------------------
+    const int     tabIdx     = m_tabs ? m_tabs->currentIndex() : 0;
+    const QString saveDir    = m_saveDir->text();
+    const bool    autoCopy   = m_autoCopy->isChecked();
+    const bool    showNotif  = m_showNotif->isChecked();
+    const bool    remember   = m_rememberRegion->isChecked();
+    const int     themeIdx   = m_themeCombo->currentIndex();
+    const int     fmtId      = m_screenshotFmtGroup->checkedId();
+    const int     quality    = m_quality->value();
+    const QString pattern    = m_filenamePattern->text();
+    const bool    recGif     = m_recGifBtn->isChecked();
+    const int     fpsId      = m_fpsGroup->checkedId();
+    const int     recQualId  = m_recQualGroup->checkedId();
+    const bool    showClicks = m_showClicks->isChecked();
+    QStringList shortcuts;
+    for (const HotkeyRow &row : m_hotkeyRows)
+        shortcuts << row.shortcut;
+    const int     logFilter  = m_logLevelFilter ? m_logLevelFilter->currentIndex() : 0;
+    const QString logSearch  = m_logSearch ? m_logSearch->text() : QString();
+    const bool    logScroll  = !m_logAutoScroll || m_logAutoScroll->isChecked();
+
+    // ---- Tear down ------------------------------------------------------
+    // deleteLater, not delete: applyTheme can be reached from a signal of a
+    // widget we are destroying (the theme combo itself).
+    const auto kids = findChildren<QWidget *>(QString(), Qt::FindDirectChildrenOnly);
+    for (QWidget *k : kids) {
+        k->hide();
+        k->setParent(nullptr);
+        k->deleteLater();
+    }
+    delete layout();
+
+    // ---- Rebuild with the new g_theme, then restore ----------------------
+    buildUi();
+
+    if (m_tabs) m_tabs->setCurrentIndex(tabIdx);
+    m_saveDir->setText(saveDir);
+    m_autoCopy->setChecked(autoCopy);
+    m_showNotif->setChecked(showNotif);
+    m_rememberRegion->setChecked(remember);
+    m_themeCombo->blockSignals(true);
+    m_themeCombo->setCurrentIndex(themeIdx);
+    m_themeCombo->blockSignals(false);
+
+    if (auto *b = m_screenshotFmtGroup->button(fmtId)) b->setChecked(true);
+    m_fmtPngBtn->setStyleSheet(cardStyle(m_fmtPngBtn->isChecked()));
+    m_fmtJpgBtn->setStyleSheet(cardStyle(m_fmtJpgBtn->isChecked()));
+    m_fmtWebpBtn->setStyleSheet(cardStyle(m_fmtWebpBtn->isChecked()));
+    m_quality->setValue(quality);
+    m_filenamePattern->setText(pattern);
+
+    (recGif ? m_recGifBtn : m_recMp4Btn)->setChecked(true);
+    m_recMp4Btn->setStyleSheet(cardStyle(m_recMp4Btn->isChecked()));
+    m_recGifBtn->setStyleSheet(cardStyle(m_recGifBtn->isChecked()));
+    if (auto *b = m_fpsGroup->button(fpsId)) b->setChecked(true);
+    for (QAbstractButton *btn : m_fpsGroup->buttons())
+        btn->setStyleSheet(pillStyle(btn->isChecked()));
+    if (auto *b = m_recQualGroup->button(recQualId)) b->setChecked(true);
+    for (QAbstractButton *btn : m_recQualGroup->buttons())
+        btn->setStyleSheet(pillStyle(btn->isChecked()));
+    m_showClicks->setChecked(showClicks);
+
+    for (int i = 0; i < m_hotkeyRows.size() && i < shortcuts.size(); ++i) {
+        if (m_hotkeyRows[i].shortcut != shortcuts.at(i)) {
+            m_hotkeyRows[i].shortcut = shortcuts.at(i);
+            refreshBadge(i);
+        }
+    }
+
+    if (m_logLevelFilter) m_logLevelFilter->setCurrentIndex(logFilter);
+    if (m_logSearch) m_logSearch->setText(logSearch);
+    if (m_logAutoScroll) m_logAutoScroll->setChecked(logScroll);
+
+    onScreenshotFormatChanged();
+    refreshPermissionStatus();
 }
 
 // ===========================================================================
@@ -1614,9 +1727,11 @@ QWidget *PreferencesWindow::buildLogsTab()
     ).arg(g_theme.bgInput, g_theme.text, g_theme.border));
     form->addWidget(m_logView, 1);
 
-    // Wire Logger signals — append on new entry, reload on clear.
+    // Wire Logger signals — append on new entry, reload on clear. Context is
+    // m_logView (NOT this): the connection must die with the view when a theme
+    // change rebuilds the tabs, or every rebuild would stack another append.
     auto *logger = Logger::instance();
-    connect(logger, &Logger::entryAdded, this, [this](const LogEntry &e) {
+    connect(logger, &Logger::entryAdded, m_logView, [this](const LogEntry &e) {
         const int filter = m_logLevelFilter->currentData().toInt();
         if (filter >= 0 && logSeverityRank(e.level) < filter) return;
         const QString needle = m_logSearch ? m_logSearch->text().trimmed() : QString();
@@ -1624,7 +1739,7 @@ QWidget *PreferencesWindow::buildLogsTab()
             return;
         appendLogLine(e.formatted(), e.level);
     });
-    connect(logger, &Logger::cleared, this, [this]() {
+    connect(logger, &Logger::cleared, m_logView, [this]() {
         if (m_logView) m_logView->clear();
     });
 

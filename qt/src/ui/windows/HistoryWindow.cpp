@@ -365,21 +365,34 @@ void HistoryWindow::loadEntries(const QList<HistoryEntry> &entries) {
     }
     m_cards.clear();
 
-    // Calculate columns based on window width
-    // Each card is 200px wide + 12px spacing; recalculate on next paint.
-    // For simplicity, use a fixed 4-column max grid; the scroll area handles overflow.
-    const int colCount = qMax(1, (m_scrollArea->viewport()->width() - 8) / (200 + 12));
-
-    int row = 0, col = 0;
     for (const HistoryEntry &e : entries) {
         auto *card = new HistoryCard(e, m_gridWidget);
         connect(card, &HistoryCard::deleteRequested,      this, &HistoryWindow::onDeleteEntry);
         connect(card, &HistoryCard::showInFolderRequested, this, &HistoryWindow::onShowInFolder);
         connect(card, &HistoryCard::copyRequested,        this, &HistoryWindow::onCopyEntry);
-
-        m_gridLayout->addWidget(card, row, col, Qt::AlignTop | Qt::AlignLeft);
         m_cards.append(card);
+    }
 
+    m_colCount = -1; // force placement even if the width didn't change
+    reflowCards();
+
+    updateFooter();
+}
+
+void HistoryWindow::reflowCards() {
+    // Each card is ~200px wide + 12px spacing; the scroll area handles overflow.
+    const int colCount = qMax(1, (m_scrollArea->viewport()->width() - 8) / (200 + 12));
+    if (colCount == m_colCount) return;
+    m_colCount = colCount;
+
+    // Clear the previous stretch row: a stale stretch landing between rows of
+    // the new, taller layout would open a gap mid-grid.
+    m_gridLayout->setRowStretch(m_stretchRow, 0);
+
+    int row = 0, col = 0;
+    for (HistoryCard *card : m_cards) {
+        m_gridLayout->removeWidget(card);
+        m_gridLayout->addWidget(card, row, col, Qt::AlignTop | Qt::AlignLeft);
         col++;
         if (col >= colCount) {
             col = 0;
@@ -387,10 +400,9 @@ void HistoryWindow::loadEntries(const QList<HistoryEntry> &entries) {
         }
     }
 
-    // Add a stretch spacer at the end to push cards to top-left
-    m_gridLayout->setRowStretch(row + 1, 1);
-
-    updateFooter();
+    // Stretch spacer after the last row to push cards to top-left.
+    m_stretchRow = row + 1;
+    m_gridLayout->setRowStretch(m_stretchRow, 1);
 }
 
 void HistoryWindow::updateFooter() {
@@ -448,10 +460,11 @@ void HistoryWindow::onShowInFolder(const QString &path) {
 
 void HistoryWindow::resizeEvent(QResizeEvent *event) {
     QWidget::resizeEvent(event);
-    // L5: re-flow the card grid when the window is resized.
-    if (!m_allEntries.isEmpty()) {
-        applyFilters();
-    }
+    // L5: re-flow the card grid when the window is resized. Only moves the
+    // existing cards into the new column count — rebuilding them here (the
+    // old applyFilters() call) reloaded every thumbnail from disk on each
+    // resize tick.
+    reflowCards();
 }
 
 void HistoryWindow::onCopyEntry(const QString &path) {

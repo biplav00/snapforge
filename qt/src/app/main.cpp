@@ -8,11 +8,11 @@
 #include <QEvent>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QPointer>
 #include "OverlayWindow.h"
 #include "RecordingManager.h"
 #include "HistoryWindow.h"
 #include "PreferencesWindow.h"
-#include "ClickIndicatorOverlay.h"
 #include "TrayIcon.h"
 #include "RecordingController.h"
 #include "ClickTap.h"
@@ -202,10 +202,13 @@ static void registerAllChords() {
     EventHotKeyID hotKeyID;
     hotKeyID.signature = 'SNPF';
 
+    // One config load for all five chords.
+    const shortcuts::Snapshot cfg;
+
     int i = 0;
     for (const auto &action : shortcuts::kGlobalActions) {
         const QString key = QString::fromLatin1(action.actionKey);
-        const QString chord = shortcuts::chord(key);
+        const QString chord = cfg.chord(key);
         uint32_t vk = 0, mods = 0;
         hotKeyID.id = hotkeyIdFor(key);
         if (shortcuts::toCarbon(chord, &vk, &mods)) {
@@ -506,7 +509,10 @@ int main(int argc, char *argv[]) {
     // on macOS dark mode flips). "Auto" follows; explicit Light/Dark ignore.
     class PaletteFilter : public QObject {
     public:
-        PreferencesWindow *prefs;
+        // QPointer: the filter is parented to the app and outlives the
+        // stack-allocated PreferencesWindow; a raw pointer would dangle for
+        // any palette change delivered during shutdown.
+        QPointer<PreferencesWindow> prefs;
         explicit PaletteFilter(PreferencesWindow *p, QObject *parent)
             : QObject(parent), prefs(p) {}
         bool eventFilter(QObject *obj, QEvent *event) override {
@@ -519,15 +525,11 @@ int main(int argc, char *argv[]) {
     auto *paletteFilter = new PaletteFilter(&prefs, &app);
     app.installEventFilter(paletteFilter);
 
-    // Click visualizer: ripple overlay + global mouse-down tap.
-    // Tap is only started while recording AND the pref is on. Permission
-    // failure surfaces as a tray banner; the recording itself continues.
-    // ClickTap wraps the snapforge_clicks_* use-case FFI — the platform tap
-    // lives in Rust now, so this works on every platform Snapforge ships.
-    ClickIndicatorOverlay clickOverlay;
+    // ClickTap wraps the snapforge_clicks_* use-case FFI. Clicks are baked
+    // into recordings by the Rust encoder; RecordingController only starts
+    // the tap briefly as an Accessibility permission probe so a missing grant
+    // surfaces as a tray banner instead of silently-missing click markers.
     ClickTap clickTap;
-    QObject::connect(&clickTap, &ClickTap::clicked,
-                     &clickOverlay, &ClickIndicatorOverlay::addRipple);
 
     // Sync prefs → overlay
     auto syncPrefsToOverlay = [&]() {
@@ -601,11 +603,10 @@ int main(int argc, char *argv[]) {
                          QSystemTrayIcon::Information, 3000);
     });
 
-    // Wire all RecordingManager lifecycle signals → tray feedback + click
-    // overlay/tap toggling + clipboard copy on stop + error modal.
+    // Wire all RecordingManager lifecycle signals → tray feedback + click-tap
+    // permission probe + clipboard copy on stop + error modal.
     RecordingController recordingController(&recording,
                                             &tray,
-                                            &clickOverlay,
                                             &clickTap,
                                             &prefs,
                                             &app);

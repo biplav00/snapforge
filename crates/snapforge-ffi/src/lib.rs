@@ -215,6 +215,9 @@ pub unsafe extern "C" fn snapforge_free_buffer(data: *mut u8, len: usize) {
     // Cross-check the caller-supplied `len` against what we recorded at alloc.
     // A wrong `len` would hand `Box::from_raw` a wrong-layout slice and corrupt
     // the heap silently. Refuse to free if it doesn't match.
+    // Residual ABA: the registry is address-keyed, so if the allocator reuses
+    // a freed address for a new buffer, a stale double-free (with matching
+    // len) frees the live entry; a generation-keyed registry would close it.
     let recorded = match buffer_registry().lock() {
         Ok(mut map) => map.remove(&(data as usize)),
         Err(_) => None,
@@ -418,9 +421,9 @@ pub unsafe extern "C" fn snapforge_config_save(json: *const c_char) -> c_int {
 // Use-case FFI (snapforge-app)
 //
 // These wrappers expose the high-level use cases (`snapforge-app`) and
-// coexist with the primitive `snapforge_capture_*` / `snapforge_*_recording`
-// fns above. The Qt frontend will migrate to the use-case surface in Phase
-// 2C; until then both surfaces ship side-by-side.
+// coexist with the primitive `snapforge_capture_*` fns above. The primitive
+// `snapforge_*_recording` surface has been removed; the Qt frontend consumes
+// this use-case surface exclusively (via SnapforgeClient).
 // ---------------------------------------------------------------------------
 
 use snapforge_app::clicks as app_clicks;
@@ -928,8 +931,11 @@ fn check_app_recording_handle(handle: *mut c_void) -> Option<Arc<FfiAppRecording
 
 /// Start a recording via the use-case surface.
 ///
-/// `req_json` mirrors `snapforge_start_recording`'s JSON plus an
-/// `add_to_history_on_stop` boolean. Returns an opaque handle, or NULL on
+/// `req_json` is the serde `RecordingRequest` schema from `snapforge-app`:
+/// display, region (optional), output_path, format, fps, quality,
+/// ffmpeg_path (optional), add_to_history_on_stop, show_clicks — all fields
+/// optional except output_path in practice (missing fields take defaults).
+/// Returns an opaque handle, or NULL on
 /// failure (read `snapforge_app_last_error` for details). The handle must be
 /// stopped (`snapforge_record_stop`) and freed
 /// (`snapforge_record_free_handle`).
@@ -1076,6 +1082,9 @@ pub unsafe extern "C" fn snapforge_record_free_handle(handle: *mut c_void) {
     if handle.is_null() || (handle as usize) < 4096 {
         return;
     }
+    // Residual ABA: the registry is address-keyed, so if the allocator reuses
+    // a freed handle's address for a new one, a stale double-free frees the
+    // live entry; a generation-keyed registry would close it.
     let removed = recording_handle_registry()
         .lock()
         .ok()
@@ -1245,6 +1254,9 @@ pub unsafe extern "C" fn snapforge_clicks_free_handle(handle: *mut c_void) {
     if handle.is_null() || (handle as usize) < 4096 {
         return;
     }
+    // Residual ABA: the registry is address-keyed, so if the allocator reuses
+    // a freed handle's address for a new one, a stale double-free frees the
+    // live entry; a generation-keyed registry would close it.
     let removed = click_handle_registry()
         .lock()
         .ok()

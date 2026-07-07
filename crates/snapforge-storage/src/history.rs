@@ -91,21 +91,60 @@ impl ScreenshotHistory {
     }
 
     pub fn load() -> Result<Self, HistoryError> {
-        let path = Self::history_path();
+        Self::load_from(&Self::history_path())
+    }
+
+    fn load_from(path: &std::path::Path) -> Result<Self, HistoryError> {
         if !path.exists() {
             return Ok(Self::default());
         }
         // 32 MiB ceiling — history grows over time but should never approach this.
         // Caps memory amplification on a corrupt or hostile file.
         const MAX_HISTORY_BYTES: u64 = 32 * 1024 * 1024;
-        if let Ok(meta) = std::fs::metadata(&path) {
+        if let Ok(meta) = std::fs::metadata(path) {
             if meta.len() > MAX_HISTORY_BYTES {
+                // Back the oversized file up before the next save clobbers it.
+                match crate::backup_file(path) {
+                    Ok(bak) => tracing::warn!(
+                        "[history] {} is implausibly large ({} bytes); preserved as {}; using empty history",
+                        path.display(),
+                        meta.len(),
+                        bak.display()
+                    ),
+                    Err(e) => tracing::error!(
+                        "[history] {} is implausibly large ({} bytes); backup failed: {}; using empty history",
+                        path.display(),
+                        meta.len(),
+                        e
+                    ),
+                }
                 return Ok(Self::default());
             }
         }
-        let contents = std::fs::read_to_string(&path)?;
-        let history: Self = serde_json::from_str(&contents)?;
-        Ok(history)
+        let contents = std::fs::read_to_string(path)?;
+        match serde_json::from_str::<Self>(&contents) {
+            Ok(history) => Ok(history),
+            Err(e) => {
+                // Self-heal: one truncated/corrupt history.json must not break
+                // every future capture. Preserve it, log, return defaults —
+                // mirrors AppConfig::load().
+                match crate::backup_file(path) {
+                    Ok(bak) => tracing::warn!(
+                        "[history] corrupt history at {} ({}); preserved as {}; using empty history",
+                        path.display(),
+                        e,
+                        bak.display()
+                    ),
+                    Err(copy_err) => tracing::error!(
+                        "[history] corrupt history at {} ({}); backup failed: {}; using empty history",
+                        path.display(),
+                        e,
+                        copy_err
+                    ),
+                }
+                Ok(Self::default())
+            }
+        }
     }
 
     pub fn save(&self) -> Result<(), HistoryError> {
@@ -114,7 +153,8 @@ impl ScreenshotHistory {
             std::fs::create_dir_all(parent)?;
         }
         let contents = serde_json::to_string_pretty(self)?;
-        std::fs::write(&path, contents)?;
+        // Atomic temp-file + rename: a crash mid-save can't truncate history.json.
+        crate::write_atomic(&path, contents.as_bytes())?;
         Ok(())
     }
 
@@ -423,6 +463,34 @@ mod tests {
         buf.extend_from_slice(&[0u8; 8]);
         let (_dir, path) = write_mp4("largetrunc.mp4", &buf);
         assert!(is_incomplete_mp4(&path));
+    }
+
+    #[test]
+    fn corrupt_history_loads_as_defaults_and_leaves_backup() {
+        // Self-heal: a truncated/corrupt history.json must load as an empty
+        // history (not an error that breaks every capture) and preserve the
+        // corrupt bytes as a .bak-<ts> sibling.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("history.json");
+        std::fs::write(&path, "{ \"entries\": [ truncated").unwrap();
+
+        let history = ScreenshotHistory::load_from(&path).expect("corrupt file must not error");
+        assert!(history.entries.is_empty(), "should fall back to defaults");
+
+        let backup_exists = std::fs::read_dir(dir.path()).unwrap().any(|e| {
+            e.unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with("history.json.bak-")
+        });
+        assert!(backup_exists, "corrupt file must be preserved as .bak-<ts>");
+    }
+
+    #[test]
+    fn missing_history_loads_as_defaults() {
+        let dir = tempfile::tempdir().unwrap();
+        let history = ScreenshotHistory::load_from(&dir.path().join("history.json")).unwrap();
+        assert!(history.entries.is_empty());
     }
 
     #[test]

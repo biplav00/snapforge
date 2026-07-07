@@ -42,9 +42,15 @@ impl CaptureFormat {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
+// Flat shape matching what the Qt frontend persists (`{x, y, w, h}`). The
+// previous `{display, rect}` shape never matched the frontend, so serde failed
+// on every config save. No Rust code reads these back yet — the frontend owns
+// remember-region — so keep the on-disk shape as the single source of truth.
 pub struct LastRegion {
-    pub display: usize,
-    pub rect: Rect,
+    pub x: i32,
+    pub y: i32,
+    pub w: u32,
+    pub h: u32,
 }
 
 #[cfg(test)]

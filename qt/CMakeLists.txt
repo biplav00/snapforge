@@ -74,7 +74,6 @@ set(SNAPFORGE_SOURCES
     src/capture/RecordingManager.cpp
     src/ui/windows/HistoryWindow.cpp
     src/ui/windows/PreferencesWindow.cpp
-    src/ui/overlay/ClickIndicatorOverlay.cpp
     src/ui/tray/TrayIcon.cpp
     src/controllers/RecordingController.cpp
     src/controllers/ClickTap.cpp
@@ -83,8 +82,7 @@ set(SNAPFORGE_SOURCES
 if(APPLE)
     list(APPEND SNAPFORGE_SOURCES
         src/platform/macos/WorkspaceSleepObserver.mm
-        src/platform/macos/SpaceChangeObserver.mm
-        src/ui/overlay/ClickIndicatorOverlayMac.mm)
+        src/platform/macos/SpaceChangeObserver.mm)
     # The .mm files use ARC's __bridge_retained / __bridge_transfer; enable ARC.
     set_source_files_properties(src/platform/macos/WorkspaceSleepObserver.mm
         PROPERTIES COMPILE_FLAGS "-fobjc-arc")

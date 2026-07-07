@@ -20,16 +20,22 @@ void AnnotationState::commitAnnotation(const Annotation &a)
 
 void AnnotationState::updateAnnotation(const QString &id, const Annotation &a)
 {
+    // Find the target first: if the id isn't present, return without touching
+    // the undo/redo stacks. Snapshotting unconditionally recorded a phantom
+    // undo step (first Ctrl-Z appeared to do nothing) and discarded redo
+    // history on a no-op.
+    int idx = -1;
+    for (int i = 0; i < m_annotations.size(); ++i) {
+        if (m_annotations[i].id == id) { idx = i; break; }
+    }
+    if (idx < 0)
+        return;
+
     if (m_undoStack.size() >= MAX_UNDO)
         m_undoStack.removeFirst();
     m_undoStack.append(m_annotations);
     m_redoStack.clear();
-    for (int i = 0; i < m_annotations.size(); ++i) {
-        if (m_annotations[i].id == id) {
-            m_annotations[i] = a;
-            break;
-        }
-    }
+    m_annotations[idx] = a;
     ++m_committedRevision;
     emit changed();
 }

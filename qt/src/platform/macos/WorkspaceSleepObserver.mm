@@ -21,9 +21,10 @@ WorkspaceSleepObserver::WorkspaceSleepObserver(RecordingManager *rec, QObject *p
                 usingBlock:^(NSNotification *) {
                     RecordingManager *m = guard.data();
                     if (!m) return;
-                    // pauseRecording is idempotent — it checks state itself,
-                    // so we don't need to pre-check isRecording/isPaused.
-                    QMetaObject::invokeMethod(m, "pauseRecording",
+                    // handleSystemSleep pauses only an actively-running
+                    // recording and remembers that the auto-pause was ours,
+                    // so wake won't resume a manual pause.
+                    QMetaObject::invokeMethod(m, "handleSystemSleep",
                                               Qt::QueuedConnection);
                 }];
     id wakeToken = [center
@@ -33,8 +34,9 @@ WorkspaceSleepObserver::WorkspaceSleepObserver(RecordingManager *rec, QObject *p
                 usingBlock:^(NSNotification *) {
                     RecordingManager *m = guard.data();
                     if (!m) return;
-                    // resumeRecording is idempotent — slot guards state.
-                    QMetaObject::invokeMethod(m, "resumeRecording",
+                    // handleSystemWake resumes only if the sleep handler's
+                    // auto-pause is what paused the recording.
+                    QMetaObject::invokeMethod(m, "handleSystemWake",
                                               Qt::QueuedConnection);
                 }];
 

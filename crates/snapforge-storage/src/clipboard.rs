@@ -101,46 +101,52 @@ fn copy_png_to_clipboard_win(image: &RgbaImage) -> Result<(), ClipboardError> {
 /// Write PNG to clipboard on Linux using xclip or wl-copy.
 #[cfg(target_os = "linux")]
 fn copy_png_via_tool(png_bytes: &[u8]) -> Result<(), ClipboardError> {
+    // Try wl-copy first (Wayland), falling back to xclip (X11) when wl-copy
+    // is missing OR fails — e.g. wl-copy installed but running under X11.
+    let wl_err = match pipe_to_clipboard_tool("wl-copy", &["--type", "image/png"], png_bytes) {
+        Ok(()) => return Ok(()),
+        Err(e) => e,
+    };
+    pipe_to_clipboard_tool(
+        "xclip",
+        &["-selection", "clipboard", "-t", "image/png"],
+        png_bytes,
+    )
+    .map_err(|xclip_err| ClipboardError::SetFailed(format!("{}; fallback: {}", wl_err, xclip_err)))
+}
+
+/// Spawn `cmd`, pipe `bytes` to its stdin, and wait for it. The child is
+/// always reaped — including on write errors — so no zombie is left behind.
+#[cfg(target_os = "linux")]
+fn pipe_to_clipboard_tool(cmd: &str, args: &[&str], bytes: &[u8]) -> Result<(), ClipboardError> {
     use std::io::Write;
 
-    // Try wl-copy first (Wayland), then xclip (X11)
-    let result = std::process::Command::new("wl-copy")
-        .args(["--type", "image/png"])
+    let mut child = std::process::Command::new(cmd)
+        .args(args)
         .stdin(std::process::Stdio::piped())
-        .spawn();
+        .spawn()
+        .map_err(|e| ClipboardError::SetFailed(format!("failed to spawn {}: {}", cmd, e)))?;
 
-    let mut child = match result {
-        Ok(child) => child,
-        Err(_) => {
-            // Fall back to xclip
-            std::process::Command::new("xclip")
-                .args(["-selection", "clipboard", "-t", "image/png"])
-                .stdin(std::process::Stdio::piped())
-                .spawn()
-                .map_err(|e| {
-                    ClipboardError::SetFailed(format!("neither wl-copy nor xclip found: {}", e))
-                })?
-        }
+    let write_result = match child.stdin.take() {
+        // stdin drops at the end of this arm, closing the pipe; wl-copy/xclip
+        // wait for EOF before exiting.
+        Some(mut stdin) => stdin.write_all(bytes),
+        None => Ok(()),
     };
 
-    if let Some(mut stdin) = child.stdin.take() {
-        stdin.write_all(png_bytes).map_err(|e| {
-            ClipboardError::SetFailed(format!("write to clipboard tool failed: {}", e))
-        })?;
-        // Drop stdin to close the pipe; wl-copy/xclip waits for EOF before exiting.
-        drop(stdin);
-    }
-
+    // Wait even when the write failed, so the child never becomes a zombie.
     let status = child
         .wait()
-        .map_err(|e| ClipboardError::SetFailed(format!("clipboard tool failed: {}", e)))?;
+        .map_err(|e| ClipboardError::SetFailed(format!("waiting for {} failed: {}", cmd, e)))?;
 
+    write_result
+        .map_err(|e| ClipboardError::SetFailed(format!("write to {} failed: {}", cmd, e)))?;
     if !status.success() {
-        return Err(ClipboardError::SetFailed(
-            "clipboard tool exited with error".to_string(),
-        ));
+        return Err(ClipboardError::SetFailed(format!(
+            "{} exited with {}",
+            cmd, status
+        )));
     }
-
     Ok(())
 }
 

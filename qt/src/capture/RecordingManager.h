@@ -8,6 +8,8 @@
 #include <QElapsedTimer>
 #include <QFuture>
 #include <atomic>
+#include <future>
+#include <thread>
 
 #include "SnapforgeClient.h"
 
@@ -28,6 +30,11 @@ public slots:
     void stopRecording();
     void pauseRecording();
     void resumeRecording();
+    // System sleep/wake hooks (WorkspaceSleepObserver). Sleep pauses only an
+    // actively-running recording and remembers that *we* paused it; wake
+    // resumes only in that case, so a manual pause survives a sleep/wake cycle.
+    void handleSystemSleep();
+    void handleSystemWake();
 
 signals:
     void recordingStarted(QString outputPath);
@@ -50,6 +57,9 @@ public slots:
 
 private:
     void loadPrefsIfNeeded();
+    // Main-thread continuation of stopRecording(): validates the output and
+    // emits recordingStopped/recordingError once the worker's recordStop is done.
+    void finishStop(bool ok, const QString &err);
 
     // Atomic so dtor and stopRecording cannot both observe the same non-null
     // pointer and end up double-stopping / double-freeing it. Whoever swaps
@@ -62,6 +72,18 @@ private:
     QElapsedTimer m_elapsed;
     qint64 m_accumulatedMs = 0; // total elapsed ms across pauses
     bool m_paused = false;
+    // Set only by handleSystemSleep when it auto-pauses; a manual
+    // pause/resume/stop (or a new start) clears it.
+    bool m_autoPausedBySleep = false;
+
+    // Interactive stop runs recordStop on a worker so a slow ffmpeg finalize
+    // can't beachball the GUI thread. m_stopping gates startRecording while
+    // the finalize is in flight (the handle is already nulled, so isRecording
+    // alone would let a new start through). The dtor waits on m_stopDone with
+    // the same 30s deadline it applies to its own in-place stop.
+    bool m_stopping = false;
+    std::thread m_stopWorker;
+    std::future<void> m_stopDone;
 
     // Cached recording prefs (M13). Reloaded on reloadPrefs().
     bool    m_prefsLoaded = false;

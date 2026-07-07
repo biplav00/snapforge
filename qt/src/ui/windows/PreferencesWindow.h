@@ -18,6 +18,8 @@
 #include <QPlainTextEdit>
 #include <functional>
 
+class QTabWidget;
+
 // ---------------------------------------------------------------------------
 // HotkeyRow — one row in the hotkeys editor
 // ---------------------------------------------------------------------------
@@ -76,6 +78,11 @@ private slots:
 
 private:
     void buildUi();
+    // Theme change: every tab bakes the current theme into its children's
+    // stylesheets at construction, so a live palette flip tears the tab
+    // contents down and re-runs buildUi(), preserving the visible tab and any
+    // unsaved edits. See applyTheme().
+    void rebuildThemedUi();
     QWidget *buildGeneralTab();
     QWidget *buildScreenshotsTab();
     QWidget *buildRecordingTab();
@@ -134,6 +141,7 @@ private:
 
     // Theme
     QComboBox    *m_themeCombo   = nullptr;
+    QTabWidget   *m_tabs         = nullptr;
 
     // Permissions tab
     QLabel       *m_screenRecStatusBadge = nullptr;
