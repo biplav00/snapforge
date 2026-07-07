@@ -163,10 +163,18 @@ char *snapforge_save_prerendered(const uint8_t *rgba, size_t rgba_len,
                                  uint32_t width, uint32_t height,
                                  const char *req_json);
 
-/* Start recording via the use-case surface. Same JSON as
- * snapforge_record_start plus add_to_history_on_stop (bool). Returns an
- * opaque handle, or NULL on error (call snapforge_app_last_error). The handle
- * must be stopped via snapforge_record_stop and freed via
+/* Start recording via the use-case surface.
+ *
+ * req_json fields (all optional; missing fields take defaults):
+ *   display (uint, default 0), region (optional {x,y,width,height}),
+ *   output_path (string; empty is rejected), format ("mp4"/"gif", default
+ *   "mp4"), fps (u32, default 30, clamped 1..=240), quality
+ *   ("low"/"medium"/"high", default "medium"), ffmpeg_path (optional string),
+ *   add_to_history_on_stop (bool, default false),
+ *   show_clicks (bool, default false).
+ *
+ * Returns an opaque handle, or NULL on error (call snapforge_app_last_error).
+ * The handle must be stopped via snapforge_record_stop and freed via
  * snapforge_record_free_handle. */
 void *snapforge_record_start(const char *req_json);
 

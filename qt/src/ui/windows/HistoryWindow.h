@@ -60,6 +60,11 @@ private slots:
 private:
     void setupUi();
     void loadEntries(const QList<HistoryEntry> &entries);
+    // Re-place the EXISTING cards into the grid at the current viewport width.
+    // No-op if the column count is unchanged. Resize uses this; only an entry
+    // set / filter change goes through loadEntries (card rebuild + thumbnail
+    // reload from disk).
+    void reflowCards();
     void applyFilters();
     void updateFooter();
     QList<HistoryEntry> parseJson(const QString &json) const;
@@ -76,6 +81,8 @@ private:
 
     QList<HistoryEntry> m_allEntries;
     QList<HistoryCard *> m_cards;
+    int m_colCount = -1;   // grid columns at last (re)flow; -1 forces a flow
+    int m_stretchRow = 0;  // row carrying the top-align stretch, reset on reflow
 };
 
 #endif // HISTORYWINDOW_H

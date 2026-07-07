@@ -138,10 +138,15 @@ void TestRecordingManager::doubleStart_isRejectedWhenActive() {
     mgr.startRecording(0, QRect(), dir.path());
     QVERIFY(mgr.isRecording());
 
+    // Rejected duplicate start is non-fatal: recordingWarning, NOT
+    // recordingError — an error would make the controller leave recording
+    // state (hide the stop control) while the real recording continues.
+    QSignalSpy warningSpy(&mgr, &RecordingManager::recordingWarning);
     QSignalSpy errorSpy(&mgr, &RecordingManager::recordingError);
     mgr.startRecording(0, QRect(), dir.path());
-    QCOMPARE(errorSpy.count(), 1);
-    QVERIFY(errorSpy.takeFirst().at(0).toString().contains(QStringLiteral("Already recording")));
+    QCOMPARE(warningSpy.count(), 1);
+    QCOMPARE(errorSpy.count(), 0);
+    QVERIFY(warningSpy.takeFirst().at(0).toString().contains(QStringLiteral("Already recording")));
     QVERIFY(mgr.isRecording());
 }
 
@@ -185,9 +190,13 @@ void TestRecordingManager::stop_success_emitsStopped() {
     QSignalSpy errorSpy(&mgr, &RecordingManager::recordingError);
     mgr.stopRecording();
 
+    // Stop finalizes asynchronously (worker thread + queued signal back on
+    // the main thread), so spin the event loop until the signal lands.
+    QVERIFY(stoppedSpy.wait(5000));
     QCOMPARE(stoppedSpy.count(), 1);
     QCOMPARE(errorSpy.count(), 0);
     QVERIFY(!mgr.isRecording());
+    QVERIFY(!mgr.isPaused());
 }
 
 void TestRecordingManager::stop_missingOutputFile_emitsError() {
@@ -204,6 +213,8 @@ void TestRecordingManager::stop_missingOutputFile_emitsError() {
     QSignalSpy errorSpy(&mgr, &RecordingManager::recordingError);
     mgr.stopRecording();
 
+    // Async stop — wait for the queued error to land.
+    QVERIFY(errorSpy.wait(5000));
     QCOMPARE(stoppedSpy.count(), 0);
     QCOMPARE(errorSpy.count(), 1);
     QVERIFY(!mgr.isRecording());

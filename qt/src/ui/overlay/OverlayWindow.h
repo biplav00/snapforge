@@ -10,6 +10,7 @@ class AnnotationCanvas;
 class AnnotationToolbar;
 class QPushButton;
 class QScreen;
+namespace shortcuts { class Snapshot; }
 
 class OverlayWindow : public QWidget {
     Q_OBJECT
@@ -79,7 +80,7 @@ private:
     void exitAnnotateMode();
     void enterRecordSelectMode();
     void exitRecordSelectMode();
-    void handleSave();
+    void positionRecordButtons(const QRect &sel);
     void handleCopy();
     void handleSaveAndCopy();
     // Save the current region into m_last* and emit lastRegionChanged, if the
@@ -108,7 +109,8 @@ private:
         Qt::KeyboardModifiers mods = Qt::NoModifier;
         bool matches(const QKeyEvent *event) const;
     };
-    static KeyBinding bindingFor(const char *section, const char *actionId,
+    static KeyBinding bindingFor(const shortcuts::Snapshot &cfg,
+                                 const char *section, const char *actionId,
                                  const char *defaultChord);
 
     QList<QPair<KeyBinding, ToolType>> m_toolBindings;

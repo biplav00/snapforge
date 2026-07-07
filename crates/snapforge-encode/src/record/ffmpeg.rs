@@ -79,7 +79,13 @@ impl Drop for RecordingHandle {
     }
 }
 
-pub fn start_recording(config: RecordConfig) -> Result<RecordingHandle, RecordError> {
+pub fn start_recording(mut config: RecordConfig) -> Result<RecordingHandle, RecordError> {
+    // Guard fps before it reaches `Duration::from_secs_f64(1.0 / fps)`: fps == 0
+    // yields 1.0/0.0 = inf, which panics that constructor (and would cross the
+    // panic back over the FFI boundary). Clamp to a sane range for corrupted
+    // configs or bad FFI callers.
+    config.fps = config.fps.clamp(1, 240);
+
     // Find FFmpeg binary (bundled or system)
     let ffmpeg_path = super::find_ffmpeg(config.ffmpeg_path.as_ref())?;
 
@@ -307,24 +313,33 @@ fn start_recording_rgba(
                     }
                 }
 
-                let mut pipe_broken = false;
                 for _ in 0..frames_to_write {
                     if let Err(e) = writer.write_all(last_frame.as_raw()) {
-                        if e.kind() == std::io::ErrorKind::BrokenPipe {
-                            pipe_broken = true;
-                        }
-                        break;
+                        // Any write error is fatal, not just BrokenPipe: a
+                        // partial frame permanently desyncs the raw stream, so
+                        // silently continuing would truncate the video while
+                        // stop() still reported Ok.
+                        return Err(RecordError::WriteFailed(
+                            if e.kind() == std::io::ErrorKind::BrokenPipe {
+                                "ffmpeg stdin closed mid-recording (broken pipe)".into()
+                            } else {
+                                format!("writing frames to ffmpeg failed: {}", e)
+                            },
+                        ));
                     }
-                }
-                if pipe_broken {
-                    return Err(RecordError::WriteFailed(
-                        "ffmpeg stdin closed mid-recording (broken pipe)".into(),
-                    ));
                 }
 
                 frame_count = frame_count + frames_to_write - 1;
             }
 
+            // Flush explicitly: BufWriter::drop swallows flush errors, which
+            // would silently drop the buffered tail of the recording.
+            if let Err(e) = writer.flush() {
+                return Err(RecordError::WriteFailed(format!(
+                    "final flush to ffmpeg failed: {}",
+                    e
+                )));
+            }
             drop(writer);
             drop(stdin);
 
@@ -460,7 +475,7 @@ fn start_recording_macos_bgra(
     // tap is never started and `click_snapshot` stays empty, so the hot-path
     // below writes captured frames straight through with no overlay.
     let click_tracker = config.show_clicks.then(ClickTracker::new);
-    let _click_tap_handle = click_tracker
+    let click_tap_handle = click_tracker
         .as_ref()
         .and_then(ClickTracker::start_macos_tap);
 
@@ -476,6 +491,11 @@ fn start_recording_macos_bgra(
     let point_to_scaled_pixel_y = native_scale * sy;
 
     let thread = std::thread::spawn(move || -> Result<(), RecordError> {
+        // Keep the click event tap alive for the whole recording. Bound to the
+        // thread's stack (not left at function scope, where it dropped — and so
+        // disabled the CGEventTap — microseconds after start), so it keeps
+        // feeding click_tracker until the capture loop exits.
+        let _click_tap_handle = click_tap_handle;
         // Run the capture loop in an inner closure so EVERY exit path —
         // success or error — falls through to the cleanup below, which marks
         // the handle state terminal and reaps ffmpeg on failure. Without
@@ -590,7 +610,6 @@ fn start_recording_macos_bgra(
                     (effective_elapsed.as_secs_f64() / frame_interval.as_secs_f64()) as u64;
                 let frames_to_write = elapsed_frames.saturating_sub(frame_count - 1).max(1);
 
-                let mut pipe_broken = false;
                 for _ in 0..frames_to_write {
                     // Hot-path optimization: when no clicks are active, skip the
                     // copy and write the captured frame directly. With clicks,
@@ -613,21 +632,31 @@ fn start_recording_macos_bgra(
                         &composed
                     };
                     if let Err(e) = writer.write_all(to_write) {
-                        if e.kind() == std::io::ErrorKind::BrokenPipe {
-                            pipe_broken = true;
-                        }
-                        break;
+                        // Any write error is fatal, not just BrokenPipe: a
+                        // partial frame permanently desyncs the raw stream, so
+                        // silently continuing would truncate the video while
+                        // stop() still reported Ok.
+                        return Err(RecordError::WriteFailed(
+                            if e.kind() == std::io::ErrorKind::BrokenPipe {
+                                "ffmpeg stdin closed mid-recording (broken pipe)".into()
+                            } else {
+                                format!("writing frames to ffmpeg failed: {}", e)
+                            },
+                        ));
                     }
-                }
-                if pipe_broken {
-                    return Err(RecordError::WriteFailed(
-                        "ffmpeg stdin closed mid-recording (broken pipe)".into(),
-                    ));
                 }
 
                 frame_count = frame_count + frames_to_write - 1;
             }
 
+            // Flush explicitly: BufWriter::drop swallows flush errors, which
+            // would silently drop the buffered tail of the recording.
+            if let Err(e) = writer.flush() {
+                return Err(RecordError::WriteFailed(format!(
+                    "final flush to ffmpeg failed: {}",
+                    e
+                )));
+            }
             drop(writer);
             drop(stdin);
 

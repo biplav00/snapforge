@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QJsonObject>
 #include <QString>
 #include <Qt>
 #include <cstdint>
@@ -36,12 +37,31 @@ inline constexpr GlobalAction kGlobalActions[] = {
     {"preferences", "Cmd+,"},
 };
 
-// Current chord for a global action: config value if present, else the default.
-QString chord(const QString &actionKey);
+// Snapshot of the hotkeys section of the shared config, loaded and parsed
+// ONCE at construction. Use it for batches of chord lookups (the overlay's
+// ~25 rebinds, tray menu rebuilds, Carbon re-registration) — the free chord()
+// functions below re-load the config from disk on every call.
+class Snapshot {
+public:
+    Snapshot();
 
-// Current chord for any other Preferences hotkey row (hotkeys.<section>.<actionId>):
-// config value if present, else the caller-supplied default. The overlay uses
-// this for its local tools/sizes/actions bindings.
+    // Current chord for a global action: config value if present, else the
+    // built-in default from kGlobalActions.
+    QString chord(const QString &actionKey) const;
+
+    // Current chord for any other Preferences hotkey row
+    // (hotkeys.<section>.<actionId>): config value if present, else the
+    // caller-supplied default.
+    QString chord(const QString &section, const QString &actionId,
+                  const QString &defaultChord) const;
+
+private:
+    QJsonObject m_hotkeys; // hotkeys.* from config; empty if missing/unparseable
+};
+
+// Single-lookup conveniences: load the config once and resolve one chord.
+// For several lookups in a row, construct one Snapshot instead.
+QString chord(const QString &actionKey);
 QString chord(const QString &section, const QString &actionId,
               const QString &defaultChord);
 

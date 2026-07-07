@@ -42,6 +42,9 @@ pub struct RecordingConfig {
     pub format: RecordingFormat,
     pub fps: u32,
     pub quality: RecordingQuality,
+    // Persist the "show clicks while recording" toggle. Without this field serde
+    // silently dropped the key on every save, so the checkbox never stuck.
+    pub show_clicks: bool,
 }
 
 impl Default for RecordingConfig {
@@ -50,6 +53,7 @@ impl Default for RecordingConfig {
             format: RecordingFormat::default(),
             fps: 30,
             quality: RecordingQuality::default(),
+            show_clicks: false,
         }
     }
 }
@@ -185,6 +189,22 @@ impl AppConfig {
         const MAX_CONFIG_BYTES: u64 = 4 * 1024 * 1024;
         if let Ok(meta) = std::fs::metadata(&path) {
             if meta.len() > MAX_CONFIG_BYTES {
+                // Back the oversized file up before the next save clobbers it,
+                // consistent with the parse-error path below.
+                match crate::backup_file(&path) {
+                    Ok(bak) => tracing::warn!(
+                        "[config] {} is implausibly large ({} bytes); preserved as {}; using defaults",
+                        path.display(),
+                        meta.len(),
+                        bak.display()
+                    ),
+                    Err(e) => tracing::error!(
+                        "[config] {} is implausibly large ({} bytes); backup failed: {}; using defaults",
+                        path.display(),
+                        meta.len(),
+                        e
+                    ),
+                }
                 return Ok(Self::default());
             }
         }
@@ -242,7 +262,8 @@ impl AppConfig {
             std::fs::create_dir_all(parent).map_err(ConfigError::Io)?;
         }
         let contents = serde_json::to_string_pretty(self)?;
-        std::fs::write(&path, contents).map_err(ConfigError::Io)?;
+        // Atomic temp-file + rename: a crash mid-save can't truncate config.json.
+        crate::write_atomic(&path, contents.as_bytes()).map_err(ConfigError::Io)?;
         Ok(())
     }
 

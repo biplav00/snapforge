@@ -302,22 +302,26 @@ QIcon TrayIcon::makeStopIcon() const {
 // Build "Name\t⌘⇧S": the part after the tab lands in the menu's right-aligned
 // shortcut column on macOS. Glyphs come from the shared config, so a rebind in
 // Preferences shows here after refreshMenu() — no hardcoded chord strings.
-static QString trayLabel(const QString &name, const char *actionKey) {
-    const QString g = shortcuts::glyphs(shortcuts::chord(QString::fromLatin1(actionKey)));
+// The caller-supplied Snapshot means one config load per menu build, not one
+// per label.
+static QString trayLabel(const shortcuts::Snapshot &cfg,
+                         const QString &name, const char *actionKey) {
+    const QString g = shortcuts::glyphs(cfg.chord(QString::fromLatin1(actionKey)));
     return g.isEmpty() ? name : name + QLatin1Char('\t') + g;
 }
 
 void TrayIcon::buildNormalMenu() {
     m_menu->clear();
+    const shortcuts::Snapshot cfg;
 
-    m_menu->addAction(trayLabel(QStringLiteral("Screenshot"), "screenshot"), this, &TrayIcon::actionScreenshot);
-    m_menu->addAction(trayLabel(QStringLiteral("Capture Fullscreen"), "fullscreen"), this, &TrayIcon::actionFullscreen);
-    m_menu->addAction(trayLabel(QStringLiteral("Record"), "record"), this, &TrayIcon::actionRecordToggle);
+    m_menu->addAction(trayLabel(cfg, QStringLiteral("Screenshot"), "screenshot"), this, &TrayIcon::actionScreenshot);
+    m_menu->addAction(trayLabel(cfg, QStringLiteral("Capture Fullscreen"), "fullscreen"), this, &TrayIcon::actionFullscreen);
+    m_menu->addAction(trayLabel(cfg, QStringLiteral("Record"), "record"), this, &TrayIcon::actionRecordToggle);
 
     m_menu->addSeparator();
 
-    m_menu->addAction(trayLabel(QStringLiteral("History"), "history"), this, &TrayIcon::actionHistory);
-    m_menu->addAction(trayLabel(QStringLiteral("Preferences"), "preferences"), this, &TrayIcon::actionPreferences);
+    m_menu->addAction(trayLabel(cfg, QStringLiteral("History"), "history"), this, &TrayIcon::actionHistory);
+    m_menu->addAction(trayLabel(cfg, QStringLiteral("Preferences"), "preferences"), this, &TrayIcon::actionPreferences);
 
     m_menu->addSeparator();
 
@@ -326,6 +330,7 @@ void TrayIcon::buildNormalMenu() {
 
 void TrayIcon::buildRecordingMenu() {
     m_menu->clear();
+    const shortcuts::Snapshot cfg;
 
     QAction *recordingLabel = m_menu->addAction(
         m_paused ? QStringLiteral("⏸ Paused") : QStringLiteral("● Recording..."));
@@ -337,12 +342,12 @@ void TrayIcon::buildRecordingMenu() {
         m_menu->addAction(QStringLiteral("⏸ Pause Recording"), this, &TrayIcon::actionPauseRecording);
     }
 
-    m_menu->addAction(trayLabel(QStringLiteral("■ Stop Recording"), "record"), this, &TrayIcon::actionStopRecording);
+    m_menu->addAction(trayLabel(cfg, QStringLiteral("■ Stop Recording"), "record"), this, &TrayIcon::actionStopRecording);
 
     m_menu->addSeparator();
 
-    m_menu->addAction(trayLabel(QStringLiteral("History"), "history"), this, &TrayIcon::actionHistory);
-    m_menu->addAction(trayLabel(QStringLiteral("Preferences"), "preferences"), this, &TrayIcon::actionPreferences);
+    m_menu->addAction(trayLabel(cfg, QStringLiteral("History"), "history"), this, &TrayIcon::actionHistory);
+    m_menu->addAction(trayLabel(cfg, QStringLiteral("Preferences"), "preferences"), this, &TrayIcon::actionPreferences);
 
     m_menu->addSeparator();
 

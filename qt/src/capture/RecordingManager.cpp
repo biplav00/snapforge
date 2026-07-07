@@ -7,9 +7,12 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonValue>
+#include <QPointer>
 #include <future>
 #include <chrono>
 #include <cstdlib>
+#include <memory>
+#include <thread>
 
 #include "SnapforgeClient.h"
 
@@ -25,6 +28,21 @@ RecordingManager::RecordingManager(QObject *parent)
 
 RecordingManager::~RecordingManager()
 {
+    // An interactive stopRecording() may still be finalizing on its worker.
+    // Wait for it under the same 30s deadline as the in-place stop below —
+    // letting it run detached past main() would have it calling into Rust
+    // statics during process teardown (the exact UB documented below).
+    if (m_stopWorker.joinable()) {
+        if (m_stopDone.wait_for(std::chrono::seconds(30)) == std::future_status::ready) {
+            m_stopWorker.join();
+        } else {
+            qWarning("RecordingManager: in-flight stop did not finalize within 30s; "
+                     "aborting via _Exit to avoid FFI use-after-teardown");
+            m_stopWorker.detach();
+            std::_Exit(1);
+        }
+    }
+
     // snapforge_record_stop blocks until ffmpeg finalizes the file which can
     // be slow (writing the moov atom for a long recording). Run it on a worker
     // thread so we can apply a deadline. Atomically grab ownership of the
@@ -126,7 +144,27 @@ void RecordingManager::resumeRecording()
     }
     m_elapsed.start();
     m_paused = false;
+    // Any successful resume (manual or wake-triggered) disarms the sleep
+    // handler's auto-resume.
+    m_autoPausedBySleep = false;
     emit recordingResumed();
+}
+
+void RecordingManager::handleSystemSleep()
+{
+    // Pause only an actively-running recording; a manual pause stays manual
+    // (flag untouched) so the wake handler won't resume it.
+    if (!isRecording() || m_paused) return;
+    pauseRecording();
+    // Arm auto-resume only if the pause actually took effect.
+    m_autoPausedBySleep = m_paused;
+}
+
+void RecordingManager::handleSystemWake()
+{
+    if (!m_autoPausedBySleep) return;
+    m_autoPausedBySleep = false;
+    resumeRecording();
 }
 
 void RecordingManager::loadPrefsIfNeeded()
@@ -173,8 +211,14 @@ void RecordingManager::reloadPrefs()
 
 void RecordingManager::startRecording(int display, QRect region, QString outputDir)
 {
-    if (isRecording()) {
-        emit recordingError(QStringLiteral("Already recording"));
+    if (isRecording() || m_stopping) {
+        // Non-fatal: the current recording / finalization continues untouched.
+        // recordingError here would make RecordingController leave recording
+        // state and hide the stop control while the real recording runs on.
+        // ponytail: a start during finalization is rejected, not queued.
+        emit recordingWarning(m_stopping
+            ? QStringLiteral("Still finalizing the previous recording")
+            : QStringLiteral("Already recording"));
         return;
     }
 
@@ -224,6 +268,7 @@ void RecordingManager::startRecording(int display, QRect region, QString outputD
 
     m_accumulatedMs = 0;
     m_paused = false;
+    m_autoPausedBySleep = false;
     m_elapsed.start();
     m_timer->start();
 
@@ -243,17 +288,52 @@ void RecordingManager::stopRecording()
     }
 
     m_timer->stop();
+    m_paused = false;
+    m_autoPausedBySleep = false;
+    // Gate re-entry: the handle is already nulled so isRecording() is false,
+    // but a new start must wait until the finalize completes (finishStop
+    // clears this). startRecording rejects with a warning meanwhile.
+    m_stopping = true;
 
-    // The use-case stop adds the file to history on success (we set
-    // add_to_history_on_stop in startRecording). Qt still validates the file
-    // afterward so the user sees a clear error if disk-full / truncation
-    // produced an unusable output.
-    const bool ok = sf::recordStop(sf::RecHandle{h});
-    sf::recordFreeHandle(sf::RecHandle{h});
+    // Collect a previous worker whose result was already delivered (finishStop
+    // joins too; this is belt-and-braces and returns immediately).
+    if (m_stopWorker.joinable()) m_stopWorker.join();
+
+    // recordStop blocks until ffmpeg finalizes the file, which can take
+    // seconds on a long recording — run it off the GUI thread (same reason as
+    // the dtor's worker) and marshal the outcome back. The dtor joins this
+    // worker before the object dies, so `self` is always valid at invoke time;
+    // the queued call itself is dropped by Qt if we're destroyed before it runs.
+    auto donePromise = std::make_shared<std::promise<void>>();
+    m_stopDone = donePromise->get_future();
+    QPointer<RecordingManager> self(this);
+    m_stopWorker = std::thread([self, h, donePromise]() {
+        // The use-case stop adds the file to history on success (we set
+        // add_to_history_on_stop in startRecording). finishStop still
+        // validates the file so the user sees a clear error if disk-full /
+        // truncation produced an unusable output.
+        const bool ok = sf::recordStop(sf::RecHandle{h});
+        // lastError is only meaningful right after the failing call — read it
+        // here on the worker, not later on the GUI thread.
+        const QString err = ok ? QString() : sf::lastError();
+        sf::recordFreeHandle(sf::RecHandle{h});
+        QMetaObject::invokeMethod(self.data(), [self, ok, err]() {
+            if (!self) return;
+            self->finishStop(ok, err);
+        }, Qt::QueuedConnection);
+        donePromise->set_value();
+    });
+}
+
+// GUI-thread continuation of stopRecording once the worker's recordStop has
+// returned. Emits the lifecycle signals and re-opens the start gate.
+void RecordingManager::finishStop(bool ok, const QString &err)
+{
+    m_stopping = false;
+    if (m_stopWorker.joinable()) m_stopWorker.join();
 
     if (!ok) {
         QString detail = QStringLiteral("Recording failed during finalization");
-        QString err = sf::lastError();
         if (!err.isEmpty()) {
             detail = QStringLiteral("Recording failed: %1").arg(err);
         }

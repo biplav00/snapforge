@@ -91,7 +91,14 @@ void AnnotationCanvas::setRegion(int x, int y, int w, int h) {
             qWarning("AnnotationCanvas: region (%d,%d %dx%d) clamped to (%d,%d %dx%d) "
                      "vs image %dx%d", px, py, pw, ph, cpx, cpy, cpw, cph, imgW, imgH);
         }
-        m_croppedScreenshot = m_fullScreenshot.copy(cpx, cpy, cpw, cph);
+        QRect cropRect(cpx, cpy, cpw, cph);
+        if (cropRect.isEmpty()) {
+            // Degenerate clamp (e.g. remembered region entirely off this
+            // display): fall back to the FULL image deliberately, instead of
+            // relying on QImage::copy's null-rect-copies-everything quirk.
+            cropRect = m_fullScreenshot.rect();
+        }
+        m_croppedScreenshot = m_fullScreenshot.copy(cropRect);
         // The crop is at device-pixel scale but the FFI buffer carries no DPR
         // (defaults to 1.0). Tag it so samplers working in widget-logical
         // coords (Blur, ColorPicker) can map back into pixel space.
@@ -161,8 +168,16 @@ void AnnotationCanvas::ensureCommittedLayer() const {
 // ---------------------------------------------------------------------------
 
 QImage AnnotationCanvas::compositeImage() const {
+    const double dpr = effectiveDpr();
+    // The screenshot-backed result is at PIXEL size (logical points * dpr) and
+    // the painter below scales by dpr. A no-screenshot fallback must match that
+    // pixel size — allocating at logical size() clipped annotations to the
+    // top-left quarter on Retina (dpr != 1).
+    const QSize pixelSize(qRound(width() * dpr), qRound(height() * dpr));
+    const QSize fallbackSize = pixelSize.isEmpty() ? size() : pixelSize;
+
     QImage result = m_croppedScreenshot.isNull()
-                    ? QImage(size(), QImage::Format_ARGB32_Premultiplied)
+                    ? QImage(fallbackSize, QImage::Format_ARGB32_Premultiplied)
                     : m_croppedScreenshot.convertToFormat(QImage::Format_ARGB32_Premultiplied);
 
     // A QImage(size) ctor leaves the buffer UNINITIALISED (garbage), and it is
@@ -172,7 +187,7 @@ QImage AnnotationCanvas::compositeImage() const {
         result.fill(Qt::transparent);
     }
     if (result.isNull()) {
-        result = QImage(size(), QImage::Format_ARGB32_Premultiplied);
+        result = QImage(fallbackSize, QImage::Format_ARGB32_Premultiplied);
         result.fill(Qt::transparent);
     }
 
@@ -190,7 +205,6 @@ QImage AnnotationCanvas::compositeImage() const {
     // Annotations stored in widget-local (logical point) coords; composited
     // image is at pixel size (point_size * dpr). Scale painter so annotation
     // coords map into pixel space.
-    const double dpr = effectiveDpr();
     if (dpr != 1.0) {
         p.scale(dpr, dpr);
     }

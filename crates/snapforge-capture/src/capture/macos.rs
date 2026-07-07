@@ -270,14 +270,26 @@ fn get_shareable_displays() -> Option<Retained<NSArray<SCDisplay>>> {
     }
     ensure_display_reconfig_registered();
 
-    let (tx, rx) = mpsc::channel();
+    /// Moves the SCK display array from the completion-handler queue back to
+    /// the calling thread. `Retained<NSArray<SCDisplay>>` is not `Send` in
+    /// objc2's conservative typing, but this specific transfer is sound: the
+    /// array and its SCDisplay entries are immutable snapshot objects that
+    /// ScreenCaptureKit itself hands across queues, and we MOVE the sole
+    /// retained reference (never share it between threads).
+    // ponytail: consumers (SCContentFilter creation) genuinely need the
+    // SCDisplay object on their own thread, so an ObjC object must cross —
+    // this wrapper makes that crossing explicit instead of eliminating it.
+    struct SendableDisplays(Retained<NSArray<SCDisplay>>);
+    unsafe impl Send for SendableDisplays {}
+
+    let (tx, rx) = mpsc::channel::<Option<SendableDisplays>>();
     let block = block2::RcBlock::new(
         move |content: *mut SCShareableContent, error: *mut objc2_foundation::NSError| {
             if error.is_null() && !content.is_null() {
                 let displays = unsafe { (*content).displays() };
-                let _ = tx.send(Some(displays));
+                let _ = tx.send(Some(SendableDisplays(displays)));
             } else {
-                let _ = tx.send(None::<Retained<NSArray<SCDisplay>>>);
+                let _ = tx.send(None);
             }
         },
     );
@@ -291,7 +303,8 @@ fn get_shareable_displays() -> Option<Retained<NSArray<SCDisplay>>> {
     let result = rx
         .recv_timeout(std::time::Duration::from_secs(2))
         .ok()
-        .flatten();
+        .flatten()
+        .map(|d| d.0);
 
     // Refresh the ID cache whenever we do a live query.
     if let Some(ref displays) = result {
@@ -514,13 +527,16 @@ pub fn compute_recording_output_size(
     display: usize,
     max_dimension: Option<u32>,
 ) -> Result<(u32, u32), CaptureError> {
-    // Resolve display index → CGDirectDisplayID via cached SCK query.
-    let displays = get_shareable_displays().ok_or(CaptureError::CaptureFailed)?;
-    if display >= displays.len() {
-        return Err(CaptureError::NoDisplay(display));
+    // Resolve display index → CGDirectDisplayID via the Send-safe cached ID
+    // list; this path never needs the SCK ObjC objects themselves.
+    let ids = get_display_ids_cached();
+    if ids.is_empty() {
+        return Err(CaptureError::CaptureFailed);
     }
-    let sc_display = displays.objectAtIndex(display);
-    let display_id = unsafe { sc_display.displayID() };
+    let display_id = ids
+        .get(display)
+        .copied()
+        .ok_or(CaptureError::NoDisplay(display))?;
 
     let (native_w, native_h) = display_pixel_size(display_id)?;
     let (out_w, out_h) = if let Some(max_dim) = max_dimension {

@@ -21,33 +21,39 @@ static QString defaultChordFor(const QString &actionKey) {
     return {};
 }
 
-// Stored chord for hotkeys.<section>.<actionKey>, or empty if the config is
-// missing/unparseable or the row was never saved.
-static QString storedChord(const QString &section, const QString &actionKey) {
+Snapshot::Snapshot() {
     QByteArray bytes = sf::configLoadJson();
     if (bytes.isEmpty())
-        return {};
+        return;
 
     QJsonParseError err{};
     QJsonDocument doc = QJsonDocument::fromJson(bytes, &err);
     if (err.error != QJsonParseError::NoError || !doc.isObject())
-        return {};
+        return;
 
-    QJsonObject sec = doc.object()
-                          .value(QStringLiteral("hotkeys")).toObject()
-                          .value(section).toObject();
-    return sec.value(actionKey).toString();
+    m_hotkeys = doc.object().value(QStringLiteral("hotkeys")).toObject();
+}
+
+QString Snapshot::chord(const QString &actionKey) const {
+    const QString stored = m_hotkeys.value(QStringLiteral("global")).toObject()
+                               .value(actionKey).toString();
+    return stored.isEmpty() ? defaultChordFor(actionKey) : stored;
+}
+
+QString Snapshot::chord(const QString &section, const QString &actionId,
+                        const QString &defaultChord) const {
+    const QString stored = m_hotkeys.value(section).toObject()
+                               .value(actionId).toString();
+    return stored.isEmpty() ? defaultChord : stored;
 }
 
 QString chord(const QString &actionKey) {
-    QString stored = storedChord(QStringLiteral("global"), actionKey);
-    return stored.isEmpty() ? defaultChordFor(actionKey) : stored;
+    return Snapshot().chord(actionKey);
 }
 
 QString chord(const QString &section, const QString &actionId,
               const QString &defaultChord) {
-    QString stored = storedChord(section, actionId);
-    return stored.isEmpty() ? defaultChord : stored;
+    return Snapshot().chord(section, actionId, defaultChord);
 }
 
 QString glyphs(const QString &chord) {
