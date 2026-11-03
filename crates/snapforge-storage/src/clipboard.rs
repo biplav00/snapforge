@@ -15,14 +15,33 @@ pub enum ClipboardError {
 /// On Windows, writes a DIB bitmap via Win32 clipboard API.
 /// On Linux, pipes PNG data to wl-copy or xclip.
 pub fn copy_image_to_clipboard(image: &RgbaImage) -> Result<(), ClipboardError> {
+    copy_image_to_clipboard_with_png(image, None)
+}
+
+/// Like [`copy_image_to_clipboard`], but reuses `png` (an already-encoded PNG
+/// of `image`) when given, so a caller that just saved the same image as PNG
+/// doesn't pay for a second encode. Windows ignores `png` and uses the raw
+/// RGBA buffer.
+pub fn copy_image_to_clipboard_with_png(
+    image: &RgbaImage,
+    png: Option<&[u8]>,
+) -> Result<(), ClipboardError> {
     #[cfg(target_os = "windows")]
     {
         // Windows path takes the raw RGBA buffer directly — skip PNG encoding.
+        let _ = png;
         return copy_png_to_clipboard_win(image);
     }
 
     #[cfg(not(target_os = "windows"))]
     {
+        if let Some(bytes) = png {
+            #[cfg(target_os = "macos")]
+            copy_png_to_pasteboard(bytes)?;
+            #[cfg(target_os = "linux")]
+            copy_png_via_tool(bytes)?;
+            return Ok(());
+        }
         let mut png_bytes: Vec<u8> = Vec::new();
         let encoder = image::codecs::png::PngEncoder::new(&mut png_bytes);
         image::ImageEncoder::write_image(
@@ -50,8 +69,17 @@ pub fn copy_image_to_clipboard(image: &RgbaImage) -> Result<(), ClipboardError> 
 
 /// Write PNG bytes directly to macOS NSPasteboard using objc2.
 /// No temp file or process spawn — uses the native Cocoa pasteboard API.
+///
+/// Wrapped in an autorelease pool: this runs on QThreadPool worker threads,
+/// which have no Cocoa-managed pool, so autoreleased pasteboard objects would
+/// otherwise leak for the thread's lifetime.
 #[cfg(target_os = "macos")]
 fn copy_png_to_pasteboard(png_bytes: &[u8]) -> Result<(), ClipboardError> {
+    objc2::rc::autoreleasepool(|_| copy_png_to_pasteboard_inner(png_bytes))
+}
+
+#[cfg(target_os = "macos")]
+fn copy_png_to_pasteboard_inner(png_bytes: &[u8]) -> Result<(), ClipboardError> {
     use objc2::msg_send;
     use objc2::rc::Retained;
     use objc2::runtime::{AnyClass, AnyObject};
@@ -154,6 +182,7 @@ fn pipe_to_clipboard_tool(cmd: &str, args: &[&str], bytes: &[u8]) -> Result<(), 
 mod tests {
     use super::*;
 
+    #[ignore = "overwrites the developer's real system clipboard; run manually"]
     #[test]
     fn test_copy_small_image() {
         let img = RgbaImage::from_pixel(10, 10, image::Rgba([255, 0, 0, 255]));
@@ -161,12 +190,14 @@ mod tests {
         let _ = copy_image_to_clipboard(&img);
     }
 
+    #[ignore = "overwrites the developer's real system clipboard; run manually"]
     #[test]
     fn test_copy_large_image() {
         let img = RgbaImage::from_pixel(1920, 1080, image::Rgba([0, 128, 255, 255]));
         let _ = copy_image_to_clipboard(&img);
     }
 
+    #[ignore = "overwrites the developer's real system clipboard; run manually"]
     #[test]
     fn test_copy_transparent_image() {
         let img = RgbaImage::from_pixel(50, 50, image::Rgba([0, 0, 0, 0]));
@@ -186,9 +217,8 @@ mod tests {
             image::ExtendedColorType::Rgba8,
         )
         .unwrap();
-        assert!(!png_bytes.is_empty());
-        // PNG magic bytes
-        assert_eq!(&png_bytes[0..4], &[0x89, b'P', b'N', b'G']);
+        // PNG magic bytes (also proves the buffer is non-empty).
+        assert_eq!(png_bytes.get(0..4), Some(&[0x89, b'P', b'N', b'G'][..]));
     }
 
     #[test]

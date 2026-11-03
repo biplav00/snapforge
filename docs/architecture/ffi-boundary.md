@@ -21,11 +21,13 @@ As of Phase 2D the FFI is split into two cleanly-scoped surfaces:
 
 - **Return code**: `0` = success, `-1` = error (where the fn returns `c_int`).
 - **Pointer errors**: `NULL` returned. Caller must check before dereference.
-- **Error message retrieval**: every use-case fn writes a string to `LAST_APP_ERROR` on failure. Read via `snapforge_app_last_error()`; the returned string is owned by the caller. Reading does not clear; a subsequent successful call does.
+- **Error message retrieval**: `LAST_APP_ERROR` is **thread-local** (errno-style). Every `-1`/`NULL` return records a code + message on the calling thread (including handle-validation rejections), and every successful call clears it. Read via `snapforge_app_last_error()` / `snapforge_app_last_error_code()` **on the same thread that made the failing call** (e.g. the Qt stop-worker thread or the QThreadPool save worker) — another thread's calls can neither overwrite nor clear it. The returned string is owned by the caller. Reading does not clear. There is no lock, so there is no "poisoned" state.
 - **Owned buffers**: `*mut u8 + len`. Free with `snapforge_free_buffer(ptr, len)`. **Length must match** — mismatched length = heap corruption (registry catches it and aborts).
 - **Owned strings**: `*mut c_char`. Free with `snapforge_free_string(ptr)`.
 - **Opaque handles**: recording / click handles = `*mut c_void`. Free with `snapforge_record_free_handle` / `snapforge_clicks_free_handle`. Pointer must be in `HANDLE_REGISTRY` or it is rejected.
-- **NUL safety**: input strings with embedded NUL are sanitized + logged (`cstring_sanitized`).
+- **NUL safety**: output strings with embedded NUL are sanitized + logged (`cstring_sanitized`). The logging bridge and `snapforge_app_last_error` use the non-logging `cstring_strip_nul` so they can never re-enter the tracing subscriber.
+- **Registry failure**: if a buffer/handle registry is unavailable, the buffer/handle is dropped and the call fails with an error — Rust never hands C an untracked pointer. A zero-length capture returns the zeroed `CapturedImage` with an error instead of a dangling pointer.
+- **Output paths**: screenshot, save and record use cases never overwrite an existing file. If `output_path` exists, `-1`, `-2`, … is appended before the extension (the name is claimed atomically with `create_new`). Callers must use the returned `saved_path` / `snapforge_record_output_path`, not the path they requested.
 
 ## Function surface
 
@@ -57,7 +59,7 @@ These remain because they are the only way to obtain a raw desktop bitmap that t
 | `snapforge_history_list()` | `*mut c_char` | JSON array string |
 | `snapforge_history_delete(path)` | `c_int` | |
 | `snapforge_history_clear()` | `c_int` | |
-| `snapforge_is_incomplete_mp4(path)` | `c_int` (1/0) | Used by history view to flag dead recordings |
+| `snapforge_is_incomplete_mp4(path)` | `c_int` (1/0/-1) | 1 for a missing, <16-byte, or moov-less `.mp4`; fragmented MP4 (early moov + moof) is complete. Used by history view to flag dead recordings |
 
 `snapforge_history_add` was removed; indexing is now handled inside `snapforge_save_prerendered` (via `add_to_history`) and `snapforge_record_start` (via `add_to_history_on_stop`).
 
@@ -72,18 +74,20 @@ These remain because they are the only way to obtain a raw desktop bitmap that t
 
 | Function | Returns | Notes |
 |----------|---------|-------|
-| `snapforge_screenshot(req_json)` | `*mut c_char` | JSON `{"saved_path":"..."}` on success; NULL on error. Request JSON: `display, region{x,y,w,h}?, output_path, format, quality, copy_to_clipboard, add_to_history`. Captures internally. |
-| `snapforge_save_prerendered(rgba, rgba_len, w, h, req_json)` | `*mut c_char` | JSON `{"saved_path":"..."\|null}` on success. Request JSON: `output_path?, format?, quality?, copy_to_clipboard?, add_to_history?`. With `output_path` omitted = clipboard-only. Buffer is read-only; caller retains ownership. |
+| `snapforge_screenshot(req_json)` | `*mut c_char` | JSON `{"saved_path":"..."}` on success (the real, possibly `-N`-suffixed, path); NULL on error. Request JSON: `display, region{x,y,w,h}?, output_path, format, quality, copy_to_clipboard, add_to_history`. Captures internally. Saves first; clipboard + history are best-effort (logged). |
+| `snapforge_save_prerendered(rgba, rgba_len, w, h, req_json)` | `*mut c_char` | JSON `{"saved_path":"..."\|null}` on success. Request JSON: `output_path?, format?, quality?, copy_to_clipboard?, add_to_history?`. With `output_path` omitted = clipboard-only (clipboard failure is then fatal; with a path it is logged only). `saved_path` is the real, possibly `-N`-suffixed, path. Buffer is read-only; caller retains ownership. |
 | `snapforge_record_start(req_json)` | `*mut c_void` (handle) | JSON: `display, region?, output_path, format, fps, quality, ffmpeg_path?, add_to_history_on_stop`. Indexes the finished file on successful stop. |
-| `snapforge_record_stop(handle)` | `c_int` | |
+| `snapforge_record_stop(handle)` | `c_int` | Empty/incomplete outputs are not indexed; indexing failure is logged, not an error |
+| `snapforge_record_is_alive(handle)` | `c_int` | 1 worker running/paused, 0 worker exited (stop will return its error) or already stopped, -1 invalid handle |
+| `snapforge_record_output_path(handle)` | `*mut c_char` | Real output path (may carry a `-N` suffix). NULL for invalid handle / after stop. Free with `snapforge_free_string` |
 | `snapforge_record_pause(handle)` | `c_int` | |
 | `snapforge_record_resume(handle)` | `c_int` | |
 | `snapforge_record_free_handle(handle)` | void | |
-| `snapforge_clicks_start(cb, user_data)` | `*mut c_void` (handle) | `cb` fires on a Rust-owned thread; Qt must dispatch to its main thread (see `ClickTap::onClickStatic`). NULL on failure (typically missing Input Monitoring grant). |
+| `snapforge_clicks_start(cb, user_data)` | `*mut c_void` (handle) | `cb` fires on a Rust-owned thread; Qt must dispatch to its main thread (see `ClickTap::onClickStatic`). NULL on failure (missing Accessibility grant → `PermissionDenied`). |
 | `snapforge_clicks_stop(handle)` | `c_int` | |
 | `snapforge_clicks_free_handle(handle)` | void | |
-| `snapforge_app_last_error()` | `*mut c_char` | Shared error string for every use case. Owned. Poisoned lock surfaces a synthetic "lock poisoned" string, not NULL. |
-| `snapforge_app_last_error_code()` | `c_int` | Stable `SnapforgeErrorCode` category of the last error (0 = none). Poisoned lock returns `Internal` (8), never a misleading 0. |
+| `snapforge_app_last_error()` | `*mut c_char` | Last error on the calling thread (thread-local). Owned. NULL if the last call on this thread succeeded. |
+| `snapforge_app_last_error_code()` | `c_int` | Stable `SnapforgeErrorCode` category of the last error on the calling thread (0 = none). |
 
 ### Logging bridge
 

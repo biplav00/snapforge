@@ -35,6 +35,57 @@ fn check_display_or_skip(test_name: &str) -> bool {
 }
 
 // ---------------------------------------------------------------------------
+// ABI layout — must match the hand-written C declarations in snapforge_ffi.h
+// ---------------------------------------------------------------------------
+
+#[test]
+fn captured_image_layout_matches_header() {
+    use std::mem::{align_of, offset_of, size_of};
+    // typedef struct { uint8_t *data; size_t len; uint32_t width; uint32_t height; }
+    let ptr = size_of::<*mut u8>();
+    assert_eq!(offset_of!(CapturedImage, data), 0);
+    assert_eq!(offset_of!(CapturedImage, len), ptr);
+    assert_eq!(offset_of!(CapturedImage, width), ptr + size_of::<usize>());
+    assert_eq!(
+        offset_of!(CapturedImage, height),
+        ptr + size_of::<usize>() + 4
+    );
+    assert_eq!(size_of::<CapturedImage>(), ptr + size_of::<usize>() + 8);
+    assert_eq!(align_of::<CapturedImage>(), align_of::<usize>());
+    #[cfg(target_pointer_width = "64")]
+    {
+        assert_eq!(size_of::<CapturedImage>(), 24);
+        assert_eq!(align_of::<CapturedImage>(), 8);
+    }
+}
+
+#[test]
+fn enum_layouts_match_header() {
+    use std::mem::size_of;
+    // C enums are int-sized; both Rust enums are repr(i32).
+    assert_eq!(size_of::<SnapforgeErrorCode>(), size_of::<i32>());
+    assert_eq!(size_of::<SnapforgeLogLevel>(), size_of::<i32>());
+    assert_eq!(SnapforgeErrorCode::None as i32, 0);
+    assert_eq!(SnapforgeErrorCode::PermissionDenied as i32, 2);
+    assert_eq!(SnapforgeErrorCode::Internal as i32, 8);
+    assert_eq!(SnapforgeLogLevel::Error as i32, 4);
+}
+
+#[test]
+fn callback_types_are_pointer_sized() {
+    use std::mem::size_of;
+    // Option<extern "C" fn> must stay a nullable bare function pointer.
+    assert_eq!(
+        size_of::<Option<SnapforgeLogCallback>>(),
+        size_of::<*const ()>()
+    );
+    assert_eq!(
+        size_of::<Option<SnapforgeClickCallback>>(),
+        size_of::<*const ()>()
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Capture & free-buffer
 // ---------------------------------------------------------------------------
 
@@ -187,6 +238,50 @@ fn is_incomplete_mp4_null_returns_minus_one() {
 }
 
 #[test]
+fn is_incomplete_mp4_missing_or_empty_is_one() {
+    let tmp = tempfile::tempdir().unwrap();
+    let missing = CString::new(tmp.path().join("nope.mp4").to_str().unwrap()).unwrap();
+    assert_eq!(unsafe { snapforge_is_incomplete_mp4(missing.as_ptr()) }, 1);
+    let empty_path = tmp.path().join("empty.mp4");
+    std::fs::write(&empty_path, b"").unwrap();
+    let empty = CString::new(empty_path.to_str().unwrap()).unwrap();
+    assert_eq!(unsafe { snapforge_is_incomplete_mp4(empty.as_ptr()) }, 1);
+}
+
+#[test]
+fn record_is_alive_rejects_null_handle() {
+    assert_eq!(unsafe { snapforge_record_is_alive(ptr::null_mut()) }, -1);
+    assert_ne!(snapforge_app_last_error_code(), 0);
+    assert!(unsafe { snapforge_record_output_path(ptr::null_mut()) }.is_null());
+}
+
+#[test]
+fn save_prerendered_returns_real_path_on_collision() {
+    let tmp = tempfile::tempdir().unwrap();
+    let target = tmp.path().join("dup.png");
+    let buf = [255u8; 4];
+    let creq = CString::new(format!(
+        r#"{{"output_path":"{}","format":"png"}}"#,
+        target.to_str().unwrap()
+    ))
+    .unwrap();
+    let mut paths = Vec::new();
+    for _ in 0..2 {
+        let res = unsafe { snapforge_save_prerendered(buf.as_ptr(), 4, 1, 1, creq.as_ptr()) };
+        assert!(!res.is_null());
+        let txt = unsafe { std::ffi::CStr::from_ptr(res) }
+            .to_str()
+            .unwrap()
+            .to_owned();
+        unsafe { snapforge_free_string(res) };
+        let v: serde_json::Value = serde_json::from_str(&txt).unwrap();
+        paths.push(v["saved_path"].as_str().unwrap().to_owned());
+    }
+    assert_eq!(paths[0], target.to_str().unwrap());
+    assert_eq!(paths[1], tmp.path().join("dup-1.png").to_str().unwrap());
+}
+
+#[test]
 fn is_incomplete_mp4_non_mp4_extension_is_zero() {
     let txt_path = CString::new("/tmp/not-an-mp4.txt").unwrap();
     assert_eq!(
@@ -224,6 +319,11 @@ fn config_save_null_or_invalid_json_returns_minus_one() {
     assert_eq!(rc, -1);
 }
 
+// The FFI config functions always target the per-user config path (no way to
+// inject a directory), so this round-trip would overwrite the developer's real
+// config.json. The same `extra` flatten behaviour is covered against a temp
+// dir by `config::tests::save_to_preserves_unknown_fields` in snapforge-storage.
+#[ignore = "writes the developer's real config.json via the FFI; covered by snapforge-storage temp-dir test"]
 #[test]
 fn config_save_preserves_qt_only_fields_via_extra_flatten() {
     // The audit's hotkey-config split-brain: a save+load round-trip must

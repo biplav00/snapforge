@@ -1,5 +1,9 @@
-//! Screenshot use case — capture, optionally copy to clipboard, save, optionally
-//! add to history.
+//! Screenshot use case — capture, save, optionally copy to clipboard,
+//! optionally add to history.
+//!
+//! Ordering: the file is written first (the one step that must succeed);
+//! clipboard copy and history indexing afterwards are best-effort — a failure
+//! there is logged but never turns a successful save into an error.
 
 use crate::AppError;
 use image::RgbaImage;
@@ -8,7 +12,7 @@ use snapforge_capture::capture;
 use snapforge_domain::{CaptureFormat, Rect};
 use snapforge_encode::format;
 use snapforge_storage::{clipboard, history::ScreenshotHistory};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// The canonical screenshot-request schema. The FFI deserializes its JSON
 /// request straight into this — there is no second hand-written parser, so the
@@ -45,7 +49,44 @@ impl Default for ScreenshotRequest {
 
 #[derive(Debug, Clone)]
 pub struct ScreenshotResult {
+    /// The file actually written. May differ from the requested
+    /// `output_path` (a `-N` suffix is added if that name already exists).
     pub saved_path: PathBuf,
+}
+
+/// Encode `image` once, then write it to a freshly-claimed unique path
+/// derived from `requested`. Returns the real path and, for PNG output, the
+/// encoded bytes so the clipboard copy can reuse them instead of re-encoding.
+fn save_unique(
+    image: &RgbaImage,
+    requested: &Path,
+    fmt: CaptureFormat,
+    quality: u8,
+) -> Result<(PathBuf, Option<Vec<u8>>), AppError> {
+    // Encode before claiming the name so an encode failure leaves no file.
+    let bytes = format::encode_image(image, fmt, quality)?;
+    let path = crate::claim_unique_path(requested)?;
+    if let Err(e) = std::fs::write(&path, &bytes) {
+        let _ = std::fs::remove_file(&path);
+        return Err(format::FormatError::WriteFailed(e).into());
+    }
+    let png = (fmt == CaptureFormat::Png).then_some(bytes);
+    Ok((path, png))
+}
+
+/// Clipboard copy after a successful save: failure is logged, not returned.
+fn copy_after_save(image: &RgbaImage, png: Option<&[u8]>) {
+    if let Err(e) = clipboard::copy_image_to_clipboard_with_png(image, png) {
+        tracing::warn!("[screenshot] saved, but clipboard copy failed: {}", e);
+    }
+}
+
+/// History indexing is best-effort: the file is already on disk and the
+/// caller cares about `saved_path`; a broken index must not fail the save.
+pub(crate) fn index_best_effort(path: &Path) {
+    if let Err(e) = ScreenshotHistory::add_entry(&path.to_string_lossy()) {
+        tracing::warn!("[history] failed to index {}: {}", path.display(), e);
+    }
 }
 
 /// Take a screenshot end-to-end: capture → (optional) clipboard → save →
@@ -67,24 +108,16 @@ pub fn take_screenshot(req: ScreenshotRequest) -> Result<ScreenshotResult, AppEr
         None => capture::capture_fullscreen(req.display)?,
     };
 
+    let (saved_path, png) = save_unique(&image, &req.output_path, req.format, req.quality)?;
+
     if req.copy_to_clipboard {
-        clipboard::copy_image_to_clipboard(&image)?;
+        copy_after_save(&image, png.as_deref());
     }
-
-    format::save_image(&image, &req.output_path, req.format, req.quality)?;
-
     if req.add_to_history {
-        // History indexing is best-effort — if loading or writing the index
-        // fails, the screenshot is already on disk and the caller still cares
-        // about the saved_path more than the index. Surface the error anyway
-        // so the FFI can log it; the caller decides what to do.
-        let mut hist = ScreenshotHistory::load()?;
-        hist.add_entry(&req.output_path.to_string_lossy())?;
+        index_best_effort(&saved_path);
     }
 
-    Ok(ScreenshotResult {
-        saved_path: req.output_path,
-    })
+    Ok(ScreenshotResult { saved_path })
 }
 
 /// Request for [`save_prerendered`] — caller already has fully-composited RGBA
@@ -135,7 +168,9 @@ pub struct SavePrerenderedResult {
     pub saved_path: Option<PathBuf>,
 }
 
-/// Save / copy / index a caller-supplied RGBA bitmap.
+/// Save / copy / index a caller-supplied RGBA bitmap. When a path is given,
+/// the returned `saved_path` is the file actually written (a `-N` suffix is
+/// appended if `output_path` already exists).
 ///
 /// This is the use-case for callers that have already composited their final
 /// image (Qt annotation flow) — re-capturing inside Rust would drop the
@@ -159,21 +194,23 @@ pub fn save_prerendered(req: SavePrerenderedRequest) -> Result<SavePrerenderedRe
     let image = RgbaImage::from_raw(req.width, req.height, req.rgba)
         .ok_or_else(|| AppError::InvalidRequest("RgbaImage::from_raw failed".into()))?;
 
-    if req.copy_to_clipboard {
-        clipboard::copy_image_to_clipboard(&image)?;
-    }
-
     let saved_path = if let Some(path) = req.output_path {
         if path.as_os_str().is_empty() {
             return Err(AppError::InvalidRequest("output_path is empty".into()));
         }
-        format::save_image(&image, &path, req.format, req.quality)?;
-        if req.add_to_history {
-            let mut hist = ScreenshotHistory::load()?;
-            hist.add_entry(&path.to_string_lossy())?;
+        let (saved, png) = save_unique(&image, &path, req.format, req.quality)?;
+        if req.copy_to_clipboard {
+            copy_after_save(&image, png.as_deref());
         }
-        Some(path)
+        if req.add_to_history {
+            index_best_effort(&saved);
+        }
+        Some(saved)
     } else {
+        // Clipboard-only: the copy IS the operation, so its failure is fatal.
+        if req.copy_to_clipboard {
+            clipboard::copy_image_to_clipboard(&image)?;
+        }
         None
     };
 
@@ -328,6 +365,30 @@ mod tests {
         let res = save_prerendered(req).expect("save");
         assert_eq!(res.saved_path.as_deref(), Some(out.as_path()));
         assert!(out.exists());
+    }
+
+    #[test]
+    fn save_prerendered_never_overwrites_existing_file() {
+        // Two saves with the same (timestamped) name in the same second must
+        // both survive; the second reports the suffixed path it really used.
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().join("same.png");
+        let mk = || SavePrerenderedRequest {
+            rgba: solid_rgba(2, 2),
+            width: 2,
+            height: 2,
+            output_path: Some(out.clone()),
+            format: CaptureFormat::Png,
+            quality: 90,
+            copy_to_clipboard: false,
+            add_to_history: false,
+        };
+        let first = save_prerendered(mk()).unwrap().saved_path.unwrap();
+        let second = save_prerendered(mk()).unwrap().saved_path.unwrap();
+        assert_eq!(first, out);
+        assert_eq!(second, dir.path().join("same-1.png"));
+        assert!(std::fs::metadata(&first).unwrap().len() > 0);
+        assert!(std::fs::metadata(&second).unwrap().len() > 0);
     }
 
     #[test]
