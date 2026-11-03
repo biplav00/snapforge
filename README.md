@@ -133,7 +133,8 @@ Releases are automated, and only commits that passed CI are released. When the `
 
 1. Computes the next patch version from the latest `v*` tag
 2. Builds and verifies `Snapforge-X.Y.Z.dmg` on macOS with the bumped version
-3. Only if the DMG built: patch-bumps `qt/CMakeLists.txt`, commits as `chore(release): vX.Y.Z`, tags `vX.Y.Z`, and creates the GitHub Release with auto-generated notes and the `.dmg` attached
+3. Collects the third-party sources archive (`packaging/macos/collect-sources.sh`, below)
+4. Only if both built: patch-bumps `qt/CMakeLists.txt`, commits as `chore(release): vX.Y.Z`, tags `vX.Y.Z`, and creates the GitHub Release with auto-generated notes and the `.dmg` plus `Snapforge-X.Y.Z-third-party-sources.tar.gz` attached
 
 To land changes without releasing, include the literal opt-out tag in the commit subject (square-bracketed `skip release`). Major/minor bumps need to be done by hand: tag the commit you want to release from with the desired `vX.Y.Z` *minus one patch* (the workflow bumps from the latest tag), then push.
 
@@ -141,10 +142,18 @@ To land changes without releasing, include the literal opt-out tag in the commit
 
 The macOS app bundles third-party software, and their licence texts ship inside the app in `Snapforge.app/Contents/Resources/Licenses/` (start with `THIRD_PARTY_NOTICES.md`):
 
-- **FFmpeg** (GPLv3+; Homebrew's build includes libx264 and libx265, both GPLv2+), plus the codec libraries it depends on. Snapforge runs `ffmpeg` as a **separate process** and sends it frames over a pipe; it doesn't link FFmpeg into the app. The exact bundled version and build configuration are recorded in `Licenses/ffmpeg/VERSION.txt`. The notices file includes a written offer for the corresponding source and links to the upstream source.
+- **FFmpeg** (GPLv3+; Homebrew's build includes libx264 and libx265, both GPLv2+), plus the codec libraries it depends on. Snapforge runs `ffmpeg` as a **separate process** and sends it frames over a pipe; it doesn't link FFmpeg into the app. The exact bundled version and build configuration are recorded in `Licenses/ffmpeg/VERSION.txt`.
 - **Qt 6** (LGPLv3), dynamically linked frameworks in `Contents/Frameworks`.
 
-The licence files are collected at build time by `packaging/macos/bundle-licenses.sh`. The notice text is in `packaging/macos/THIRD_PARTY_NOTICES.md`.
+**Source code.** Every release attaches `Snapforge-X.Y.Z-third-party-sources.tar.gz` next to the `.dmg`: the exact upstream source archives of FFmpeg and every bundled GPL/LGPL library, Homebrew's build recipe (`<formula>.rb`) and patches for each, and a `MANIFEST.tsv` of every bundled library with its version, licence and source checksum. Qt's source (~1 GB) isn't included; the archive records the exact Qt version and upstream URL, and `THIRD_PARTY_NOTICES.md` carries a three-year written offer for it.
+
+To build the archive locally (output in the gitignored `qt/build/dist/`; downloads ~80 MB):
+
+```bash
+packaging/macos/collect-sources.sh qt/build/Snapforge.app
+```
+
+The licence files are collected at build time by `packaging/macos/bundle-licenses.sh`, and the source archive by `packaging/macos/collect-sources.sh`; both use `packaging/macos/bundled-formulae.sh` to map the bundled dylibs to their Homebrew formulae, so they cover the same set. The notice text is in `packaging/macos/THIRD_PARTY_NOTICES.md`.
 
 ## License
 

@@ -96,11 +96,22 @@ jobs:
       - name: Build .dmg
         run: packaging/macos/build_dmg.sh
 
-      - name: Upload .dmg artifact
+      # GPL compliance: ship the exact upstream source (+ Homebrew build
+      # recipe and patches) of FFmpeg and every bundled GPL/LGPL library next
+      # to the DMG. Runs right after the build, against the same Homebrew
+      # install the bundle was made from; fails if an installed version and
+      # the fetched source disagree. Qt's source is covered by the written
+      # offer in THIRD_PARTY_NOTICES.md (see packaging/macos/collect-sources.sh).
+      - name: Collect third-party sources
+        run: packaging/macos/collect-sources.sh qt/build/Snapforge.app qt/build/dist
+
+      - name: Upload .dmg + sources artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: snapforge-dmg
-          path: qt/build/dist/Snapforge-*.dmg
+          path: |
+            qt/build/dist/Snapforge-*.dmg
+            qt/build/dist/Snapforge-*-third-party-sources.tar.gz
           if-no-files-found: error
 
   release:
@@ -148,7 +159,7 @@ jobs:
           name: snapforge-dmg
           path: dist
 
-      - name: Create GitHub Release with .dmg
+      - name: Create GitHub Release with .dmg + third-party sources
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           NEXT: ${{ needs.version.outputs.next }}
@@ -161,7 +172,12 @@ jobs:
           if [ -n "$PREV_TAG" ]; then
             START_TAG_ARGS=(--notes-start-tag "$PREV_TAG")
           fi
-          gh release create "v$NEXT" dist/Snapforge-*.dmg \
+          # Both assets must be present: never publish a GPL binary without
+          # its source archive.
+          ls dist/Snapforge-"$NEXT".dmg dist/Snapforge-"$NEXT"-third-party-sources.tar.gz
+          gh release create "v$NEXT" \
+            dist/Snapforge-"$NEXT".dmg \
+            dist/Snapforge-"$NEXT"-third-party-sources.tar.gz \
             --repo "$GITHUB_REPOSITORY" \
             --title "v$NEXT" \
             --verify-tag \

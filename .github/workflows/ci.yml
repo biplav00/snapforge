@@ -46,6 +46,16 @@ jobs:
       - name: clippy (deny warnings)
         run: cargo clippy --workspace --all-targets -- -D warnings
 
+      # The non-macOS fallback code (cfg(not(target_os = "macos"))) is never
+      # compiled by the macOS build above; type-check it for Windows so it
+      # can't rot. Warnings are errors, as for clippy above.
+      - name: cargo check (Windows target, non-macOS fallbacks)
+        env:
+          RUSTFLAGS: "-D warnings"
+        run: |
+          rustup target add x86_64-pc-windows-msvc
+          cargo check --workspace --target x86_64-pc-windows-msvc --all-targets
+
       - name: Install cargo-deny
         # Pinned so a new cargo-deny release can't break CI unannounced.
         run: cargo install cargo-deny --locked --version 0.20.2

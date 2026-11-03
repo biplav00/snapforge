@@ -3,7 +3,8 @@
 #
 # The shipped bundle redistributes FFmpeg (GPL, with x264/x265 and other
 # Homebrew codec libraries) and Qt (LGPLv3), so their licence texts, the exact
-# versions shipped, and the written source offer must travel with the binary.
+# versions shipped, and where to get the source must travel with the binary
+# (the source itself ships next to the DMG; see collect-sources.sh).
 #
 #   Licenses/THIRD_PARTY_NOTICES.md   overview + source offer (from packaging/macos)
 #   Licenses/ffmpeg/                  COPYING.* + `ffmpeg -L` + `ffmpeg -version`
@@ -29,7 +30,6 @@ if [ ! -d "$APP" ]; then
 fi
 
 LIC_DIR="$APP/Contents/Resources/Licenses"
-FRAMEWORKS_DIR="$APP/Contents/Frameworks"
 BREW_PREFIX="$(brew --prefix 2>/dev/null || echo /opt/homebrew)"
 FFMPEG_PREFIX="$(brew --prefix ffmpeg 2>/dev/null || echo "$BREW_PREFIX/opt/ffmpeg")"
 
@@ -76,27 +76,19 @@ record_ffmpeg "$LIC_DIR/ffmpeg/LICENSE-ffmpeg-L.txt" -hide_banner -L
 record_ffmpeg "$LIC_DIR/ffmpeg/VERSION.txt" -hide_banner -version
 
 # --- Every Homebrew formula whose dylib we bundled ---------------------------
-# Map each bundled dylib back to the formula that provides it via
-# <prefix>/opt/<formula>/lib/<name>. Covers x264, x265 and the rest of FFmpeg's
-# codec dependency tree without hard-coding it.
-if [ -d "$FRAMEWORKS_DIR" ]; then
-    shopt -s nullglob
-    for dylib in "$FRAMEWORKS_DIR"/*.dylib; do
-        base="$(basename "$dylib")"
-        for libpath in "$BREW_PREFIX"/opt/*/lib/"$base"; do
-            formula="$(basename "$(dirname "$(dirname "$libpath")")")"
-            case "$formula" in ffmpeg|ffmpeg@*) continue ;; esac
-            [ -d "$LIC_DIR/$formula" ] && break
-            if ! copy_licenses "$BREW_PREFIX/opt/$formula" "$LIC_DIR/$formula"; then
-                echo "WARNING: no licence file found for formula '$formula' ($base)" >&2
-                echo "See https://formulae.brew.sh/formula/$formula for its licence." \
-                    >"$LIC_DIR/$formula/README.txt"
-            fi
-            break
-        done
-    done
-    shopt -u nullglob
-fi
+# bundled-formulae.sh maps each bundled dylib back to the formula that provides
+# it (x264, x265 and the rest of FFmpeg's codec dependency tree, plus the
+# non-Qt libraries macdeployqt copied) without hard-coding it. The same list
+# drives collect-sources.sh, so licences and shipped sources stay in step.
+while IFS= read -r formula; do
+    case "$formula" in ffmpeg|ffmpeg@*) continue ;; esac
+    [ -d "$LIC_DIR/$formula" ] && continue
+    if ! copy_licenses "$BREW_PREFIX/opt/$formula" "$LIC_DIR/$formula"; then
+        echo "WARNING: no licence file found for formula '$formula'" >&2
+        echo "See https://formulae.brew.sh/formula/$formula for its licence." \
+            >"$LIC_DIR/$formula/README.txt"
+    fi
+done < <("$SCRIPT_DIR/bundled-formulae.sh" "$APP")
 
 # --- Qt ----------------------------------------------------------------------
 # Homebrew's Qt keg ships no licence text. Qt is used under the LGPLv3, whose
@@ -115,7 +107,8 @@ done
     echo "Licensed under the GNU Lesser General Public License v3 (LGPL-3.0-only)."
     echo "Qt frameworks are dynamically linked and live in Contents/Frameworks;"
     echo "you may replace them with your own build of the same Qt version."
-    echo "Source: https://download.qt.io/archive/qt/ (version $QT_VERSION)"
+    echo "Source: https://download.qt.io/archive/qt/ (version $QT_VERSION);"
+    echo "also covered by the written offer in ../THIRD_PARTY_NOTICES.md."
 } >"$LIC_DIR/qt/README.txt"
 
 echo "=== Licence notices bundled into $LIC_DIR ==="
