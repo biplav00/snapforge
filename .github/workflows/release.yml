@@ -1,99 +1,80 @@
 name: release
 
+# Release only commits that passed CI: this runs when the CI workflow finishes
+# for a push to main, and only if it succeeded. Everything below builds and
+# tags the exact commit CI tested (workflow_run.head_sha), not whatever main
+# points at by the time this job starts.
 on:
-  push:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
     branches: [main]
 
+# Default to read-only; only the job that pushes the tag and creates the
+# GitHub release gets contents: write.
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: release
   cancel-in-progress: false
 
 jobs:
-  release:
-    if: ${{ !contains(github.event.head_commit.message, '[skip release]') && !startsWith(github.event.head_commit.message, 'chore(release):') }}
+  version:
+    name: Compute version
+    if: >-
+      ${{ github.event.workflow_run.conclusion == 'success' &&
+          github.event.workflow_run.event == 'push' &&
+          !contains(github.event.workflow_run.head_commit.message, '[skip release]') &&
+          !startsWith(github.event.workflow_run.head_commit.message, 'chore(release):') }}
     runs-on: ubuntu-latest
     outputs:
-      tag: ${{ steps.ver.outputs.tag }}
       next: ${{ steps.ver.outputs.next }}
+      tag: ${{ steps.ver.outputs.tag }}
+      prev_tag: ${{ steps.ver.outputs.prev_tag }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
+          ref: ${{ github.event.workflow_run.head_sha }}
           fetch-depth: 0
-          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Compute next version (patch bump)
         id: ver
         run: |
           set -euo pipefail
-          # Anchor on the latest release tag — the source of truth for the
-          # shipped version. (Previously read crates/snapforge-core/Cargo.toml,
-          # which was deleted in the snapforge-core facade removal.) checkout
-          # above uses fetch-depth: 0, so all tags are present.
-          CURRENT=$(git describe --tags --abbrev=0 --match 'v*' 2>/dev/null | sed 's/^v//')
+          # Anchor on the HIGHEST release tag in the repo — the source of truth
+          # for the shipped version. Deliberately not `git describe`: that only
+          # sees tags reachable from head_sha, so if an earlier run's bump
+          # commit never reached main (main moved on), describe would recompute
+          # an already-published version and `git tag` would fail forever.
+          # fetch-depth: 0 above brings all tags; the workflow-level
+          # concurrency group serialises runs so two can't pick the same NEXT.
+          PREV_TAG=$(git tag -l 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -n1)
+          CURRENT=${PREV_TAG#v}
           CURRENT=${CURRENT:-0.0.0}
           IFS='.' read -r MAJOR MINOR PATCH <<<"$CURRENT"
           NEXT="$MAJOR.$MINOR.$((PATCH + 1))"
-          echo "current=$CURRENT" >>"$GITHUB_OUTPUT"
+          echo "prev_tag=$PREV_TAG" >>"$GITHUB_OUTPUT"
           echo "next=$NEXT" >>"$GITHUB_OUTPUT"
           echo "tag=v$NEXT" >>"$GITHUB_OUTPUT"
-          echo "Bumping $CURRENT -> $NEXT"
-
-      - name: Bump version in CMakeLists.txt
-        env:
-          NEXT: ${{ steps.ver.outputs.next }}
-        run: |
-          set -euo pipefail
-          # All three version fields move together (SNAPFORGE_VERSION used to be
-          # left behind, drifting out of sync with the bundle versions/tags).
-          sed -i.bak -E "s/(SNAPFORGE_VERSION \")[^\"]+(\")/\1$NEXT\2/" qt/CMakeLists.txt
-          sed -i.bak -E "s/(MACOSX_BUNDLE_BUNDLE_VERSION \")[^\"]+(\")/\1$NEXT\2/" qt/CMakeLists.txt
-          sed -i.bak -E "s/(MACOSX_BUNDLE_SHORT_VERSION_STRING \")[^\"]+(\")/\1$NEXT\2/" qt/CMakeLists.txt
-          rm -f qt/CMakeLists.txt.bak
-
-      - name: Commit, tag, push
-        env:
-          NEXT: ${{ steps.ver.outputs.next }}
-        run: |
-          set -euo pipefail
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add qt/CMakeLists.txt
-          git commit -m "chore(release): v$NEXT"
-          git tag "v$NEXT"
-          git push origin main "v$NEXT"
-
-      - name: Create GitHub Release (auto-generated notes)
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          NEXT: ${{ steps.ver.outputs.next }}
-          PREV: ${{ steps.ver.outputs.current }}
-        run: |
-          gh release create "v$NEXT" \
-            --repo "$GITHUB_REPOSITORY" \
-            --title "v$NEXT" \
-            --target main \
-            --generate-notes \
-            --notes-start-tag "v$PREV"
+          echo "Bumping ${CURRENT} -> ${NEXT} (previous tag: ${PREV_TAG:-none})"
 
   dmg:
-    name: Build & upload .dmg
-    needs: release
+    name: Build .dmg
+    needs: version
     runs-on: macos-14
     env:
-      TAG_NAME: ${{ needs.release.outputs.tag }}
+      MACOSX_DEPLOYMENT_TARGET: "14.0"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
-          ref: ${{ needs.release.outputs.tag }}
+          ref: ${{ github.event.workflow_run.head_sha }}
 
       - name: Install Qt6 + bundling deps
         run: brew install qt dylibbundler ffmpeg
 
       - name: Cache cargo registry & target
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: |
             ~/.cargo/registry
@@ -103,12 +84,86 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-
 
+      # Same edit the release job commits, applied here so the bundle carries
+      # the new version.
+      - name: Bump version in CMakeLists.txt
+        env:
+          NEXT: ${{ needs.version.outputs.next }}
+        run: packaging/ci/bump-version.sh "$NEXT"
+
       # Single source of truth: same script developers run locally. Builds
-      # release (cargo + cmake), bundles, signs, and packages the .dmg.
+      # release (cargo + cmake), bundles, signs, VERIFIES, and packages.
       - name: Build .dmg
         run: packaging/macos/build_dmg.sh
 
-      - name: Upload to Release
+      - name: Upload .dmg artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: snapforge-dmg
+          path: qt/build/dist/Snapforge-*.dmg
+          if-no-files-found: error
+
+  release:
+    name: Tag & publish release
+    # Only after the DMG built and verified: a failed build leaves no tag and
+    # no empty release behind.
+    needs: [version, dmg]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Bump version in CMakeLists.txt
+        env:
+          NEXT: ${{ needs.version.outputs.next }}
+        run: packaging/ci/bump-version.sh "$NEXT"
+
+      - name: Commit, tag, push
+        env:
+          NEXT: ${{ needs.version.outputs.next }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add qt/CMakeLists.txt
+          git commit -m "chore(release): v$NEXT"
+          git tag "v$NEXT"
+          git push origin "v$NEXT"
+          # Fast-forward main to the bump commit. If main moved on since CI
+          # tested head_sha, the tag/release still point at the tested commit;
+          # the next release computes its version from the highest tag (not
+          # from main's CMakeLists), so a skipped bump on main is cosmetic.
+          if ! git push origin "HEAD:main"; then
+            echo "::warning::main advanced since the tested commit; version bump not pushed to main (tag v$NEXT still published)"
+          fi
+
+      - name: Download .dmg artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: snapforge-dmg
+          path: dist
+
+      - name: Create GitHub Release with .dmg
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release upload "$TAG_NAME" qt/build/dist/Snapforge-*.dmg --clobber --repo "$GITHUB_REPOSITORY"
+          NEXT: ${{ needs.version.outputs.next }}
+          PREV_TAG: ${{ needs.version.outputs.prev_tag }}
+        run: |
+          set -euo pipefail
+          # --notes-start-tag only when there IS a previous release; on the
+          # first release generate notes from the whole history.
+          START_TAG_ARGS=()
+          if [ -n "$PREV_TAG" ]; then
+            START_TAG_ARGS=(--notes-start-tag "$PREV_TAG")
+          fi
+          gh release create "v$NEXT" dist/Snapforge-*.dmg \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "v$NEXT" \
+            --verify-tag \
+            --generate-notes \
+            "${START_TAG_ARGS[@]}"

@@ -20,6 +20,8 @@ Fast, lightweight macOS screenshot and screen recording tool with annotation sup
 
 ### From a Release (recommended)
 
+Requires **macOS 14 (Sonoma) or later** on Apple silicon (the default build is arm64-only).
+
 Download the latest `Snapforge-vX.Y.Z.dmg` from the [Releases page](https://github.com/biplav00/snapforge/releases), open it, and drag `Snapforge.app` to `/Applications`.
 
 The `.dmg` is **unsigned** (no Apple Developer ID), so on first launch macOS will block it. Either:
@@ -33,7 +35,7 @@ The `.dmg` is **unsigned** (no Apple Developer ID), so on first launch macOS wil
 
 On first screenshot/recording, macOS will prompt for **Screen Recording** permission — grant it in System Settings → Privacy & Security, then **fully quit Snapforge from the menu bar and reopen it**. macOS only applies a newly-granted Screen Recording permission to processes started *after* the grant; without a restart, the running process can't see the grant.
 
-> Snapforge is unsigned, so each new release is treated as a fresh app by macOS. The grant is pinned to a stable ad-hoc identifier (`com.snapforge.app`), so it should persist across versions on the same machine. To clear and re-grant: System Settings → Privacy & Security → Screen Recording → remove Snapforge → relaunch.
+> Snapforge is only ad-hoc signed, so macOS identifies each build by its code hash and treats every new release as a different app: **expect to re-grant Screen Recording (and Input Monitoring, if you use "show clicks") after each update.** If the toggle already looks on but captures fail, remove the stale entry: System Settings → Privacy & Security → Screen Recording → select Snapforge → **–**, then relaunch and grant again. A stable grant across updates needs a Developer ID signature, which this project doesn't use.
 
 ### Build from source
 
@@ -50,16 +52,20 @@ Build:
 # One-shot build via the helper script
 bash qt/build.sh
 
-# Or manually
+# Or manually (dev build: runs against Homebrew Qt/ffmpeg, also builds the tests)
+export MACOSX_DEPLOYMENT_TARGET=14.0
 cargo build --release -p snapforge-ffi
 cmake -S qt -B qt/build -DCMAKE_PREFIX_PATH="$(brew --prefix qt)"
 cmake --build qt/build --parallel
+(cd qt/build && QT_QPA_PLATFORM=offscreen ctest --output-on-failure)
 
-# Package as .dmg (macOS) — same script CI runs
+# Package as .dmg (macOS) — same script the release workflow runs
 packaging/macos/build_dmg.sh
 ```
 
 The built application is at `qt/build/Snapforge.app`.
+
+`qt/build.sh` configures with `-DSNAPFORGE_BUNDLE=ON -DBUILD_TESTING=OFF`: it copies Qt (macdeployqt), ffmpeg and its dylibs (`dylibbundler`, `brew install dylibbundler`) and the third-party licence notices into the app, then ad-hoc signs it. A plain CMake configure leaves `SNAPFORGE_BUNDLE` OFF (faster; the app only runs on a machine with the same Homebrew packages) and `BUILD_TESTING` ON. `build_dmg.sh` refuses to package a bundle that fails its checks: a valid signature, no Mach-O loading from `/opt/homebrew` or `/usr/local`, a bundled ffmpeg that runs, the expected architectures, and the licence notices present.
 
 ## Tech Stack
 
@@ -77,8 +83,12 @@ The built application is at `qt/build/Snapforge.app`.
 | Action | Default |
 |--------|---------|
 | Screenshot | `Cmd+Shift+S` |
-| Capture Last Region | `Cmd+Shift+L` |
-| Record Screen | `Cmd+Shift+R` |
+| Capture Fullscreen | `Cmd+Shift+F` |
+| Record Screen (press again to stop) | `Cmd+Shift+R` |
+| History | `Cmd+Shift+H` |
+| Preferences | `Cmd+,` |
+
+A global shortcut must include Cmd, Ctrl or Option, so it can't take over normal typing. Letter, digit and punctuation keys follow your current keyboard layout (on AZERTY, `Cmd+A` is the key labelled A). If another app already owns a chord, Snapforge shows a menu-bar notification listing the shortcuts it couldn't register. While Preferences is recording a new shortcut, the global shortcuts are paused. In config files, the + key is written `Plus` (for example `Cmd+Plus`).
 
 ### Annotation Tools
 
@@ -119,15 +129,22 @@ cargo fmt --all          # format
 
 ### Releases
 
-Releases are fully automated. Every push to `main` (except the workflow's own `chore(release):` auto-commit) triggers `release.yml`, which:
+Releases are automated, and only commits that passed CI are released. When the `CI` workflow succeeds for a push to `main` (except the workflow's own `chore(release):` auto-commit), `release.yml` runs on that exact commit:
 
-1. Patch-bumps the version in `crates/snapforge-core/Cargo.toml` and `qt/CMakeLists.txt`
-2. Updates `Cargo.lock`
-3. Commits as `chore(release): vX.Y.Z` and tags `vX.Y.Z`
-4. Creates a GitHub Release with auto-generated notes (commits since previous tag)
-5. Builds `Snapforge-vX.Y.Z.dmg` on macOS in a follow-up job and uploads it as a Release asset
+1. Computes the next patch version from the latest `v*` tag
+2. Builds and verifies `Snapforge-X.Y.Z.dmg` on macOS with the bumped version
+3. Only if the DMG built: patch-bumps `qt/CMakeLists.txt`, commits as `chore(release): vX.Y.Z`, tags `vX.Y.Z`, and creates the GitHub Release with auto-generated notes and the `.dmg` attached
 
-Every `main` push is a release. To land changes without releasing, include the literal opt-out tag in the commit subject (square-bracketed `skip release`). `release.yml` checks for that token and bails. Major/minor bumps need to be done by hand: edit `crates/snapforge-core/Cargo.toml` and `qt/CMakeLists.txt` to the desired `X.Y.Z` *minus one patch* (so the workflow bumps the patch *to* it), then push.
+To land changes without releasing, include the literal opt-out tag in the commit subject (square-bracketed `skip release`). Major/minor bumps need to be done by hand: tag the commit you want to release from with the desired `vX.Y.Z` *minus one patch* (the workflow bumps from the latest tag), then push.
+
+## Third-party licences
+
+The macOS app bundles third-party software, and their licence texts ship inside the app in `Snapforge.app/Contents/Resources/Licenses/` (start with `THIRD_PARTY_NOTICES.md`):
+
+- **FFmpeg** (GPLv3+; Homebrew's build includes libx264 and libx265, both GPLv2+), plus the codec libraries it depends on. Snapforge runs `ffmpeg` as a **separate process** and sends it frames over a pipe; it doesn't link FFmpeg into the app. The exact bundled version and build configuration are recorded in `Licenses/ffmpeg/VERSION.txt`. The notices file includes a written offer for the corresponding source and links to the upstream source.
+- **Qt 6** (LGPLv3), dynamically linked frameworks in `Contents/Frameworks`.
+
+The licence files are collected at build time by `packaging/macos/bundle-licenses.sh`. The notice text is in `packaging/macos/THIRD_PARTY_NOTICES.md`.
 
 ## License
 
