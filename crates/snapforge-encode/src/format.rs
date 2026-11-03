@@ -22,6 +22,10 @@ pub fn encode_image(
 ) -> Result<Vec<u8>, FormatError> {
     let quality = quality.clamp(1, 100);
     let (w, h) = (image.width() as usize, image.height() as usize);
+    // Initial capacity for the compressed PNG/WebP output. Screen content
+    // usually compresses far below raw size, so reserving the full w*h*4
+    // (~33 MB at 4K) wastes memory; ~1 byte/pixel avoids most regrowth.
+    let compressed_capacity = w * h;
 
     match format {
         CaptureFormat::Png => {
@@ -29,7 +33,7 @@ pub fn encode_image(
             // cannot be parallelized without swapping the encoder, which would
             // change output bytes and is out of scope here. The `image` rayon
             // feature accelerates other codecs (e.g. JPEG) but not PNG deflate.
-            let mut buf = Cursor::new(Vec::with_capacity(w * h * 4));
+            let mut buf = Cursor::new(Vec::with_capacity(compressed_capacity));
             image
                 .write_to(&mut buf, image::ImageFormat::Png)
                 .map_err(|e| FormatError::EncodeFailed(e.to_string()))?;
@@ -101,7 +105,10 @@ pub fn encode_image(
             Ok(buf.into_inner())
         }
         CaptureFormat::WebP => {
-            let mut buf = Cursor::new(Vec::with_capacity(w * h * 4));
+            // NOTE: the `image` 0.25 WebP encoder is LOSSLESS only, so
+            // `quality` is ignored for WebP (the UI labels it as such). A
+            // lossy encoder would need a new dependency (e.g. libwebp).
+            let mut buf = Cursor::new(Vec::with_capacity(compressed_capacity));
             image
                 .write_to(&mut buf, image::ImageFormat::WebP)
                 .map_err(|e| FormatError::EncodeFailed(e.to_string()))?;
@@ -111,6 +118,11 @@ pub fn encode_image(
 }
 
 /// Save an RgbaImage to a file path. Creates parent directories if needed.
+///
+/// The write is atomic: bytes go to a hidden temp sibling which is then
+/// renamed over `path`, so a crash or full disk never leaves a truncated
+/// image behind. An existing file at `path` is replaced (the app layer picks
+/// unique names).
 pub fn save_image(
     image: &RgbaImage,
     path: &Path,
@@ -121,8 +133,43 @@ pub fn save_image(
         std::fs::create_dir_all(parent)?;
     }
     let bytes = encode_image(image, format, quality)?;
-    std::fs::write(path, bytes)?;
+    write_atomic(path, &bytes)?;
     Ok(())
+}
+
+/// Write `bytes` to `path` via a unique temp file in the same directory +
+/// rename (atomic on the same filesystem). The temp file is removed on error.
+pub fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write as _;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    let name = path.file_name().ok_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::InvalidInput, "path has no file name")
+    })?;
+    let tmp_name = format!(
+        ".{}.{}.{}.tmp",
+        name.to_string_lossy(),
+        std::process::id(),
+        COUNTER.fetch_add(1, Ordering::Relaxed)
+    );
+    let tmp = path.with_file_name(tmp_name);
+
+    let result = (|| {
+        // create_new: never clobber another writer's temp file.
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&tmp)?;
+        f.write_all(bytes)?;
+        f.sync_all()?;
+        drop(f);
+        std::fs::rename(&tmp, path)
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    result
 }
 
 #[cfg(test)]
@@ -137,7 +184,6 @@ mod tests {
     fn test_encode_png() {
         let img = test_image();
         let bytes = encode_image(&img, CaptureFormat::Png, 90).unwrap();
-        assert!(!bytes.is_empty());
         assert_eq!(&bytes[0..4], &[0x89, b'P', b'N', b'G']);
     }
 
@@ -145,7 +191,6 @@ mod tests {
     fn test_encode_jpg() {
         let img = test_image();
         let bytes = encode_image(&img, CaptureFormat::Jpg, 90).unwrap();
-        assert!(!bytes.is_empty());
         assert_eq!(&bytes[0..2], &[0xFF, 0xD8]);
     }
 
@@ -153,7 +198,6 @@ mod tests {
     fn test_encode_webp() {
         let img = test_image();
         let bytes = encode_image(&img, CaptureFormat::WebP, 90).unwrap();
-        assert!(!bytes.is_empty());
         assert_eq!(&bytes[0..4], b"RIFF");
     }
 
@@ -164,6 +208,36 @@ mod tests {
         let img = test_image();
         save_image(&img, &path, CaptureFormat::Png, 90).unwrap();
         assert!(path.exists());
+    }
+
+    #[test]
+    fn save_image_is_atomic_and_leaves_no_temp_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("shot.png");
+        std::fs::write(&path, b"old").unwrap();
+        save_image(&test_image(), &path, CaptureFormat::Png, 90).unwrap();
+        let bytes = std::fs::read(&path).unwrap();
+        assert_eq!(&bytes[0..4], &[0x89, b'P', b'N', b'G']);
+        let entries: Vec<_> = std::fs::read_dir(tmp.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(entries, vec![std::ffi::OsString::from("shot.png")]);
+    }
+
+    #[test]
+    fn write_atomic_failure_cleans_up_temp() {
+        let tmp = tempfile::tempdir().unwrap();
+        // Target is a non-empty directory, so the rename must fail.
+        let target = tmp.path().join("dir");
+        std::fs::create_dir(&target).unwrap();
+        std::fs::write(target.join("child"), b"x").unwrap();
+        assert!(write_atomic(&target, b"data").is_err());
+        let names: Vec<_> = std::fs::read_dir(tmp.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(names, vec![std::ffi::OsString::from("dir")]);
     }
 
     #[test]

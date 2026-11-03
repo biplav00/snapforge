@@ -1,17 +1,36 @@
 use super::{RecordConfig, RecordError};
 use snapforge_capture::capture;
+#[cfg(target_os = "macos")]
 use snapforge_capture::clicks::ClickTracker;
 use snapforge_storage::config::{RecordingFormat, RecordingQuality};
-use std::io::{Read as _, Write};
-use std::path::Path;
-use std::process::{Child, Command, Stdio};
+use std::io::{BufWriter, Read as _, Write};
+use std::path::{Path, PathBuf};
+use std::process::{Child, ChildStdin, Command, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, PoisonError};
+use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 const STATE_RUNNING: u8 = 0;
 const STATE_PAUSED: u8 = 1;
 const STATE_STOPPED: u8 = 2;
+
+/// How long the worker waits for ffmpeg to exit after stdin is closed on a
+/// normal stop (it still has to flush the encoder and finish the container).
+const FFMPEG_EXIT_DEADLINE: Duration = Duration::from_secs(20);
+/// How long the worker waits for ffmpeg to exit after a frame write failed
+/// (ffmpeg has usually already died — this just collects its exit status).
+const FFMPEG_WRITE_ERROR_EXIT_DEADLINE: Duration = Duration::from_secs(5);
+/// `stop()` waits this long for the worker before killing ffmpeg. Longer than
+/// `FFMPEG_EXIT_DEADLINE` so the worker's own deadline normally fires first;
+/// this one covers a worker stuck in `write_all` on a hung ffmpeg.
+const STOP_DEADLINE: Duration = Duration::from_secs(25);
+/// After killing ffmpeg, how long `stop()` waits for the worker to notice
+/// before giving up on it (the thread is then detached, not joined).
+const STOP_KILL_GRACE: Duration = Duration::from_secs(5);
+/// A continuous run of failed frame captures lasting this long ends the
+/// recording with `CaptureFailed` instead of silently freezing the video.
+const CAPTURE_FAILURE_LIMIT: Duration = Duration::from_secs(3);
 
 #[derive(Copy, Clone)]
 enum PixelFormat {
@@ -32,35 +51,101 @@ impl PixelFormat {
     }
 }
 
+fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
 pub struct RecordingHandle {
     stop_flag: Arc<AtomicBool>,
     state: Arc<AtomicU8>,
-    thread: Option<std::thread::JoinHandle<Result<(), RecordError>>>,
+    thread: Option<JoinHandle<Result<(), RecordError>>>,
+    /// Shared with the worker so `stop()` can kill a hung ffmpeg. `Child::kill`
+    /// is a no-op once the worker has reaped the process, so this can never
+    /// signal a recycled PID.
+    child: Option<Arc<Mutex<Child>>>,
 }
 
 impl RecordingHandle {
+    /// Stop the recording and wait for ffmpeg to finalize the file. Returns
+    /// the worker's terminal error if it had already failed (capture failure,
+    /// ffmpeg exit, write error) — the error is preserved until this call.
+    ///
+    /// Bounded: if the worker hasn't finished after `STOP_DEADLINE`, ffmpeg is
+    /// killed and an error is returned.
     pub fn stop(mut self) -> Result<(), RecordError> {
+        self.shutdown()
+    }
+
+    fn shutdown(&mut self) -> Result<(), RecordError> {
         self.stop_flag.store(true, Ordering::SeqCst);
         self.state.store(STATE_STOPPED, Ordering::SeqCst);
-        if let Some(thread) = self.thread.take() {
-            thread
-                .join()
-                .map_err(|_| RecordError::WriteFailed("thread panicked".into()))?
-        } else {
-            Ok(())
+        let Some(thread) = self.thread.take() else {
+            return Ok(());
+        };
+
+        let started = Instant::now();
+        let mut killed_at: Option<Instant> = None;
+        while !thread.is_finished() {
+            match killed_at {
+                None if started.elapsed() >= STOP_DEADLINE => {
+                    tracing::error!(
+                        "[record] worker did not finish within {}s of stop; killing ffmpeg",
+                        STOP_DEADLINE.as_secs()
+                    );
+                    if let Some(child) = &self.child {
+                        let _ = lock(child).kill();
+                    }
+                    killed_at = Some(Instant::now());
+                }
+                Some(t) if t.elapsed() >= STOP_KILL_GRACE => {
+                    // Worker is stuck somewhere killing ffmpeg can't unblock
+                    // (e.g. inside the capture API). Detach it rather than
+                    // hang the caller forever.
+                    tracing::error!("[record] worker still stuck after killing ffmpeg; detaching");
+                    return Err(RecordError::WriteFailed(
+                        "recording did not stop in time; ffmpeg was killed".into(),
+                    ));
+                }
+                _ => {}
+            }
+            std::thread::sleep(Duration::from_millis(20));
         }
+
+        let result = thread
+            .join()
+            .map_err(|_| RecordError::WriteFailed("thread panicked".into()))?;
+        if killed_at.is_some() {
+            return Err(RecordError::WriteFailed(
+                "ffmpeg stopped responding; the recording was force-stopped and may be truncated"
+                    .into(),
+            ));
+        }
+        result
     }
 
     pub fn is_running(&self) -> bool {
         self.state.load(Ordering::SeqCst) == STATE_RUNNING
     }
 
-    pub fn pause(&self) {
-        self.state.store(STATE_PAUSED, Ordering::SeqCst);
+    /// True while the worker is RUNNING or PAUSED; false once it has exited
+    /// (normally or after an error). When this turns false on its own the
+    /// recording has failed — call `stop()` to collect the error.
+    pub fn is_alive(&self) -> bool {
+        self.state.load(Ordering::SeqCst) != STATE_STOPPED
+            && self.thread.as_ref().is_some_and(|t| !t.is_finished())
     }
 
-    pub fn resume(&self) {
-        self.state.store(STATE_RUNNING, Ordering::SeqCst);
+    /// RUNNING -> PAUSED. Returns true if the recording is now paused
+    /// (including when it already was), false if it has stopped — a stopped
+    /// state is never overwritten.
+    pub fn pause(&self) -> bool {
+        transition(&self.state, STATE_RUNNING, STATE_PAUSED)
+    }
+
+    /// PAUSED -> RUNNING. Returns true if the recording is now running
+    /// (including when it already was), false if it has stopped.
+    pub fn resume(&self) -> bool {
+        transition(&self.state, STATE_PAUSED, STATE_RUNNING)
     }
 
     #[cfg(test)]
@@ -69,13 +154,19 @@ impl RecordingHandle {
     }
 }
 
+/// Atomically move `state` from `from` to `to`. Succeeds (true) if the state
+/// is `to` afterwards; never touches a STOPPED state.
+fn transition(state: &AtomicU8, from: u8, to: u8) -> bool {
+    match state.compare_exchange(from, to, Ordering::SeqCst, Ordering::SeqCst) {
+        Ok(_) => true,
+        Err(current) => current == to,
+    }
+}
+
 impl Drop for RecordingHandle {
     fn drop(&mut self) {
         // Ensure recording stops and ffmpeg process is reaped even if stop() wasn't called
-        self.stop_flag.store(true, Ordering::SeqCst);
-        if let Some(thread) = self.thread.take() {
-            let _ = thread.join();
-        }
+        let _ = self.shutdown();
     }
 }
 
@@ -86,11 +177,10 @@ pub fn start_recording(mut config: RecordConfig) -> Result<RecordingHandle, Reco
     // configs or bad FFI callers.
     config.fps = config.fps.clamp(1, 240);
 
-    // Find FFmpeg binary (bundled or system)
-    let ffmpeg_path = super::find_ffmpeg(config.ffmpeg_path.as_ref())?;
-
-    // Validate it actually runs and reports itself as ffmpeg.
-    validate_ffmpeg(&ffmpeg_path)?;
+    // Find + validate the FFmpeg binary (bundled or system). Cached after the
+    // first success so the `which`/`-version` subprocesses don't run on the
+    // caller's (Qt main) thread for every recording.
+    let ffmpeg_path = resolve_ffmpeg(config.ffmpeg_path.as_ref())?;
 
     // For macOS, use the fast BGRA path and downscale large captures for performance.
     #[cfg(target_os = "macos")]
@@ -103,6 +193,24 @@ pub fn start_recording(mut config: RecordConfig) -> Result<RecordingHandle, Reco
     {
         start_recording_rgba(config, ffmpeg_path)
     }
+}
+
+/// `find_ffmpeg` + `validate_ffmpeg`, memoized per provided path. Only
+/// successes are cached; a cached path that has since disappeared is
+/// re-resolved.
+fn resolve_ffmpeg(provided: Option<&PathBuf>) -> Result<PathBuf, RecordError> {
+    type Cache = Option<(Option<PathBuf>, PathBuf)>;
+    static CACHE: Mutex<Cache> = Mutex::new(None);
+
+    if let Some((key, path)) = lock(&CACHE).as_ref() {
+        if key.as_ref() == provided && path.exists() {
+            return Ok(path.clone());
+        }
+    }
+    let path = super::find_ffmpeg(provided)?;
+    validate_ffmpeg(&path)?;
+    *lock(&CACHE) = Some((provided.cloned(), path.clone()));
+    Ok(path)
 }
 
 /// Run `<ffmpeg_path> -version` and confirm the output identifies as ffmpeg.
@@ -136,6 +244,34 @@ fn kill_and_reap(mut child: Child) {
     let _ = child.wait();
 }
 
+/// Make writes to ffmpeg's stdin fail with `EPIPE` instead of raising
+/// SIGPIPE once ffmpeg has exited. This code ships as a staticlib inside the
+/// Qt app, where (unlike a Rust binary) SIGPIPE is NOT ignored — without this
+/// a write after ffmpeg dies (disk full, encoder error) kills the whole app.
+#[cfg(target_os = "macos")]
+const F_SETNOSIGPIPE: libc::c_int = 73; // <sys/fcntl.h>; not exported by libc 0.2
+#[cfg(all(target_os = "macos", test))]
+const F_GETNOSIGPIPE: libc::c_int = 74;
+
+#[cfg(target_os = "macos")]
+fn disable_sigpipe(stdin: &ChildStdin) -> std::io::Result<()> {
+    use std::os::fd::AsRawFd;
+    // SAFETY: plain fcntl on a valid, owned fd; no memory is passed.
+    let rc = unsafe { libc::fcntl(stdin.as_raw_fd(), F_SETNOSIGPIPE, 1) };
+    if rc == -1 {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
+
+/// No per-fd SIGPIPE opt-out off macOS; the non-macOS path is only used by
+/// Rust binaries/tests, where std already ignores SIGPIPE.
+#[cfg(not(target_os = "macos"))]
+fn disable_sigpipe(_stdin: &ChildStdin) -> std::io::Result<()> {
+    Ok(())
+}
+
 /// Maximum bytes of ffmpeg stderr retained for error diagnostics.
 const STDERR_RETAIN_BYTES: usize = 4096;
 
@@ -146,38 +282,42 @@ const STDERR_RETAIN_BYTES: usize = 4096;
 /// deadlocks in write_all — stop()/Drop then hang forever in join(). Only the
 /// tail of the output is retained (capped) so a chatty ffmpeg can't grow
 /// memory unbounded; the buffer is used for the error message on failure.
-fn spawn_stderr_drain(stderr: Option<std::process::ChildStderr>) -> Arc<Mutex<String>> {
+/// The returned thread must be joined after ffmpeg exits (before reading the
+/// buffer) so its final error lines aren't lost.
+fn spawn_stderr_drain(
+    stderr: Option<std::process::ChildStderr>,
+) -> (Arc<Mutex<String>>, Option<JoinHandle<()>>) {
     let buf = Arc::new(Mutex::new(String::new()));
-    if let Some(mut err) = stderr {
-        let buf_clone = Arc::clone(&buf);
-        std::thread::spawn(move || {
-            let mut chunk = [0u8; 4096];
-            loop {
-                match err.read(&mut chunk) {
-                    Ok(0) | Err(_) => break,
-                    Ok(n) => {
-                        if let Ok(mut guard) = buf_clone.lock() {
-                            guard.push_str(&String::from_utf8_lossy(&chunk[..n]));
-                            if guard.len() > STDERR_RETAIN_BYTES * 2 {
-                                // Keep only the tail, respecting char boundaries.
-                                let mut cut = guard.len() - STDERR_RETAIN_BYTES;
-                                while !guard.is_char_boundary(cut) {
-                                    cut -= 1;
-                                }
-                                guard.drain(..cut);
-                            }
+    let Some(mut err) = stderr else {
+        return (buf, None);
+    };
+    let buf_clone = Arc::clone(&buf);
+    let thread = std::thread::spawn(move || {
+        let mut chunk = [0u8; 4096];
+        loop {
+            match err.read(&mut chunk) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => {
+                    let mut guard = lock(&buf_clone);
+                    guard.push_str(&String::from_utf8_lossy(&chunk[..n]));
+                    if guard.len() > STDERR_RETAIN_BYTES * 2 {
+                        // Keep only the tail, respecting char boundaries.
+                        let mut cut = guard.len() - STDERR_RETAIN_BYTES;
+                        while !guard.is_char_boundary(cut) {
+                            cut -= 1;
                         }
+                        guard.drain(..cut);
                     }
                 }
             }
-        });
-    }
-    buf
+        }
+    });
+    (buf, Some(thread))
 }
 
 /// Build the error for a non-success ffmpeg exit using the drained stderr tail.
-fn ffmpeg_exit_error(status: std::process::ExitStatus, stderr_buf: &Mutex<String>) -> RecordError {
-    let buf = stderr_buf.lock().map(|g| g.clone()).unwrap_or_default();
+fn ffmpeg_exit_error(status: ExitStatus, stderr_buf: &Mutex<String>) -> RecordError {
+    let buf = lock(stderr_buf).clone();
     if buf.is_empty() {
         RecordError::WriteFailed(format!("ffmpeg exited with code: {:?}", status.code()))
     } else {
@@ -192,6 +332,357 @@ fn ffmpeg_exit_error(status: std::process::ExitStatus, stderr_buf: &Mutex<String
             buf[cut..].trim()
         ))
     }
+}
+
+/// Poll the child for exit for up to `deadline`, then kill it. The lock is
+/// only held for each non-blocking `try_wait`, so `stop()` can still kill
+/// the child concurrently.
+fn wait_with_deadline(child: &Mutex<Child>, deadline: Duration) -> Result<ExitStatus, RecordError> {
+    let started = Instant::now();
+    loop {
+        {
+            let mut c = lock(child);
+            match c.try_wait() {
+                Ok(Some(status)) => return Ok(status),
+                Ok(None) => {}
+                Err(e) => return Err(RecordError::WriteFailed(e.to_string())),
+            }
+            if started.elapsed() >= deadline {
+                let _ = c.kill();
+                let _ = c.wait();
+                return Err(RecordError::WriteFailed(format!(
+                    "ffmpeg did not finish within {}s; it was killed and the recording may be truncated",
+                    deadline.as_secs()
+                )));
+            }
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+}
+
+/// A running ffmpeg child plus its stderr drain. Dropping it kills and reaps
+/// ffmpeg if it's still running, so no exit path can leave a zombie.
+struct FfmpegProcess {
+    child: Arc<Mutex<Child>>,
+    stderr_buf: Arc<Mutex<String>>,
+    stderr_thread: Option<JoinHandle<()>>,
+}
+
+impl FfmpegProcess {
+    /// Spawn ffmpeg and return it together with a buffered writer over its
+    /// stdin (SIGPIPE disabled). Any failure after the spawn reaps the child.
+    fn launch(
+        ffmpeg_path: &Path,
+        config: &RecordConfig,
+        width: u32,
+        height: u32,
+        pixel_format: PixelFormat,
+        buf_capacity: usize,
+    ) -> Result<(Self, BufWriter<ChildStdin>), RecordError> {
+        let mut child = spawn_ffmpeg(ffmpeg_path, config, width, height, pixel_format)?;
+        let Some(stdin) = child.stdin.take() else {
+            kill_and_reap(child);
+            return Err(RecordError::FfmpegSpawnFailed("no stdin".into()));
+        };
+        if let Err(e) = disable_sigpipe(&stdin) {
+            drop(stdin);
+            kill_and_reap(child);
+            return Err(RecordError::FfmpegSpawnFailed(format!(
+                "could not configure ffmpeg stdin pipe: {e}"
+            )));
+        }
+        // Drain stderr from the start so ffmpeg can never block on a full pipe.
+        let (stderr_buf, stderr_thread) = spawn_stderr_drain(child.stderr.take());
+        Ok((
+            Self {
+                child: Arc::new(Mutex::new(child)),
+                stderr_buf,
+                stderr_thread,
+            },
+            BufWriter::with_capacity(buf_capacity, stdin),
+        ))
+    }
+
+    fn join_stderr(&mut self) {
+        if let Some(t) = self.stderr_thread.take() {
+            let _ = t.join();
+        }
+    }
+
+    /// stdin already closed: wait for ffmpeg to finish the file.
+    fn finish(mut self) -> Result<(), RecordError> {
+        let status = wait_with_deadline(&self.child, FFMPEG_EXIT_DEADLINE);
+        self.join_stderr();
+        let status = status?;
+        if status.success() {
+            Ok(())
+        } else {
+            Err(ffmpeg_exit_error(status, &self.stderr_buf))
+        }
+    }
+
+    /// stdin already closed after a failed write: collect ffmpeg's exit
+    /// status + stderr so the user sees *why* (e.g. "No space left on
+    /// device") rather than just "broken pipe".
+    fn write_error(mut self, e: &std::io::Error) -> RecordError {
+        let status = wait_with_deadline(&self.child, FFMPEG_WRITE_ERROR_EXIT_DEADLINE);
+        self.join_stderr();
+        match status {
+            Ok(s) if !s.success() => ffmpeg_exit_error(s, &self.stderr_buf),
+            _ if e.kind() == std::io::ErrorKind::BrokenPipe => RecordError::WriteFailed(
+                "ffmpeg stopped accepting frames mid-recording (broken pipe)".into(),
+            ),
+            _ => RecordError::WriteFailed(format!("writing frames to ffmpeg failed: {e}")),
+        }
+    }
+}
+
+impl Drop for FfmpegProcess {
+    fn drop(&mut self) {
+        {
+            let mut c = lock(&self.child);
+            if !matches!(c.try_wait(), Ok(Some(_))) {
+                let _ = c.kill();
+                let _ = c.wait();
+            }
+        }
+        self.join_stderr();
+    }
+}
+
+/// Why the capture loop ended early.
+enum LoopError {
+    /// Writing to ffmpeg's stdin failed (ffmpeg died, disk full, ...).
+    Write(std::io::Error),
+    /// Screen capture kept failing. ffmpeg is still finalized gracefully so
+    /// the frames recorded so far are kept, but the error is returned.
+    Capture(RecordError),
+    /// Setup failure inside the worker; ffmpeg is killed.
+    Fatal(RecordError),
+}
+
+/// Close stdin and turn the loop outcome + ffmpeg's exit into the worker's
+/// result. Every exit path goes through here, so ffmpeg is always reaped.
+fn finalize(
+    writer: BufWriter<ChildStdin>,
+    process: FfmpegProcess,
+    outcome: Result<(), LoopError>,
+) -> Result<(), RecordError> {
+    let capture_error = match outcome {
+        Ok(()) => None,
+        Err(LoopError::Capture(e)) => Some(e),
+        Err(LoopError::Write(e)) => {
+            // Discard the buffer without flushing (the pipe is dead) and
+            // close stdin before waiting on ffmpeg.
+            drop(writer.into_parts());
+            return Err(process.write_error(&e));
+        }
+        Err(LoopError::Fatal(e)) => {
+            drop(writer.into_parts());
+            drop(process);
+            return Err(e);
+        }
+    };
+    // Flush explicitly: BufWriter::drop swallows flush errors, which would
+    // silently drop the buffered tail of the recording.
+    let encoded = match writer.into_inner() {
+        Ok(stdin) => {
+            drop(stdin);
+            process.finish()
+        }
+        Err(e) => {
+            let (err, w) = e.into_parts();
+            drop(w.into_parts());
+            Err(process.write_error(&err))
+        }
+    };
+    match capture_error {
+        Some(e) => Err(e),
+        None => encoded,
+    }
+}
+
+/// Write `frame` `count` times.
+fn write_repeated<W: Write>(w: &mut W, frame: &[u8], count: u64) -> std::io::Result<()> {
+    for _ in 0..count {
+        w.write_all(frame)?;
+    }
+    Ok(())
+}
+
+/// Number of output slots due at `effective_elapsed` (paused time excluded)
+/// given `frame_count` frames written so far *including* the one about to be
+/// written. Always at least 1; more than 1 means the loop stalled and the
+/// gap must be filled to keep a constant frame rate.
+fn frames_due(effective_elapsed: Duration, frame_interval: Duration, frame_count: u64) -> u64 {
+    let elapsed_frames = (effective_elapsed.as_secs_f64() / frame_interval.as_secs_f64()) as u64;
+    elapsed_frames.saturating_sub(frame_count - 1).max(1)
+}
+
+/// Constant-frame-rate clock that freezes while paused, so pausing leaves no
+/// gap (and no duplicated frames) in the output.
+struct FrameClock {
+    start: Instant,
+    interval: Duration,
+    /// Frames written so far.
+    frame_count: u64,
+    paused_accum: Duration,
+    paused_since: Option<Instant>,
+}
+
+impl FrameClock {
+    /// Starts after the initial frame has been written.
+    fn new(interval: Duration) -> Self {
+        Self {
+            start: Instant::now(),
+            interval,
+            frame_count: 1,
+            paused_accum: Duration::ZERO,
+            paused_since: None,
+        }
+    }
+
+    fn pause_tick(&mut self) {
+        if self.paused_since.is_none() {
+            self.paused_since = Some(Instant::now());
+        }
+    }
+
+    /// Returns true if the clock was paused and has just been resumed.
+    fn resume(&mut self) -> bool {
+        match self.paused_since.take() {
+            Some(p0) => {
+                self.paused_accum += p0.elapsed();
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Sleep until the next slot, then return how many frames are due (the
+    /// first `n - 1` are catch-up copies of the previous frame).
+    fn wait_next(&mut self) -> u64 {
+        let target = self.start + self.paused_accum + self.interval * (self.frame_count + 1) as u32;
+        let now = Instant::now();
+        if now < target {
+            std::thread::sleep(target - now);
+        }
+        let effective = self
+            .start
+            .elapsed()
+            .checked_sub(self.paused_accum)
+            .unwrap_or_default();
+        frames_due(effective, self.interval, self.frame_count + 1)
+    }
+
+    fn advance(&mut self, written: u64) {
+        self.frame_count += written;
+    }
+}
+
+/// Tracks a run of consecutive capture failures: logs (rate-limited) and
+/// reports a terminal error once the run exceeds `CAPTURE_FAILURE_LIMIT`.
+#[derive(Default)]
+struct CaptureFailures {
+    first: Option<Instant>,
+    count: u64,
+}
+
+impl CaptureFailures {
+    fn record_failure(&mut self, now: Instant, err: &capture::CaptureError) -> Option<RecordError> {
+        // The display is gone (disconnected): no point waiting it out.
+        if matches!(err, capture::CaptureError::NoDisplay(_)) {
+            tracing::error!("[record] recording display disconnected: {err}");
+            return Some(RecordError::CaptureFailed(format!(
+                "the recorded display was disconnected ({err})"
+            )));
+        }
+        let first = *self.first.get_or_insert(now);
+        self.count += 1;
+        // Log the 1st, 2nd, 4th, 8th, ... failure of a run.
+        if self.count.is_power_of_two() {
+            tracing::warn!(
+                "[record] frame capture failed ({} in a row): {err}",
+                self.count
+            );
+        }
+        let streak = now.saturating_duration_since(first);
+        (streak >= CAPTURE_FAILURE_LIMIT).then(|| {
+            RecordError::CaptureFailed(format!(
+                "screen capture failed {} times in a row over {:.1}s: {err}",
+                self.count,
+                streak.as_secs_f64()
+            ))
+        })
+    }
+
+    fn record_success(&mut self) {
+        if self.count > 0 {
+            tracing::info!(
+                "[record] frame capture recovered after {} failures",
+                self.count
+            );
+        }
+        self.reset();
+    }
+
+    fn reset(&mut self) {
+        *self = Self::default();
+    }
+}
+
+/// `width * height * 4` without overflow.
+fn frame_byte_len(width: u32, height: u32) -> Result<usize, RecordError> {
+    (width as usize)
+        .checked_mul(height as usize)
+        .and_then(|px| px.checked_mul(4))
+        .filter(|&n| n > 0)
+        .ok_or_else(|| {
+            RecordError::CaptureFailed(format!("invalid recording size {width}x{height}"))
+        })
+}
+
+/// Clip `region` (native display pixels) to the display, then scale it into
+/// the downscaled output frame and round to even (libx264/yuv420p needs even
+/// dimensions). Errors if nothing usable remains.
+#[allow(clippy::cast_possible_wrap)]
+fn scale_region_to_output(
+    region: &snapforge_domain::Rect,
+    native: (u32, u32),
+    output: (u32, u32),
+) -> Result<snapforge_domain::Rect, RecordError> {
+    let (native_w, native_h) = (i64::from(native.0), i64::from(native.1));
+    let (out_w, out_h) = output;
+    if native_w == 0 || native_h == 0 || out_w == 0 || out_h == 0 {
+        return Err(RecordError::CaptureFailed("display has zero size".into()));
+    }
+    let x0 = i64::from(region.x).clamp(0, native_w);
+    let y0 = i64::from(region.y).clamp(0, native_h);
+    let x1 = (i64::from(region.x) + i64::from(region.width)).clamp(0, native_w);
+    let y1 = (i64::from(region.y) + i64::from(region.height)).clamp(0, native_h);
+    if x1 <= x0 || y1 <= y0 {
+        return Err(RecordError::CaptureFailed(
+            "recording region lies outside the display".into(),
+        ));
+    }
+
+    let sx = f64::from(out_w) / native_w as f64;
+    let sy = f64::from(out_h) / native_h as f64;
+    let rx = ((x0 as f64 * sx) as u32).min(out_w) & !1;
+    let ry = ((y0 as f64 * sy) as u32).min(out_h) & !1;
+    let rw = (((x1 - x0) as f64 * sx) as u32).min(out_w - rx) & !1;
+    let rh = (((y1 - y0) as f64 * sy) as u32).min(out_h - ry) & !1;
+    if rw == 0 || rh == 0 {
+        return Err(RecordError::CaptureFailed(
+            "recording region is too small".into(),
+        ));
+    }
+    Ok(snapforge_domain::Rect {
+        x: rx as i32,
+        y: ry as i32,
+        width: rw,
+        height: rh,
+    })
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -211,19 +702,23 @@ fn start_recording_rgba(
     // libx264 with yuv420p requires even dimensions — crop to nearest even size if needed
     let width = raw_test_frame.width() & !1;
     let height = raw_test_frame.height() & !1;
+    frame_byte_len(width, height)?;
     let test_frame = if width != raw_test_frame.width() || height != raw_test_frame.height() {
         image::imageops::crop_imm(&raw_test_frame, 0, 0, width, height).to_image()
     } else {
         raw_test_frame
     };
 
-    let mut child = spawn_ffmpeg(&ffmpeg_path, &config, width, height, PixelFormat::Rgba)?;
-    let Some(mut stdin) = child.stdin.take() else {
-        kill_and_reap(child);
-        return Err(RecordError::FfmpegSpawnFailed("no stdin".into()));
-    };
-    // Drain stderr from the start so ffmpeg can never block on a full pipe.
-    let stderr_buf = spawn_stderr_drain(child.stderr.take());
+    // 256KB buffer — better for pipe throughput than full-frame buffer
+    let (process, mut writer) = FfmpegProcess::launch(
+        &ffmpeg_path,
+        &config,
+        width,
+        height,
+        PixelFormat::Rgba,
+        256 * 1024,
+    )?;
+    let child = Arc::clone(&process.child);
 
     let stop_flag = Arc::new(AtomicBool::new(false));
     let stop_clone = stop_flag.clone();
@@ -234,33 +729,15 @@ fn start_recording_rgba(
     let display = config.display;
 
     let thread = std::thread::spawn(move || -> Result<(), RecordError> {
-        // Run the capture loop in an inner closure so EVERY exit path —
-        // success or error — falls through to the cleanup below, which marks
-        // the handle state terminal and reaps ffmpeg on failure. Without
-        // this, an error exit left is_running() true forever and ffmpeg as a
-        // zombie.
-        let result = (|| -> Result<(), RecordError> {
-            // Use 256KB buffer — better for pipe throughput than full-frame buffer
-            let mut writer = std::io::BufWriter::with_capacity(256 * 1024, &mut stdin);
-
+        let outcome = (|| -> Result<(), LoopError> {
             // Cache the last successfully captured frame so we can duplicate it
             let mut last_frame: image::RgbaImage = test_frame;
+            writer
+                .write_all(last_frame.as_raw())
+                .map_err(LoopError::Write)?;
 
-            if let Err(e) = writer.write_all(last_frame.as_raw()) {
-                if e.kind() == std::io::ErrorKind::BrokenPipe {
-                    return Err(RecordError::WriteFailed(
-                        "ffmpeg stdin closed (broken pipe)".into(),
-                    ));
-                }
-                return Err(RecordError::WriteFailed(e.to_string()));
-            }
-
-            let start = Instant::now();
-            let mut frame_count: u64 = 1;
-            // Accumulated time spent in the paused state — subtracted from real elapsed
-            // so the output stream stays constant-frame-rate across pause/resume.
-            let mut paused_accum = Duration::ZERO;
-            let mut paused_since: Option<Instant> = None;
+            let mut clock = FrameClock::new(frame_interval);
+            let mut failures = CaptureFailures::default();
 
             loop {
                 if stop_clone.load(Ordering::SeqCst) {
@@ -269,98 +746,58 @@ fn start_recording_rgba(
 
                 // Pause: freeze the frame clock, skip capture & write entirely.
                 if state_clone.load(Ordering::SeqCst) == STATE_PAUSED {
-                    if paused_since.is_none() {
-                        paused_since = Some(Instant::now());
-                    }
+                    clock.pause_tick();
                     std::thread::sleep(Duration::from_millis(20));
                     continue;
-                } else if let Some(p0) = paused_since.take() {
-                    paused_accum += p0.elapsed();
+                }
+                if clock.resume() {
+                    failures.reset();
                 }
 
-                frame_count += 1;
-                let target_time = start + paused_accum + frame_interval * frame_count as u32;
-                let now = Instant::now();
-
-                if now < target_time {
-                    std::thread::sleep(target_time - now);
-                }
+                let due = clock.wait_next();
+                // Catch-up after a stall: repeat the PREVIOUS frame for the
+                // missed slots, then write the fresh capture in its own slot.
+                write_repeated(&mut writer, last_frame.as_raw(), due - 1)
+                    .map_err(LoopError::Write)?;
 
                 let frame_result = if let Some(r) = &region {
                     capture::capture_region(display, *r)
                 } else {
                     capture::capture_fullscreen(display)
                 };
-
-                let effective_elapsed = start
-                    .elapsed()
-                    .checked_sub(paused_accum)
-                    .unwrap_or_default();
-                let elapsed_frames =
-                    (effective_elapsed.as_secs_f64() / frame_interval.as_secs_f64()) as u64;
-                let frames_to_write = elapsed_frames.saturating_sub(frame_count - 1).max(1);
-
-                if let Ok(img) = frame_result {
-                    if img.width() == width && img.height() == height {
-                        last_frame = img;
-                    } else {
-                        // Display changed size mid-recording: ffmpeg reads
-                        // fixed width*height*4 rawvideo frames, so copy the
-                        // incoming frame into the fixed-size buffer (crop if
-                        // larger, zero-pad if smaller). A short frame would
-                        // permanently desync the raw stream.
-                        copy_rgba_padded(&img, &mut last_frame);
+                match frame_result {
+                    Ok(img) => {
+                        failures.record_success();
+                        if img.width() == width && img.height() == height {
+                            last_frame = img;
+                        } else {
+                            // Display changed size mid-recording: ffmpeg reads
+                            // fixed width*height*4 rawvideo frames, so copy the
+                            // incoming frame into the fixed-size buffer (crop if
+                            // larger, zero-pad if smaller). A short frame would
+                            // permanently desync the raw stream.
+                            copy_rgba_padded(&img, &mut last_frame);
+                        }
+                    }
+                    Err(e) => {
+                        if let Some(err) = failures.record_failure(Instant::now(), &e) {
+                            return Err(LoopError::Capture(err));
+                        }
                     }
                 }
 
-                for _ in 0..frames_to_write {
-                    if let Err(e) = writer.write_all(last_frame.as_raw()) {
-                        // Any write error is fatal, not just BrokenPipe: a
-                        // partial frame permanently desyncs the raw stream, so
-                        // silently continuing would truncate the video while
-                        // stop() still reported Ok.
-                        return Err(RecordError::WriteFailed(
-                            if e.kind() == std::io::ErrorKind::BrokenPipe {
-                                "ffmpeg stdin closed mid-recording (broken pipe)".into()
-                            } else {
-                                format!("writing frames to ffmpeg failed: {}", e)
-                            },
-                        ));
-                    }
-                }
-
-                frame_count = frame_count + frames_to_write - 1;
+                // Any write error is fatal: a partial frame permanently
+                // desyncs the raw stream.
+                writer
+                    .write_all(last_frame.as_raw())
+                    .map_err(LoopError::Write)?;
+                clock.advance(due);
             }
-
-            // Flush explicitly: BufWriter::drop swallows flush errors, which
-            // would silently drop the buffered tail of the recording.
-            if let Err(e) = writer.flush() {
-                return Err(RecordError::WriteFailed(format!(
-                    "final flush to ffmpeg failed: {}",
-                    e
-                )));
-            }
-            drop(writer);
-            drop(stdin);
-
-            let status = child
-                .wait()
-                .map_err(|e| RecordError::WriteFailed(e.to_string()))?;
-
-            if !status.success() {
-                return Err(ffmpeg_exit_error(status, &stderr_buf));
-            }
-
             Ok(())
         })();
 
+        let result = finalize(writer, process, outcome);
         state_clone.store(STATE_STOPPED, Ordering::SeqCst);
-        if result.is_err() {
-            // No zombie ffmpeg on error exits. Harmless when the child has
-            // already been waited on: kill() fails, wait() returns the
-            // cached status.
-            kill_and_reap(child);
-        }
         result
     });
 
@@ -368,6 +805,7 @@ fn start_recording_rgba(
         stop_flag,
         state,
         thread: Some(thread),
+        child: Some(child),
     })
 }
 
@@ -400,6 +838,9 @@ fn start_recording_macos_bgra(
     config: RecordConfig,
     ffmpeg_path: std::path::PathBuf,
 ) -> Result<RecordingHandle, RecordError> {
+    let capture_err =
+        |e: snapforge_capture::capture::CaptureError| RecordError::CaptureFailed(e.to_string());
+
     // Cap output at ~1080p for recording to keep per-frame cost reasonable.
     // For screenshots we always use native resolution; this cap is recording-only.
     let max_dimension = Some(1920u32);
@@ -410,59 +851,62 @@ fn start_recording_macos_bgra(
     // Reading the display's pixel size via CGDisplayCopyDisplayMode is safe.
     let (full_width, full_height) =
         capture::macos::compute_recording_output_size(config.display, max_dimension)
-            .map_err(|e| RecordError::CaptureFailed(e.to_string()))?;
+            .map_err(capture_err)?;
 
     // Scale factor from native pixel coords → downscaled output coords.
     // The region from the frontend is in native pixels; we need to scale it.
     // Use the TARGET display's pixel size — the primary display's dimensions
     // would produce wrong scale factors (and wrong region crops) whenever
     // config.display is a secondary display.
-    let (native_w_px, native_h_px) = capture::macos::display_pixel_size_for_index(config.display)
-        .map_err(|e| RecordError::CaptureFailed(e.to_string()))?;
-    let native_w = native_w_px as f64;
-    let native_h = native_h_px as f64;
-    let sx = if native_w > 0.0 {
-        f64::from(full_width) / native_w
+    let (native_w_px, native_h_px) =
+        capture::macos::display_pixel_size_for_index(config.display).map_err(capture_err)?;
+    let native = (
+        u32::try_from(native_w_px).unwrap_or(u32::MAX),
+        u32::try_from(native_h_px).unwrap_or(u32::MAX),
+    );
+    let sx = if native.0 > 0 {
+        f64::from(full_width) / f64::from(native.0)
     } else {
         1.0
     };
-    let sy = if native_h > 0.0 {
-        f64::from(full_height) / native_h
+    let sy = if native.1 > 0 {
+        f64::from(full_height) / f64::from(native.1)
     } else {
         1.0
     };
 
-    #[allow(clippy::cast_possible_wrap)]
     let (width, height, region_in_scaled) = if let Some(r) = &config.region {
-        let rx = ((f64::from(r.x) * sx) as u32) & !1;
-        let ry = ((f64::from(r.y) * sy) as u32) & !1;
-        let rw = ((f64::from(r.width) * sx) as u32) & !1;
-        let rh = ((f64::from(r.height) * sy) as u32) & !1;
-        (
-            rw,
-            rh,
-            Some(snapforge_domain::Rect {
-                x: rx as i32,
-                y: ry as i32,
-                width: rw,
-                height: rh,
-            }),
-        )
+        let scaled = scale_region_to_output(r, native, (full_width, full_height))?;
+        (scaled.width, scaled.height, Some(scaled))
     } else {
         (full_width, full_height, None)
     };
+    let frame_bytes = frame_byte_len(width, height)?;
 
-    if width == 0 || height == 0 {
-        return Err(RecordError::CaptureFailed("invalid dimensions".into()));
-    }
+    // Clicks come in GLOBAL desktop points (CGEventGetLocation); convert to
+    // scaled-frame pixels of the TARGET display: translate by the display's
+    // origin, then scale by its point→pixel factor and the downscale ratio.
+    // Queried before ffmpeg is spawned so a failure here can't leak a child.
+    let native_scale =
+        capture::macos::display_scale_factor_for(config.display).map_err(capture_err)?;
+    let (display_origin_x, display_origin_y) =
+        capture::macos::display_origin_points(config.display).map_err(capture_err)?;
+    let point_to_scaled_pixel_x = native_scale * sx;
+    let point_to_scaled_pixel_y = native_scale * sy;
 
-    let mut child = spawn_ffmpeg(&ffmpeg_path, &config, width, height, PixelFormat::Bgra)?;
-    let Some(mut stdin) = child.stdin.take() else {
-        kill_and_reap(child);
-        return Err(RecordError::FfmpegSpawnFailed("no stdin".into()));
-    };
-    // Drain stderr from the start so ffmpeg can never block on a full pipe.
-    let stderr_buf = spawn_stderr_drain(child.stderr.take());
+    // Use a buffer roughly the size of one frame so each frame typically
+    // flushes once (the previous 256 KiB caused 30+ flushes per 1080p
+    // frame, which was strictly slower than no buffering).
+    let buf_capacity = frame_bytes.clamp(1 << 20, 8 << 20); // 1–8 MiB
+    let (process, mut writer) = FfmpegProcess::launch(
+        &ffmpeg_path,
+        &config,
+        width,
+        height,
+        PixelFormat::Bgra,
+        buf_capacity,
+    )?;
+    let child = Arc::clone(&process.child);
 
     let stop_flag = Arc::new(AtomicBool::new(false));
     let stop_clone = stop_flag.clone();
@@ -479,84 +923,52 @@ fn start_recording_macos_bgra(
         .as_ref()
         .and_then(ClickTracker::start_macos_tap);
 
-    // Clicks come in GLOBAL desktop points (CGEventGetLocation); convert to
-    // scaled-frame pixels of the TARGET display: translate by the display's
-    // origin, then scale by its point→pixel factor and the downscale ratio.
-    let native_scale = capture::macos::display_scale_factor_for(config.display)
-        .map_err(|e| RecordError::CaptureFailed(e.to_string()))?;
-    let (display_origin_x, display_origin_y) =
-        capture::macos::display_origin_points(config.display)
-            .map_err(|e| RecordError::CaptureFailed(e.to_string()))?;
-    let point_to_scaled_pixel_x = native_scale * sx;
-    let point_to_scaled_pixel_y = native_scale * sy;
-
     let thread = std::thread::spawn(move || -> Result<(), RecordError> {
         // Keep the click event tap alive for the whole recording. Bound to the
         // thread's stack (not left at function scope, where it dropped — and so
         // disabled the CGEventTap — microseconds after start), so it keeps
         // feeding click_tracker until the capture loop exits.
         let _click_tap_handle = click_tap_handle;
-        // Run the capture loop in an inner closure so EVERY exit path —
-        // success or error — falls through to the cleanup below, which marks
-        // the handle state terminal and reaps ffmpeg on failure. Without
-        // this, an error exit left is_running() true forever and ffmpeg as a
-        // zombie.
-        let result = (|| -> Result<(), RecordError> {
+        let outcome = (|| -> Result<(), LoopError> {
             let ctx = capture::CaptureContext::new(display, max_dimension)
-                .map_err(|e| RecordError::CaptureFailed(e.to_string()))?;
-
-            let frame_bytes = (width as usize) * (height as usize) * 4;
-            // Use a buffer roughly the size of one frame so each frame typically
-            // flushes once (the previous 256 KiB caused 30+ flushes per 1080p
-            // frame, which was strictly slower than no buffering).
-            let buf_capacity = frame_bytes.clamp(1 << 20, 8 << 20); // 1–8 MiB
-            let mut writer = std::io::BufWriter::with_capacity(buf_capacity, &mut stdin);
+                .map_err(|e| LoopError::Fatal(RecordError::CaptureFailed(e.to_string())))?;
 
             // Two scratch buffers reused across the entire recording: one holds the
             // most recent captured (and cropped) frame, the other is the per-output
             // "composed" frame with clicks drawn over it. Pre-allocating eliminates
             // ~240 MB/s of allocator traffic at 1080p30.
-            let mut last_frame_bytes: Vec<u8> = vec![0u8; frame_bytes];
+            let mut captured: Vec<u8> = vec![0u8; frame_bytes];
             let mut composed: Vec<u8> = vec![0u8; frame_bytes];
+            // Which buffer holds the last frame written to ffmpeg (repeated
+            // for catch-up slots without re-composing the click overlay).
+            let mut prev_is_composed = false;
             // Reused click snapshot — refreshed once per captured frame.
             let mut click_snapshot: Vec<snapforge_capture::clicks::ClickEvent> =
                 Vec::with_capacity(32);
 
-            // Capture the initial frame into last_frame_bytes.
+            // Capture the initial frame.
             match ctx.capture_frame_raw_bgra() {
-                Ok(f) => {
-                    crop_bgra_to_region_into(
-                        &f.bytes,
-                        f.width,
-                        f.height,
-                        region_in_scaled.as_ref(),
-                        width,
-                        height,
-                        &mut last_frame_bytes,
-                    );
-                }
+                Ok(f) => crop_bgra_to_region_into(
+                    &f.bytes,
+                    f.width,
+                    f.height,
+                    region_in_scaled.as_ref(),
+                    width,
+                    height,
+                    &mut captured,
+                ),
                 Err(e) => {
                     // The zeroed scratch buffer is written instead — the
                     // recording starts with a black frame, so leave a trace.
                     tracing::warn!(
-                    "[record] initial frame capture failed ({e}); recording starts with a black frame"
-                );
+                        "[record] initial frame capture failed ({e}); recording starts with a black frame"
+                    );
                 }
             }
+            writer.write_all(&captured).map_err(LoopError::Write)?;
 
-            if let Err(e) = writer.write_all(&last_frame_bytes) {
-                if e.kind() == std::io::ErrorKind::BrokenPipe {
-                    return Err(RecordError::WriteFailed(
-                        "ffmpeg stdin closed (broken pipe)".into(),
-                    ));
-                }
-                return Err(RecordError::WriteFailed(e.to_string()));
-            }
-
-            let start = Instant::now();
-            let mut frame_count: u64 = 1;
-            let mut paused_accum = Duration::ZERO;
-            let mut paused_since: Option<Instant> = None;
+            let mut clock = FrameClock::new(frame_interval);
+            let mut failures = CaptureFailures::default();
 
             loop {
                 if stop_clone.load(Ordering::SeqCst) {
@@ -565,119 +977,83 @@ fn start_recording_macos_bgra(
 
                 // Pause: freeze the frame clock, skip capture & write entirely.
                 if state_clone.load(Ordering::SeqCst) == STATE_PAUSED {
-                    if paused_since.is_none() {
-                        paused_since = Some(Instant::now());
-                    }
+                    clock.pause_tick();
                     std::thread::sleep(Duration::from_millis(20));
                     continue;
-                } else if let Some(p0) = paused_since.take() {
-                    paused_accum += p0.elapsed();
+                }
+                if clock.resume() {
+                    failures.reset();
                 }
 
-                frame_count += 1;
-                let target_time = start + paused_accum + frame_interval * frame_count as u32;
-                let now = Instant::now();
+                let due = clock.wait_next();
+                // Catch-up after a stall: repeat the PREVIOUS output frame
+                // for the missed slots so new content isn't shown early.
+                let prev: &[u8] = if prev_is_composed {
+                    &composed
+                } else {
+                    &captured
+                };
+                write_repeated(&mut writer, prev, due - 1).map_err(LoopError::Write)?;
 
-                if now < target_time {
-                    std::thread::sleep(target_time - now);
+                match ctx.capture_frame_raw_bgra() {
+                    Ok(raw) => {
+                        failures.record_success();
+                        crop_bgra_to_region_into(
+                            &raw.bytes,
+                            raw.width,
+                            raw.height,
+                            region_in_scaled.as_ref(),
+                            width,
+                            height,
+                            &mut captured,
+                        );
+                    }
+                    Err(e) => {
+                        // Keep the previous capture (the clicks overlay still
+                        // animates over it); give up after a sustained run.
+                        if let Some(err) = failures.record_failure(Instant::now(), &e) {
+                            return Err(LoopError::Capture(err));
+                        }
+                    }
                 }
 
-                if let Ok(raw) = ctx.capture_frame_raw_bgra() {
-                    crop_bgra_to_region_into(
-                        &raw.bytes,
-                        raw.width,
-                        raw.height,
-                        region_in_scaled.as_ref(),
-                        width,
-                        height,
-                        &mut last_frame_bytes,
-                    );
-                }
-
-                // Refresh the click snapshot once per captured frame, not per
-                // output frame. The lock + filter cost is amortized across all
-                // duplicated frames written below. With no tracker (clicks off)
-                // the snapshot stays empty and the overlay is skipped entirely.
+                // Refresh the click snapshot and compose the overlay once per
+                // captured frame. With no tracker (clicks off) the snapshot
+                // stays empty and the overlay is skipped entirely.
                 if let Some(tracker) = click_tracker.as_ref() {
                     tracker.recent_into(CLICK_LIFETIME_MS, &mut click_snapshot);
                 }
-
-                let effective_elapsed = start
-                    .elapsed()
-                    .checked_sub(paused_accum)
-                    .unwrap_or_default();
-                let elapsed_frames =
-                    (effective_elapsed.as_secs_f64() / frame_interval.as_secs_f64()) as u64;
-                let frames_to_write = elapsed_frames.saturating_sub(frame_count - 1).max(1);
-
-                for _ in 0..frames_to_write {
-                    // Hot-path optimization: when no clicks are active, skip the
-                    // copy and write the captured frame directly. With clicks,
-                    // copy into the scratch buffer and overlay them in place.
-                    let to_write: &[u8] = if click_snapshot.is_empty() {
-                        &last_frame_bytes
-                    } else {
-                        composed.copy_from_slice(&last_frame_bytes);
-                        draw_clicks_bgra(
-                            &mut composed,
-                            width,
-                            height,
-                            &click_snapshot,
-                            region_in_scaled.as_ref(),
-                            display_origin_x,
-                            display_origin_y,
-                            point_to_scaled_pixel_x,
-                            point_to_scaled_pixel_y,
-                        );
-                        &composed
-                    };
-                    if let Err(e) = writer.write_all(to_write) {
-                        // Any write error is fatal, not just BrokenPipe: a
-                        // partial frame permanently desyncs the raw stream, so
-                        // silently continuing would truncate the video while
-                        // stop() still reported Ok.
-                        return Err(RecordError::WriteFailed(
-                            if e.kind() == std::io::ErrorKind::BrokenPipe {
-                                "ffmpeg stdin closed mid-recording (broken pipe)".into()
-                            } else {
-                                format!("writing frames to ffmpeg failed: {}", e)
-                            },
-                        ));
-                    }
-                }
-
-                frame_count = frame_count + frames_to_write - 1;
+                // Hot-path optimization: when no clicks are active, write the
+                // captured frame directly. With clicks, copy into the scratch
+                // buffer and overlay them in place.
+                prev_is_composed = !click_snapshot.is_empty();
+                let to_write: &[u8] = if prev_is_composed {
+                    composed.copy_from_slice(&captured);
+                    draw_clicks_bgra(
+                        &mut composed,
+                        width,
+                        height,
+                        &click_snapshot,
+                        region_in_scaled.as_ref(),
+                        display_origin_x,
+                        display_origin_y,
+                        point_to_scaled_pixel_x,
+                        point_to_scaled_pixel_y,
+                    );
+                    &composed
+                } else {
+                    &captured
+                };
+                // Any write error is fatal: a partial frame permanently
+                // desyncs the raw stream.
+                writer.write_all(to_write).map_err(LoopError::Write)?;
+                clock.advance(due);
             }
-
-            // Flush explicitly: BufWriter::drop swallows flush errors, which
-            // would silently drop the buffered tail of the recording.
-            if let Err(e) = writer.flush() {
-                return Err(RecordError::WriteFailed(format!(
-                    "final flush to ffmpeg failed: {}",
-                    e
-                )));
-            }
-            drop(writer);
-            drop(stdin);
-
-            let status = child
-                .wait()
-                .map_err(|e| RecordError::WriteFailed(e.to_string()))?;
-
-            if !status.success() {
-                return Err(ffmpeg_exit_error(status, &stderr_buf));
-            }
-
             Ok(())
         })();
 
+        let result = finalize(writer, process, outcome);
         state_clone.store(STATE_STOPPED, Ordering::SeqCst);
-        if result.is_err() {
-            // No zombie ffmpeg on error exits. Harmless when the child has
-            // already been waited on: kill() fails, wait() returns the
-            // cached status.
-            kill_and_reap(child);
-        }
         result
     });
 
@@ -685,6 +1061,7 @@ fn start_recording_macos_bgra(
         stop_flag,
         state,
         thread: Some(thread),
+        child: Some(child),
     })
 }
 
@@ -982,27 +1359,18 @@ fn draw_ring_bgra(
     }
 }
 
-fn spawn_ffmpeg(
-    ffmpeg_path: &Path,
+/// Build ffmpeg's argument list (pure; split out so it can be unit-tested).
+fn ffmpeg_args(
     config: &RecordConfig,
     width: u32,
     height: u32,
     pixel_format: PixelFormat,
-) -> Result<Child, RecordError> {
+) -> Vec<String> {
     let crf = match config.quality {
         RecordingQuality::Low => "28",
         RecordingQuality::Medium => "23",
         RecordingQuality::High => "18",
     };
-
-    let size_arg = format!("{}x{}", width, height);
-    let fps_arg = config.fps.to_string();
-    let output_path = config.output_path.to_string_lossy().to_string();
-
-    if let Some(parent) = config.output_path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| RecordError::WriteFailed(format!("failed to create output dir: {}", e)))?;
-    }
 
     let mut args: Vec<String> = vec![
         "-y".into(),
@@ -1017,9 +1385,9 @@ fn spawn_ffmpeg(
         "-pix_fmt".into(),
         pixel_format.ffmpeg_name().into(),
         "-s".into(),
-        size_arg,
+        format!("{}x{}", width, height),
         "-r".into(),
-        fps_arg,
+        config.fps.to_string(),
         "-i".into(),
         "-".into(),
         "-an".into(),
@@ -1034,8 +1402,35 @@ fn spawn_ffmpeg(
                 "fast".into(),
                 "-crf".into(),
                 crf.into(),
+                // Convert RGB -> YUV with the BT.709 matrix (ffmpeg's default
+                // is BT.601, which shifts colours) and tag the stream so
+                // players decode it with the same matrix. `setparams` is
+                // needed for primaries/trc to actually land in the stream;
+                // the output flags below alone leave them "unknown".
+                "-vf".into(),
+                "scale=out_color_matrix=bt709:out_range=tv,format=yuv420p,\
+                 setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709:range=tv"
+                    .into(),
                 "-pix_fmt".into(),
                 "yuv420p".into(),
+                "-colorspace".into(),
+                "bt709".into(),
+                "-color_primaries".into(),
+                "bt709".into(),
+                "-color_trc".into(),
+                "bt709".into(),
+                "-color_range".into(),
+                "tv".into(),
+                // Keyframe every 2s so fragments (below) stay short.
+                "-g".into(),
+                (config.fps * 2).to_string(),
+                // Fragmented MP4: the file is playable up to the last
+                // completed fragment even if ffmpeg or the app is killed
+                // mid-recording (a regular MP4 has no `moov` until the end).
+                // The file still starts with `ftyp` followed by an (empty)
+                // `moov`.
+                "-movflags".into(),
+                "+frag_keyframe+empty_moov+default_base_moof".into(),
             ]);
         }
         RecordingFormat::Gif => {
@@ -1055,10 +1450,24 @@ fn spawn_ffmpeg(
     // `--` ends ffmpeg's option parsing so `output_path` cannot be misread as a flag
     // (e.g. a path beginning with `-`). The output path is user-controlled via config.
     args.push("--".into());
-    args.push(output_path);
+    args.push(config.output_path.to_string_lossy().to_string());
+    args
+}
+
+fn spawn_ffmpeg(
+    ffmpeg_path: &Path,
+    config: &RecordConfig,
+    width: u32,
+    height: u32,
+    pixel_format: PixelFormat,
+) -> Result<Child, RecordError> {
+    if let Some(parent) = config.output_path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| RecordError::WriteFailed(format!("failed to create output dir: {}", e)))?;
+    }
 
     Command::new(ffmpeg_path)
-        .args(&args)
+        .args(ffmpeg_args(config, width, height, pixel_format))
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
         .stderr(Stdio::piped()) // Capture stderr for error diagnostics
@@ -1101,7 +1510,275 @@ mod tests {
             stop_flag: Arc::new(AtomicBool::new(false)),
             state: Arc::new(AtomicU8::new(STATE_RUNNING)),
             thread: None,
+            child: None,
         }
+    }
+
+    #[test]
+    fn pause_resume_are_idempotent() {
+        let h = detached_handle();
+        assert!(h.pause());
+        assert!(h.pause(), "pausing a paused recording is still paused");
+        assert!(h.is_paused());
+        assert!(h.resume());
+        assert!(h.resume(), "resuming a running recording is still running");
+        assert!(h.is_running());
+    }
+
+    #[test]
+    fn pause_resume_never_overwrite_stopped() {
+        // The worker marks STOPPED when it exits (e.g. after an error); a
+        // late pause/resume from the UI must not resurrect the state.
+        let h = detached_handle();
+        h.state.store(STATE_STOPPED, Ordering::SeqCst);
+        assert!(!h.pause());
+        assert_eq!(h.state.load(Ordering::SeqCst), STATE_STOPPED);
+        assert!(!h.resume());
+        assert_eq!(h.state.load(Ordering::SeqCst), STATE_STOPPED);
+        assert!(!h.is_alive());
+    }
+
+    #[test]
+    fn is_alive_tracks_worker_thread() {
+        let stop_flag = Arc::new(AtomicBool::new(false));
+        let state = Arc::new(AtomicU8::new(STATE_RUNNING));
+        let (flag, st) = (stop_flag.clone(), state.clone());
+        let thread = std::thread::spawn(move || {
+            while !flag.load(Ordering::SeqCst) {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            st.store(STATE_STOPPED, Ordering::SeqCst);
+            Err(RecordError::CaptureFailed("boom".into()))
+        });
+        let h = RecordingHandle {
+            stop_flag: stop_flag.clone(),
+            state,
+            thread: Some(thread),
+            child: None,
+        };
+        assert!(h.is_alive());
+        assert!(h.pause());
+        assert!(h.is_alive(), "paused is still alive");
+        // Worker exits on its own with an error.
+        stop_flag.store(true, Ordering::SeqCst);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while h.is_alive() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(!h.is_alive());
+        // ... and stop() still returns the worker's terminal error.
+        assert!(matches!(h.stop(), Err(RecordError::CaptureFailed(_))));
+    }
+
+    #[test]
+    fn frames_due_on_time_is_one() {
+        let iv = Duration::from_millis(100);
+        // 2nd frame due at 200ms (clock starts after frame 1 is written).
+        assert_eq!(frames_due(Duration::from_millis(200), iv, 2), 1);
+        // Early wakeup still writes exactly one frame.
+        assert_eq!(frames_due(Duration::from_millis(50), iv, 2), 1);
+    }
+
+    #[test]
+    fn frames_due_after_stall_counts_missed_slots() {
+        let iv = Duration::from_millis(100);
+        // 500ms elapsed but only frame 2 is being written: slots 2..=5 due.
+        assert_eq!(frames_due(Duration::from_millis(500), iv, 2), 4);
+    }
+
+    #[test]
+    fn catch_up_repeats_previous_frame_before_new_one() {
+        // Mirrors the loop: (due - 1) copies of the previous frame, then the
+        // freshly captured frame — new content must not appear early.
+        let prev = [1u8, 1];
+        let new = [2u8, 2];
+        let mut out = Vec::new();
+        let due = 3;
+        write_repeated(&mut out, &prev, due - 1).unwrap();
+        out.write_all(&new).unwrap();
+        assert_eq!(out, vec![1, 1, 1, 1, 2, 2]);
+
+        let mut none = Vec::new();
+        write_repeated(&mut none, &prev, 0).unwrap();
+        assert_eq!(none, Vec::<u8>::new());
+    }
+
+    #[test]
+    fn capture_failures_end_recording_only_after_limit() {
+        let mut f = CaptureFailures::default();
+        let t0 = Instant::now();
+        let e = capture::CaptureError::CaptureFailed;
+        assert!(f.record_failure(t0, &e).is_none());
+        assert!(f
+            .record_failure(t0 + Duration::from_millis(2900), &e)
+            .is_none());
+        let err = f.record_failure(t0 + CAPTURE_FAILURE_LIMIT, &e);
+        assert!(
+            matches!(err, Some(RecordError::CaptureFailed(ref m)) if m.contains("screen capture failed"))
+        );
+    }
+
+    #[test]
+    fn capture_no_display_ends_recording_immediately() {
+        let mut f = CaptureFailures::default();
+        let err = f.record_failure(Instant::now(), &capture::CaptureError::NoDisplay(1));
+        assert!(
+            matches!(err, Some(RecordError::CaptureFailed(ref m)) if m.contains("disconnected"))
+        );
+    }
+
+    #[test]
+    fn capture_success_resets_failure_streak() {
+        let mut f = CaptureFailures::default();
+        let t0 = Instant::now();
+        let e = capture::CaptureError::CaptureFailed;
+        assert!(f.record_failure(t0, &e).is_none());
+        f.record_success();
+        // A new streak starts from this failure, not t0.
+        assert!(f.record_failure(t0 + Duration::from_secs(10), &e).is_none());
+    }
+
+    #[test]
+    fn frame_byte_len_rejects_overflow_and_empty() {
+        assert_eq!(frame_byte_len(2, 3).unwrap(), 24);
+        assert!(matches!(
+            frame_byte_len(0, 10),
+            Err(RecordError::CaptureFailed(_))
+        ));
+        #[cfg(target_pointer_width = "32")]
+        assert!(frame_byte_len(u32::MAX, u32::MAX).is_err());
+        #[cfg(target_pointer_width = "64")]
+        assert_eq!(
+            frame_byte_len(u32::MAX, u32::MAX).ok(),
+            (u32::MAX as usize)
+                .checked_mul(u32::MAX as usize)
+                .and_then(|n| n.checked_mul(4))
+        );
+    }
+
+    fn rect(x: i32, y: i32, width: u32, height: u32) -> snapforge_domain::Rect {
+        snapforge_domain::Rect {
+            x,
+            y,
+            width,
+            height,
+        }
+    }
+
+    #[test]
+    fn region_inside_display_scales_and_rounds_even() {
+        // 4K native -> 1080p output: factor 0.5.
+        let r =
+            scale_region_to_output(&rect(101, 201, 801, 601), (3840, 2160), (1920, 1080)).unwrap();
+        assert_eq!(r, rect(50, 100, 400, 300));
+    }
+
+    #[test]
+    fn region_is_clipped_to_display() {
+        // Extends past the right/bottom edge and starts at a negative origin.
+        let r = scale_region_to_output(&rect(-100, -50, 5000, 5000), (1920, 1080), (1920, 1080))
+            .unwrap();
+        assert_eq!(r, rect(0, 0, 1920, 1080));
+
+        let r = scale_region_to_output(&rect(1800, 1000, 400, 400), (1920, 1080), (1920, 1080))
+            .unwrap();
+        assert_eq!(r, rect(1800, 1000, 120, 80));
+        assert!(r.x as u32 + r.width <= 1920 && r.y as u32 + r.height <= 1080);
+    }
+
+    #[test]
+    fn region_outside_or_degenerate_errors() {
+        let out = |r| scale_region_to_output(&r, (1920, 1080), (1920, 1080));
+        assert!(matches!(
+            out(rect(5000, 0, 10, 10)),
+            Err(RecordError::CaptureFailed(_))
+        ));
+        assert!(matches!(
+            out(rect(-500, 0, 100, 100)),
+            Err(RecordError::CaptureFailed(_))
+        ));
+        assert!(matches!(
+            out(rect(10, 10, 1, 1)),
+            Err(RecordError::CaptureFailed(_))
+        ));
+        assert!(matches!(
+            out(rect(i32::MAX, i32::MAX, u32::MAX, u32::MAX)),
+            Err(RecordError::CaptureFailed(_))
+        ));
+        assert!(scale_region_to_output(&rect(0, 0, 10, 10), (0, 0), (1920, 1080)).is_err());
+    }
+
+    #[test]
+    fn mp4_args_tag_bt709_and_fragment() {
+        let cfg = test_config(Path::new("/tmp/x.mp4"));
+        #[cfg(target_os = "macos")]
+        let pf = PixelFormat::Bgra;
+        #[cfg(not(target_os = "macos"))]
+        let pf = PixelFormat::Rgba;
+        let args = ffmpeg_args(&cfg, 64, 48, pf);
+        let joined = args.join(" ");
+        assert!(joined.contains("out_color_matrix=bt709"));
+        assert!(joined.contains("-colorspace bt709"));
+        assert!(joined.contains("-color_primaries bt709"));
+        assert!(joined.contains("-color_trc bt709"));
+        assert!(joined.contains("+frag_keyframe+empty_moov+default_base_moof"));
+        assert_eq!(args.iter().filter(|a| *a == "-vf").count(), 1);
+        assert_eq!(args.last().map(String::as_str), Some("/tmp/x.mp4"));
+
+        let mut gif = cfg.clone();
+        gif.format = RecordingFormat::Gif;
+        let joined = ffmpeg_args(&gif, 64, 48, pf).join(" ");
+        assert!(!joined.contains("movflags"));
+        assert!(!joined.contains("bt709"));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn ffmpeg_stdin_has_sigpipe_disabled() {
+        // `cat` stands in for ffmpeg: we only need a child with a stdin pipe.
+        use std::os::fd::AsRawFd;
+        let mut child = Command::new("/bin/cat")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .spawn()
+            .unwrap();
+        let stdin = child.stdin.take().unwrap();
+        disable_sigpipe(&stdin).unwrap();
+        let flag = unsafe { libc::fcntl(stdin.as_raw_fd(), F_GETNOSIGPIPE) };
+        assert_eq!(flag, 1);
+        drop(stdin);
+        let _ = child.wait();
+    }
+
+    #[test]
+    fn write_after_child_exit_reports_ffmpeg_error() {
+        // A child that exits non-zero with a message on stderr: the write
+        // error path must surface that message, not just "broken pipe".
+        let mut child = Command::new("/bin/sh")
+            .args(["-c", "echo 'No space left on device' >&2; exit 1"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut stdin = child.stdin.take().unwrap();
+        disable_sigpipe(&stdin).unwrap();
+        let (stderr_buf, stderr_thread) = spawn_stderr_drain(child.stderr.take());
+        let process = FfmpegProcess {
+            child: Arc::new(Mutex::new(child)),
+            stderr_buf,
+            stderr_thread,
+        };
+        // Write until the pipe breaks (the child never reads).
+        let chunk = vec![0u8; 64 * 1024];
+        let err = loop {
+            if let Err(e) = stdin.write_all(&chunk) {
+                break e;
+            }
+        };
+        drop(stdin);
+        let msg = process.write_error(&err).to_string();
+        assert!(msg.contains("No space left on device"), "got: {msg}");
     }
 
     #[test]
@@ -1114,10 +1791,10 @@ mod tests {
     #[test]
     fn handle_pause_then_resume_round_trips_state() {
         let h = detached_handle();
-        h.pause();
+        assert!(h.pause());
         assert!(h.is_paused());
         assert!(!h.is_running());
-        h.resume();
+        assert!(h.resume());
         assert!(h.is_running());
         assert!(!h.is_paused());
     }
@@ -1201,7 +1878,15 @@ mod tests {
         if let Ok(handle) = start_recording(config) {
             assert!(handle.is_running());
             std::thread::sleep(Duration::from_millis(500));
-            assert!(handle.stop().is_ok());
+            match handle.stop() {
+                Ok(()) => {}
+                // SCK context creation needs Screen Recording permission for
+                // the test binary, which CI / plain `cargo test` may lack.
+                Err(RecordError::CaptureFailed(e)) => {
+                    eprintln!("skipping: capture unavailable in this environment: {e}");
+                }
+                Err(e) => panic!("stop failed: {e:?}"),
+            }
         }
     }
 

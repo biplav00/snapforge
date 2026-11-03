@@ -57,21 +57,37 @@ The `add_to_history_on_stop` flag tells `snapforge-app::recording` to add the fi
 
 ## ffmpeg invocation
 
-Built in `crates/snapforge-encode/src/record/ffmpeg.rs`. Shape:
+Built in `crates/snapforge-encode/src/record/ffmpeg.rs` (`ffmpeg_args`). Shape for MP4:
 
 ```
-ffmpeg -y -f rawvideo -pix_fmt rgba -s WxH -r FPS -i pipe:0 \
-       -c:v libx264 -preset ultrafast -crf {quality_crf} \
-       -pix_fmt yuv420p {output_path}
+ffmpeg -y -nostats -loglevel error \
+       -f rawvideo -pix_fmt bgra -s WxH -r FPS -i - -an \
+       -c:v libx264 -preset fast -crf {28|23|18} \
+       -vf scale=out_color_matrix=bt709:out_range=tv,format=yuv420p,setparams=...bt709... \
+       -pix_fmt yuv420p -colorspace bt709 -color_primaries bt709 -color_trc bt709 -color_range tv \
+       -g {2*FPS} -movflags +frag_keyframe+empty_moov+default_base_moof \
+       -- {output_path}
 ```
 
-(Exact args depend on format/quality — see `ffmpeg.rs`.)
+- **Colour**: RGB→YUV uses the BT.709 matrix (ffmpeg's default is BT.601) and the stream is tagged BT.709/limited range so players decode it correctly.
+- **Fragmented MP4**: `empty_moov` + `frag_keyframe` with a keyframe every 2 s means a recording interrupted by a crash or kill is still playable up to the last completed fragment. The file still begins with `ftyp` followed by an (empty) `moov`, so `is_incomplete_mp4` treats such files as complete.
+- **GIF** uses a streaming per-frame palette (`palettegen=stats_mode=single` / `paletteuse=new=1`) and no colour tags.
 
-Frames are read from ScreenCaptureKit in the capture worker thread and written to ffmpeg stdin at the configured FPS. ffmpeg handles encoding + container muxing.
+The ffmpeg binary is located (`find_ffmpeg`) and validated (`ffmpeg -version`) once; the successful result is cached for later recordings, so these subprocesses don't run on the caller's thread every time.
+
+Frames are captured with ScreenCaptureKit (BGRA, downscaled to at most 1920 px on the long side) in the worker thread, cropped to the region, and written to ffmpeg's stdin at a constant frame rate. If the loop stalls, the missed slots are filled with copies of the *previous* frame before the new frame is written, so new content never appears early. The requested region is clipped to the display bounds before scaling; a region entirely off-screen or too small fails the start with `CaptureFailed`.
+
+**SIGPIPE**: the Rust code ships as a staticlib in the Qt app, where SIGPIPE is not ignored. The worker sets `F_SETNOSIGPIPE` on ffmpeg's stdin pipe, so if ffmpeg dies a write fails with `EPIPE` (turned into an error that carries ffmpeg's stderr, e.g. "No space left on device") instead of killing the app.
 
 ## Pause / resume
 
-`snapforge_record_pause` / `snapforge_record_resume` flip a flag on the `RecordingHandle`. The capture worker skips frame-writes while paused (timer continues; no frames sent → ffmpeg sees a gap). Tray pill swaps dot → two short bars.
+`snapforge_record_pause` / `snapforge_record_resume` atomically switch the handle between RUNNING and PAUSED (compare-and-swap; they never overwrite STOPPED and report failure once the recording has ended). While paused the worker captures and writes nothing **and freezes its frame clock**, so the output has no gap and no frozen-frame stretch: the video simply continues from the resume point at a constant frame rate. The tray pill swaps the dot for two short bars.
+
+## Liveness, failures and stop
+
+- `RecordingHandle::is_alive()` (FFI `snapforge_record_is_alive`) is true while the worker is RUNNING or PAUSED and false once the worker thread has exited, including after an error. The UI polls it to detect a recording that died on its own; `stop()` then returns the preserved error.
+- Capture errors are logged (rate-limited). After 3 s of consecutive capture failures, or immediately if the display is disconnected (`CaptureError::NoDisplay`), the worker finalizes ffmpeg (keeping what was recorded) and ends with `CaptureFailed`.
+- `stop()` closes stdin and waits up to 20 s for ffmpeg to finish the file before killing it. If the worker itself is stuck (for example, blocked writing to a hung ffmpeg), `stop()` kills ffmpeg after 25 s and returns an error, so the caller can never hang indefinitely.
 
 ## Failure modes
 
@@ -79,8 +95,10 @@ Frames are read from ScreenCaptureKit in the capture worker thread and written t
 |-------|---------|------------------|
 | ffmpeg binary missing | `RecordError::FfmpegNotFound` | Modal "Recording Failed" + tray banner |
 | ffmpeg spawn fails (permission, corruption) | `RecordError::FfmpegSpawnFailed` | Same |
-| Stdin pipe write fails mid-recording | `RecordError::WriteFailed` | Same |
-| SCK capture fails | `RecordError::CaptureFailed` | Same |
+| ffmpeg exits / stdin write fails mid-recording | `RecordError::WriteFailed` with ffmpeg's stderr tail | Same (via `is_alive` going false, then stop) |
+| ffmpeg hangs on stop | `RecordError::WriteFailed` (killed after deadline) | Same |
+| SCK capture fails for 3 s / display disconnected | `RecordError::CaptureFailed` | Same |
+| Region off-screen / invalid size | `RecordError::CaptureFailed` at start | Same |
 | Bad config JSON | `LAST_APP_ERROR` set, NULL handle | Modal via `recordingError` signal (read via `snapforge_app_last_error`) |
 
 All paths go through the `recordingError` signal in `RecordingManager`, handled by `RecordingController` (wired in `main.cpp`) which resets tray + pops the deferred `QMessageBox`.
@@ -94,9 +112,4 @@ All paths go through the `recordingError` signal in `RecordingManager`, handled 
 
 ## Click visualizer integration (when "Show clicks while recording" is enabled)
 
-- `recordingStarted` → `ClickIndicatorOverlay::showOverlay()` + `ClickTap::start()` (which wraps `snapforge_clicks_start`)
-- Each click → ripple drawn into the overlay window
-- The overlay window is rendered by the compositor on top of everything → captured by SCK → baked into the recording
-- `recordingStopped/Error` → tear down overlay + tap
-
-The overlay is **not** composited into frames at the Rust level — SCK simply sees it on screen and captures it like any other window. That's why the overlay must be at `NSScreenSaverWindowLevel` and visible on all Spaces.
+The Rust encoder draws the clicks itself. With `show_clicks: true`, `start_recording` starts a `ClickTracker` CGEventTap (needs Accessibility permission; without it the tap no-ops and no ripples are drawn). For each captured frame the worker takes a snapshot of recent clicks, converts their global desktop points into scaled-frame pixels of the target display, and composites a ripple (dot plus two expanding rings, about 1 s lifetime) into a scratch copy of the frame before writing it. Catch-up copies reuse the already-composed frame. With clicks off, frames are written straight through with no overlay work.
