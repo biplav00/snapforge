@@ -13,8 +13,34 @@ rayon = { workspace = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
-objc2-foundation = { version = "0.3", features = ["NSData", "NSString", "NSArray", "NSError", "NSProcessInfo"] }
-objc2-core-graphics = { version = "0.3", default-features = false, features = ["CGImage", "CGDataProvider", "objc2"] }
+objc2-foundation = { version = "0.3", features = ["NSData", "NSString", "NSArray", "NSError", "NSProcessInfo", "NSDictionary"] }
+objc2-core-graphics = { version = "0.3", default-features = false, features = [
+    "CGImage",
+    "CGDataProvider",
+    "CGColorSpace",
+    "CGContext",
+    "CGBitmapContext",
+    "objc2",
+] }
+objc2-core-foundation = { version = "0.3", default-features = false, features = ["std", "CFString", "CFCGTypes"] }
+# SCStream recording: CMSampleBuffer -> CVPixelBuffer (see capture/macos/stream.rs).
+objc2-core-media = { version = "0.3", default-features = false, features = [
+    "std",
+    "CMSampleBuffer",
+    "CMTime",
+    "objc2",
+    "objc2-core-video",
+] }
+objc2-core-video = { version = "0.3", default-features = false, features = [
+    "std",
+    "CVBase",
+    "CVBuffer",
+    "CVImageBuffer",
+    "CVPixelBuffer",
+    "CVReturn",
+    "objc2",
+] }
+dispatch2 = { version = "0.3", default-features = false, features = ["std", "objc2"] }
 objc2-screen-capture-kit = { version = "0.3", features = [
     "SCShareableContent",
     "SCStream",

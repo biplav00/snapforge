@@ -94,10 +94,11 @@ pub fn request_permission() -> bool {
     }
 }
 
-/// A reusable capture context for fast repeated captures (e.g. recording).
-/// Create once on a background thread, call capture_frame() per frame.
+/// Recording frame sources (macOS): `RecordingSource` picks `StreamCapture`
+/// (SCStream) and falls back to `CaptureContext` (one screenshot per frame).
+/// Create on a background thread and poll per frame.
 #[cfg(target_os = "macos")]
-pub use macos::{CaptureContext, RawFrame};
+pub use macos::{CaptureContext, RawFrame, RecordingSource, StreamCapture};
 
 /// Get the point-to-pixel scale factor of the primary display.
 pub fn display_scale_factor() -> f64 {

@@ -69,13 +69,22 @@ ffmpeg -y -nostats -loglevel error \
        -- {output_path}
 ```
 
-- **Colour**: RGB→YUV uses the BT.709 matrix (ffmpeg's default is BT.601) and the stream is tagged BT.709/limited range so players decode it correctly.
+- **Colour**: captured pixels are sRGB (see [Frame source](#frame-source-capturerecordingsource)). RGB→YUV uses the BT.709 matrix (ffmpeg's default is BT.601), and the stream is tagged BT.709/limited range so players decode it correctly. BT.709 primaries are the same as sRGB's, so colours are not shifted.
 - **Fragmented MP4**: `empty_moov` + `frag_keyframe` with a keyframe every 2 s means a recording interrupted by a crash or kill is still playable up to the last completed fragment. The file still begins with `ftyp` followed by an (empty) `moov`, so `is_incomplete_mp4` treats such files as complete.
 - **GIF** uses a streaming per-frame palette (`palettegen=stats_mode=single` / `paletteuse=new=1`) and no colour tags.
 
 The ffmpeg binary is located (`find_ffmpeg`) and validated (`ffmpeg -version`) once; the successful result is cached for later recordings, so these subprocesses don't run on the caller's thread every time.
 
-Frames are captured with ScreenCaptureKit (BGRA, downscaled to at most 1920 px on the long side) in the worker thread, cropped to the region, and written to ffmpeg's stdin at a constant frame rate. If the loop stalls, the missed slots are filled with copies of the *previous* frame before the new frame is written, so new content never appears early. The requested region is clipped to the display bounds before scaling; a region entirely off-screen or too small fails the start with `CaptureFailed`.
+Frames are captured with ScreenCaptureKit (sRGB BGRA, downscaled to at most 1920 px on the long side) in the worker thread, cropped to the region, and written to ffmpeg's stdin at a constant frame rate. If the loop stalls, the missed slots are filled with copies of the *previous* frame before the new frame is written, so new content never appears early. The requested region is clipped to the display bounds before scaling; a region entirely off-screen or too small fails the start with `CaptureFailed`.
+
+### Frame source (`capture::RecordingSource`)
+
+The worker creates a `RecordingSource` (in `crates/snapforge-capture/src/capture/macos.rs`) on its own thread:
+
+- **Normal path: `StreamCapture`** (`capture/macos/stream.rs`). It runs one `SCStream` over the whole display (`SCContentFilter initWithDisplay:excludingWindows:@[]`, the same content as screenshots). It is configured with width and height equal to the output size, `kCVPixelFormatType_32BGRA`, `colorSpaceName = kCGColorSpaceSRGB`, `minimumFrameInterval = 1/fps`, `queueDepth = 4` and the cursor shown. SCK pushes `CMSampleBuffer`s to an `SCStreamOutput` object on a private serial dispatch queue. Only `SCFrameStatus.Complete` buffers are used. Idle buffers (screen unchanged) carry no image and are skipped. The `CVPixelBuffer` is locked read-only, copied row by row (it honours `bytesPerRow` padding) into a one-frame mailbox (`FrameSlot`, which recycles buffers), and unlocked. Each output slot, the encode loop takes the newest frame, if one arrived since the last slot. When none has arrived, it repeats the previous frame, which counts as a success. Pacing (`FrameClock`), pause, click compositing and region cropping are unchanged. The worker waits up to 2 s for the first frame. If none arrives, the file starts with a black frame and a warning is logged.
+- **Stream failure**: `SCStreamDelegate stream:didStopWithError:` marks the stream dead. Every poll after that fails with `CaptureFailed`, so the usual 3 s failure streak ends the recording with `CaptureFailed`. Each poll checks `CGDisplayIsOnline` first, so a disconnected display still ends the recording immediately with `NoDisplay`.
+- **Start/stop**: `startCapture` and `stopCapture` use completion handlers with bounded waits (5 s and 2 s). `stopCapture` is issued on every exit path, including `Drop` and a timed-out start.
+- **Fallback: `CaptureContext`**. If the stream can't start (the SCK display lookup or the `addStreamOutput` call fails, or `startCapture` errors or times out), a warning is logged and the worker falls back to the old path. That path takes one `SCScreenshotManager` screenshot per frame, also in sRGB, with a 5 s timeout per frame. A `NoDisplay` error is not retried. The worker logs which source it picked (`[record] capturing via ...`).
 
 **SIGPIPE**: the Rust code ships as a staticlib in the Qt app, where SIGPIPE is not ignored. The worker sets `F_SETNOSIGPIPE` on ffmpeg's stdin pipe, so if ffmpeg dies a write fails with `EPIPE` (turned into an error that carries ffmpeg's stderr, e.g. "No space left on device") instead of killing the app.
 
@@ -97,7 +106,7 @@ Frames are captured with ScreenCaptureKit (BGRA, downscaled to at most 1920 px o
 | ffmpeg spawn fails (permission, corruption) | `RecordError::FfmpegSpawnFailed` | Same |
 | ffmpeg exits / stdin write fails mid-recording | `RecordError::WriteFailed` with ffmpeg's stderr tail | Same (via `is_alive` going false, then stop) |
 | ffmpeg hangs on stop | `RecordError::WriteFailed` (killed after deadline) | Same |
-| SCK capture fails for 3 s / display disconnected | `RecordError::CaptureFailed` | Same |
+| SCK capture fails for 3 s / SCStream died (`didStopWithError`) / display disconnected | `RecordError::CaptureFailed` | Same |
 | Region off-screen / invalid size | `RecordError::CaptureFailed` at start | Same |
 | Bad config JSON | `LAST_APP_ERROR` set, NULL handle | Modal via `recordingError` signal (read via `snapforge_app_last_error`) |
 

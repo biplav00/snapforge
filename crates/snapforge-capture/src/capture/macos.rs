@@ -5,6 +5,7 @@ use std::time::Duration;
 use image::RgbaImage;
 use objc2::rc::Retained;
 use objc2::AnyThread;
+use objc2_core_foundation::CFString;
 use objc2_foundation::{NSArray, NSOperatingSystemVersion, NSProcessInfo};
 use objc2_screen_capture_kit::{
     SCContentFilter, SCDisplay, SCScreenshotManager, SCShareableContent, SCStreamConfiguration,
@@ -15,6 +16,9 @@ use rayon::prelude::*;
 use snapforge_domain::Rect;
 
 use super::CaptureError;
+
+mod stream;
+pub use stream::StreamCapture;
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -295,21 +299,38 @@ pub fn request_screen_capture_permission() -> bool {
 // ---------------------------------------------------------------------------
 
 /// SCShareableContent can take seconds to answer when the SCK daemon is busy
-/// (first call after login, wake from sleep). It's off the hot path now — only
-/// the SCK fallback and recording setup use it, both on worker threads — so
-/// it gets a generous timeout instead of failing spuriously.
+/// (first call after login, wake from sleep). Recording setup runs on a
+/// worker thread, so it gets a generous timeout instead of failing spuriously.
 const SCK_CONTENT_TIMEOUT: Duration = Duration::from_secs(6);
+
+/// Screenshot budget per SCK step (display lookup, then the capture itself).
+/// Screenshots are interactive, so on a slow/hung SCK daemon we'd rather fall
+/// back to `CGDisplayCreateImage` quickly than keep the user waiting.
+const SCK_SCREENSHOT_TIMEOUT: Duration = Duration::from_secs(3);
+
+/// Per-frame budget for the screenshot-per-frame recording fallback.
+const SCK_FRAME_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// `kCGColorSpaceSRGB`. Every capture path produces sRGB pixels: SCK is asked
+/// for it via `SCStreamConfiguration.colorSpaceName`, and CoreGraphics images
+/// in any other colour space are converted (see [`with_cg_pixels`]). Saved
+/// PNG/JPEG files and the BT.709-tagged MP4 are untagged/sRGB-assumed, so
+/// handing them display-space (e.g. Display P3) bytes shifts colours.
+fn srgb_color_space_name() -> &'static CFString {
+    // SAFETY: immutable CoreGraphics constant.
+    unsafe { objc2_core_graphics::kCGColorSpaceSRGB }
+}
 
 /// Fetch available displays via SCShareableContent (async → sync bridge).
 /// Returns `None` if SCK is unavailable on this OS, doesn't respond within
-/// [`SCK_CONTENT_TIMEOUT`], or errors.
+/// `timeout`, or errors.
 ///
 /// Skips the SCK call entirely while the per-session permission-denied latch
 /// is set (and preflight still says no): SCShareableContent triggers the
 /// macOS TCC dialog every time it's called from a process that hasn't been
 /// granted Screen Recording, so repeating the call after a known denial just
 /// spams the user.
-fn get_shareable_displays() -> Option<Retained<NSArray<SCDisplay>>> {
+fn get_shareable_displays(timeout: Duration) -> Option<Retained<NSArray<SCDisplay>>> {
     if !sck_content_available() {
         return None;
     }
@@ -347,11 +368,7 @@ fn get_shareable_displays() -> Option<Retained<NSArray<SCDisplay>>> {
             &block,
         );
     }
-    let result = rx
-        .recv_timeout(SCK_CONTENT_TIMEOUT)
-        .ok()
-        .flatten()
-        .map(|d| d.0);
+    let result = rx.recv_timeout(timeout).ok().flatten().map(|d| d.0);
 
     if result.is_none() && !unsafe { CGPreflightScreenCaptureAccess() } {
         // SCK gave us nothing and the system says permission isn't granted.
@@ -365,8 +382,12 @@ fn get_shareable_displays() -> Option<Retained<NSArray<SCDisplay>>> {
 
 /// Find the SCDisplay object for a CGDirectDisplayID. `display` is only used
 /// for the error value.
-fn sc_display_for_id(display: usize, target_id: u32) -> Result<Retained<SCDisplay>, CaptureError> {
-    let displays = get_shareable_displays().ok_or(CaptureError::CaptureFailed)?;
+fn sc_display_for_id(
+    display: usize,
+    target_id: u32,
+    timeout: Duration,
+) -> Result<Retained<SCDisplay>, CaptureError> {
+    let displays = get_shareable_displays(timeout).ok_or(CaptureError::CaptureFailed)?;
     (0..displays.len())
         .map(|i| displays.objectAtIndex(i))
         .find(|d| unsafe { d.displayID() } == target_id)
@@ -430,23 +451,45 @@ pub fn capture_fullscreen(display: usize) -> Result<RgbaImage, CaptureError> {
 
 fn capture_fullscreen_inner(display: usize) -> Result<RgbaImage, CaptureError> {
     let target_id = display_id_for_index(display)?;
-
-    // Primary path: CGDisplayCreateImage. Deprecated in macOS 14 but still
-    // functional and the only path that reliably captures fullscreen-Space
-    // content. SCK's captureImageWithFilter often returns a black frame for
-    // a window that's running in its own fullscreen Space (browsers entering
-    // fullscreen, video players, games), so we try the legacy API first and
-    // fall through to SCK only if it fails. Index → ID resolution is pure
-    // CoreGraphics, so this path no longer depends on SCK responding.
-    if let Some(img) = capture_via_cgdisplay(target_id) {
-        return Ok(img);
-    }
-
-    capture_fullscreen_via_sck(display, target_id)
+    // Primary: ScreenCaptureKit (`SCScreenshotManager`, sRGB). Fallback:
+    // the deprecated `CGDisplayCreateImage`, only reached when SCK fails
+    // (timeout, daemon trouble, denied permission) or returns an all-black
+    // frame — SCK can do that for some fullscreen-Space apps (commit
+    // `6982101`), where the legacy API still sees the content.
+    screenshot_with_fallback(
+        || capture_fullscreen_via_sck(display, target_id),
+        || capture_via_cgdisplay(target_id),
+    )
 }
 
-/// Capture a display via CGDisplayCreateImage and convert to RGBA.
-/// Returns None on any failure so the caller can fall back to SCK.
+/// Pick a screenshot from the primary (SCK) and fallback (CG) paths: the
+/// first non-black image wins; a black image is still better than an error
+/// (the screen may really be black); the fallback runs only when the primary
+/// failed or came back black.
+fn screenshot_with_fallback(
+    primary: impl FnOnce() -> Result<RgbaImage, CaptureError>,
+    fallback: impl FnOnce() -> Option<RgbaImage>,
+) -> Result<RgbaImage, CaptureError> {
+    let primary = match primary() {
+        Ok(img) if !is_all_zero(&img) => return Ok(img),
+        Ok(img) => {
+            tracing::debug!("[capture] SCK screenshot is all black; trying CGDisplayCreateImage");
+            Ok(img)
+        }
+        Err(e) => {
+            tracing::debug!("[capture] SCK screenshot failed ({e}); trying CGDisplayCreateImage");
+            Err(e)
+        }
+    };
+    match (primary, fallback()) {
+        (_, Some(img)) if !is_all_zero(&img) => Ok(img),
+        (Ok(black), _) | (Err(_), Some(black)) => Ok(black),
+        (Err(e), None) => Err(e),
+    }
+}
+
+/// Capture a display via CGDisplayCreateImage and convert to sRGB RGBA.
+/// Returns None on any failure.
 fn capture_via_cgdisplay(display_id: u32) -> Option<RgbaImage> {
     use objc2_core_graphics::CGImage;
     let cg_ptr = unsafe { CGDisplayCreateImage(display_id) };
@@ -456,17 +499,7 @@ fn capture_via_cgdisplay(display_id: u32) -> Option<RgbaImage> {
     // CGImageRef is owned by the caller per Create rule — we must release it.
     // Rust binding's Retained::from_raw takes ownership and releases on drop.
     let cg_image: Retained<CGImage> = unsafe { Retained::from_raw(cg_ptr)? };
-    let rgba = cg_image_to_rgba(&cg_image).ok()?;
-    // Sanity: if the captured frame is entirely zero (black) we'd rather let
-    // SCK have a chance — a fullscreen DRM window can produce all-zero bytes
-    // even from CGDisplayCreateImage, in which case SCK might do better.
-    if is_all_zero(&rgba) {
-        tracing::debug!(
-            "[capture] CGDisplayCreateImage returned an all-zero frame; falling back to SCK"
-        );
-        return None;
-    }
-    Some(rgba)
+    cg_image_to_rgba(&cg_image).ok()
 }
 
 fn is_all_zero(img: &RgbaImage) -> bool {
@@ -491,20 +524,38 @@ fn display_filter(sc_display: &SCDisplay) -> Retained<SCContentFilter> {
     }
 }
 
+/// `SCStreamConfiguration` for a single BGRA, sRGB screenshot of `w`×`h`
+/// pixels (both 0 = SCK's default size).
+fn screenshot_config(w: usize, h: usize, shows_cursor: bool) -> Retained<SCStreamConfiguration> {
+    // SAFETY: plain property setters on a fresh configuration object.
+    unsafe {
+        let config = SCStreamConfiguration::new();
+        if w > 0 && h > 0 {
+            config.setWidth(w);
+            config.setHeight(h);
+        }
+        config.setPixelFormat(objc2_core_video::kCVPixelFormatType_32BGRA);
+        config.setColorSpaceName(srgb_color_space_name());
+        config.setShowsCursor(shows_cursor);
+        config
+    }
+}
+
 fn capture_fullscreen_via_sck(display: usize, target_id: u32) -> Result<RgbaImage, CaptureError> {
     ensure_sck_screenshot_available()?;
-    let sc_display = sc_display_for_id(display, target_id)?;
+    // Without the Screen Recording grant SCK can only fail (and would raise
+    // the TCC prompt doing so); go straight to the CoreGraphics fallback,
+    // which is what an ungranted capture always used.
+    if !preflight_screen_capture() {
+        return Err(CaptureError::CaptureFailed);
+    }
+    let sc_display = sc_display_for_id(display, target_id, SCK_SCREENSHOT_TIMEOUT)?;
+    // Whole display, no excluded windows: same content CGDisplayCreateImage
+    // returned (menu bar, Dock, every window). Snapforge's region overlay is
+    // only shown after the capture completes, so it can't end up in the shot.
     let filter = display_filter(&sc_display);
-
     let (w, h) = display_pixel_size(target_id)?;
-    let config = unsafe {
-        let config = SCStreamConfiguration::new();
-        config.setWidth(w);
-        config.setHeight(h);
-        config.setShowsCursor(false);
-        config
-    };
-
+    let config = screenshot_config(w, h, false);
     capture_with_filter(filter.as_ref(), config.as_ref())
 }
 
@@ -555,7 +606,7 @@ fn capture_with_filter(
         );
     }
 
-    rx.recv_timeout(std::time::Duration::from_secs(5))
+    rx.recv_timeout(SCK_SCREENSHOT_TIMEOUT)
         .map_err(|_| CaptureError::CaptureFailed)?
         .ok_or(CaptureError::CaptureFailed)
 }
@@ -588,22 +639,14 @@ impl CaptureContext {
     pub fn new(display: usize, max_dimension: Option<u32>) -> Result<Self, CaptureError> {
         ensure_sck_screenshot_available()?;
         let display_id = display_id_for_index(display)?;
-        let sc_display = sc_display_for_id(display, display_id)?;
+        let sc_display = sc_display_for_id(display, display_id, SCK_CONTENT_TIMEOUT)?;
         let filter = display_filter(&sc_display);
 
         let (native_w, native_h) = display_pixel_size(display_id)?;
         let (out_w, out_h) = scaled_even_size(native_w, native_h, max_dimension);
 
-        let config = unsafe {
-            let config = SCStreamConfiguration::new();
-            if out_w > 0 && out_h > 0 {
-                config.setWidth(out_w as usize);
-                config.setHeight(out_h as usize);
-            }
-            // Recordings show the live cursor; screenshots stay cursor-free.
-            config.setShowsCursor(true);
-            config
-        };
+        // Recordings show the live cursor; screenshots stay cursor-free.
+        let config = screenshot_config(out_w as usize, out_h as usize, true);
 
         Ok(Self {
             filter,
@@ -632,6 +675,82 @@ impl CaptureContext {
     }
 }
 
+/// Frame source for a recording: an [`StreamCapture`] (`SCStream`, the normal
+/// path) or, if the stream can't be started, the older
+/// [`CaptureContext`] that takes one `SCScreenshotManager` screenshot per
+/// frame. Both deliver sRGB BGRA and report `NoDisplay` once the display is
+/// disconnected. Not `Send`: create and use it on the recording worker.
+pub enum RecordingSource {
+    Stream(StreamCapture),
+    Screenshots(CaptureContext),
+}
+
+/// Try `primary`; on failure log and try `fallback`. A `NoDisplay` from the
+/// primary is returned as-is — the fallback targets the same display.
+fn start_with_fallback<T>(
+    primary: impl FnOnce() -> Result<T, CaptureError>,
+    fallback: impl FnOnce() -> Result<T, CaptureError>,
+) -> Result<T, CaptureError> {
+    match primary() {
+        Ok(v) => Ok(v),
+        Err(e @ CaptureError::NoDisplay(_)) => Err(e),
+        Err(e) => {
+            tracing::warn!(
+                "[capture] SCStream unavailable ({e}); recording falls back to one screenshot per frame"
+            );
+            fallback()
+        }
+    }
+}
+
+impl RecordingSource {
+    /// Start capturing `display` at the recording output size
+    /// ([`compute_recording_output_size`] with `max_dimension`), with the
+    /// cursor visible, at most `fps` frames per second.
+    pub fn start(
+        display: usize,
+        max_dimension: Option<u32>,
+        fps: u32,
+    ) -> Result<Self, CaptureError> {
+        let (out_w, out_h) = compute_recording_output_size(display, max_dimension)?;
+        start_with_fallback(
+            || StreamCapture::start(display, out_w, out_h, fps, true).map(Self::Stream),
+            || CaptureContext::new(display, max_dimension).map(Self::Screenshots),
+        )
+    }
+
+    /// True when frames come from `SCStream` (not the screenshot fallback).
+    pub fn is_stream(&self) -> bool {
+        matches!(self, Self::Stream(_))
+    }
+
+    /// Hand the current frame to `f`. `Ok(false)` means "no new frame since
+    /// last time" (screen idle — repeat the previous frame); only the stream
+    /// returns it. Errors follow [`CaptureContext::capture_frame_raw_bgra`].
+    pub fn next_frame(&mut self, f: impl FnOnce(&RawFrame)) -> Result<bool, CaptureError> {
+        match self {
+            Self::Stream(s) => s.latest_frame(f),
+            Self::Screenshots(c) => c.capture_frame_raw_bgra().map(|raw| {
+                f(&raw);
+                true
+            }),
+        }
+    }
+
+    /// [`Self::next_frame`], but the stream waits up to `timeout` for its
+    /// first frame (the screenshot fallback captures synchronously anyway).
+    pub fn first_frame(
+        &mut self,
+        timeout: Duration,
+        f: impl FnOnce(&RawFrame),
+    ) -> Result<bool, CaptureError> {
+        match self {
+            Self::Stream(s) => s.wait_frame(timeout, f),
+            Self::Screenshots(_) => self.next_frame(f),
+        }
+    }
+}
+
 /// Capture a CGImage and return tightly-packed BGRA bytes without channel swap.
 fn capture_bgra_with_filter(
     filter: &SCContentFilter,
@@ -657,7 +776,7 @@ fn capture_bgra_with_filter(
         );
     }
 
-    rx.recv_timeout(std::time::Duration::from_secs(5))
+    rx.recv_timeout(SCK_FRAME_TIMEOUT)
         .map_err(|_| CaptureError::CaptureFailed)?
         .ok_or(CaptureError::CaptureFailed)
 }
@@ -717,13 +836,27 @@ impl CgPixels<'_> {
     }
 }
 
-/// Validate `cg_image` (size, pixel layout, buffer length) and run `f` over a
-/// borrowed view of its pixels. The CFData copy lives only for this call.
+/// `CFStringGetCStringPtr`-free spelling of `kCGColorSpaceSRGB`'s value, for
+/// the pure [`needs_srgb_redraw`] decision (a test pins it to the constant).
+const SRGB_NAME: &str = "kCGColorSpaceSRGB";
+
+/// Whether a CGImage must be redrawn into an sRGB BGRA bitmap before its
+/// bytes can be used: either its colour space isn't sRGB (e.g. the display's
+/// Display P3 or an unnamed ICC profile — `CGDisplayCreateImage` returns
+/// those) or its memory layout isn't the BGRA the converters read.
+fn needs_srgb_redraw(color_space_name: Option<&str>, layout_ok: bool) -> bool {
+    !layout_ok || color_space_name != Some(SRGB_NAME)
+}
+
+/// Validate `cg_image` (size, pixel layout, colour space, buffer length) and
+/// run `f` over a borrowed sRGB BGRA view of its pixels. Images that aren't
+/// already sRGB BGRA are first converted by CoreGraphics (drawn into an sRGB
+/// bitmap context), so callers always see sRGB.
 fn with_cg_pixels<R>(
     cg_image: &objc2_core_graphics::CGImage,
     f: impl FnOnce(&CgPixels<'_>) -> Result<R, CaptureError>,
 ) -> Result<R, CaptureError> {
-    use objc2_core_graphics::{CGDataProvider, CGImage};
+    use objc2_core_graphics::{CGColorSpace, CGImage};
     let img = Some(cg_image);
     let width = CGImage::width(img) as u32;
     let height = CGImage::height(img) as u32;
@@ -735,7 +868,34 @@ fn with_cg_pixels<R>(
         CGImage::bits_per_component(img),
         CGImage::alpha_info(img),
         CGImage::byte_order_info(img),
-    )?;
+    );
+    let space_name = CGImage::color_space(img)
+        .and_then(|cs| CGColorSpace::name(Some(&cs)))
+        .map(|n| n.to_string());
+    match layout {
+        Ok(layout) if !needs_srgb_redraw(space_name.as_deref(), true) => {
+            with_direct_pixels(cg_image, width, height, layout, f)
+        }
+        _ => {
+            tracing::debug!(
+                "[capture] converting {width}x{height} capture from {} to sRGB",
+                space_name.as_deref().unwrap_or("an unnamed colour space")
+            );
+            with_srgb_redraw(cg_image, width, height, f)
+        }
+    }
+}
+
+/// Borrow the image's own pixel buffer (already sRGB BGRA).
+fn with_direct_pixels<R>(
+    cg_image: &objc2_core_graphics::CGImage,
+    width: u32,
+    height: u32,
+    layout: BgraLayout,
+    f: impl FnOnce(&CgPixels<'_>) -> Result<R, CaptureError>,
+) -> Result<R, CaptureError> {
+    use objc2_core_graphics::{CGDataProvider, CGImage};
+    let img = Some(cg_image);
     let bytes_per_row = CGImage::bytes_per_row(img);
     let row_bytes = (width as usize)
         .checked_mul(4)
@@ -761,6 +921,59 @@ fn with_cg_pixels<R>(
         bytes_per_row,
         layout,
         bytes,
+    })
+}
+
+/// Draw the image into a tightly-packed sRGB bitmap context laid out as
+/// BGRA in memory (`PremultipliedFirst | ByteOrder32Little`) — CoreGraphics
+/// does the colour-space conversion — and expose that buffer. Screen
+/// captures are opaque, so alpha is forced to 255.
+fn with_srgb_redraw<R>(
+    cg_image: &objc2_core_graphics::CGImage,
+    width: u32,
+    height: u32,
+    f: impl FnOnce(&CgPixels<'_>) -> Result<R, CaptureError>,
+) -> Result<R, CaptureError> {
+    use objc2_core_foundation::{CGPoint, CGRect, CGSize};
+    use objc2_core_graphics::{
+        CGBitmapContextCreate, CGColorSpace, CGContext, CGImageAlphaInfo, CGImageByteOrderInfo,
+    };
+    let (w, h) = (width as usize, height as usize);
+    let row_bytes = w.checked_mul(4).ok_or(CaptureError::ImageDataFailed)?;
+    let len = row_bytes
+        .checked_mul(h)
+        .ok_or(CaptureError::ImageDataFailed)?;
+    let mut buf = vec![0u8; len];
+    let space = CGColorSpace::with_name(Some(srgb_color_space_name()))
+        .ok_or(CaptureError::ImageDataFailed)?;
+    let info = CGImageAlphaInfo::PremultipliedFirst.0 | CGImageByteOrderInfo::Order32Little.0;
+    {
+        // SAFETY: `buf` is `row_bytes * h` bytes, outlives the context (which
+        // is dropped at the end of this block) and isn't touched meanwhile.
+        let ctx = unsafe {
+            CGBitmapContextCreate(
+                buf.as_mut_ptr().cast(),
+                w,
+                h,
+                8,
+                row_bytes,
+                Some(&space),
+                info,
+            )
+        }
+        .ok_or(CaptureError::ImageDataFailed)?;
+        let rect = CGRect::new(
+            CGPoint::ZERO,
+            CGSize::new(f64::from(width), f64::from(height)),
+        );
+        CGContext::draw_image(Some(&ctx), rect, Some(cg_image));
+    }
+    f(&CgPixels {
+        width,
+        height,
+        bytes_per_row: row_bytes,
+        layout: BgraLayout { force_opaque: true },
+        bytes: &buf,
     })
 }
 
@@ -920,6 +1133,139 @@ mod tests {
     }
 
     #[test]
+    fn srgb_name_matches_coregraphics_constant() {
+        assert_eq!(srgb_color_space_name().to_string(), SRGB_NAME);
+    }
+
+    #[test]
+    fn srgb_redraw_decision() {
+        // Already sRGB BGRA: use the bytes as-is.
+        assert!(!needs_srgb_redraw(Some(SRGB_NAME), true));
+        // Display colour spaces / unnamed ICC profiles must be converted.
+        assert!(needs_srgb_redraw(Some("kCGColorSpaceDisplayP3"), true));
+        assert!(needs_srgb_redraw(Some("kCGColorSpaceExtendedSRGB"), true));
+        assert!(needs_srgb_redraw(None, true));
+        // Non-BGRA layouts are redrawn even when sRGB.
+        assert!(needs_srgb_redraw(Some(SRGB_NAME), false));
+    }
+
+    fn solid(byte: u8) -> RgbaImage {
+        RgbaImage::from_pixel(4, 4, image::Rgba([byte, byte, byte, 255]))
+    }
+
+    #[test]
+    fn screenshot_prefers_primary_and_skips_fallback() {
+        let img = screenshot_with_fallback(|| Ok(solid(7)), || panic!("fallback must not run"));
+        assert_eq!(img.unwrap().get_pixel(0, 0)[0], 7);
+    }
+
+    #[test]
+    fn screenshot_falls_back_on_error_or_black() {
+        let img = screenshot_with_fallback(|| Err(CaptureError::CaptureFailed), || Some(solid(9)));
+        assert_eq!(img.unwrap().get_pixel(0, 0)[0], 9);
+        let img = screenshot_with_fallback(|| Ok(solid(0)), || Some(solid(9)));
+        assert_eq!(img.unwrap().get_pixel(0, 0)[0], 9);
+    }
+
+    #[test]
+    fn screenshot_black_beats_error() {
+        // Both black: keep the primary's image (the screen may be black).
+        assert!(screenshot_with_fallback(|| Ok(solid(0)), || Some(solid(0))).is_ok());
+        assert!(screenshot_with_fallback(|| Ok(solid(0)), || None).is_ok());
+        assert!(
+            screenshot_with_fallback(|| Err(CaptureError::CaptureFailed), || Some(solid(0)))
+                .is_ok()
+        );
+        assert!(matches!(
+            screenshot_with_fallback(|| Err(CaptureError::NoDisplay(3)), || None),
+            Err(CaptureError::NoDisplay(3))
+        ));
+    }
+
+    #[test]
+    fn recording_source_fallback_selection() {
+        assert_eq!(
+            start_with_fallback(|| Ok("stream"), || panic!("unused")).unwrap(),
+            "stream"
+        );
+        assert_eq!(
+            start_with_fallback(|| Err(CaptureError::CaptureFailed), || Ok("shots")).unwrap(),
+            "shots"
+        );
+        // A missing display isn't retried with the fallback.
+        let r: Result<&str, _> =
+            start_with_fallback(|| Err(CaptureError::NoDisplay(2)), || panic!("unused"));
+        assert!(matches!(r, Err(CaptureError::NoDisplay(2))));
+        // Both fail: the fallback's error is reported.
+        let r: Result<&str, _> = start_with_fallback(
+            || Err(CaptureError::CaptureFailed),
+            || Err(CaptureError::ImageDataFailed),
+        );
+        assert!(matches!(r, Err(CaptureError::ImageDataFailed)));
+    }
+
+    #[test]
+    fn recording_source_invalid_display_errors() {
+        assert!(matches!(
+            RecordingSource::start(99, Some(1920), 30),
+            Err(CaptureError::NoDisplay(99))
+        ));
+    }
+
+    /// Converting a Display P3 image must yield sRGB BGRA with alpha 255:
+    /// pure P3 red is outside sRGB, so it clips to (255, 0, 0)-ish.
+    #[test]
+    fn p3_image_is_converted_to_srgb() {
+        use objc2_core_graphics::{
+            CGBitmapContextCreate, CGBitmapContextCreateImage, CGColorSpace, CGImageAlphaInfo,
+            CGImageByteOrderInfo,
+        };
+        let (w, h) = (4usize, 2usize);
+        // BGRA, NoneSkipFirst: pure red in Display P3.
+        let mut px = [0u8, 0, 255, 0].repeat(w * h);
+        let p3_name = objc2_core_foundation::CFString::from_static_str("kCGColorSpaceDisplayP3");
+        let p3 = CGColorSpace::with_name(Some(&p3_name)).expect("P3 colour space");
+        let info = CGImageAlphaInfo::NoneSkipFirst.0 | CGImageByteOrderInfo::Order32Little.0;
+        let ctx = unsafe {
+            CGBitmapContextCreate(px.as_mut_ptr().cast(), w, h, 8, w * 4, Some(&p3), info)
+        }
+        .expect("bitmap context");
+        let img = CGBitmapContextCreateImage(Some(&ctx)).expect("image");
+        let rgba = cg_image_to_rgba(&img).unwrap();
+        let p = rgba.get_pixel(0, 0);
+        assert_eq!(p[3], 255, "alpha forced opaque");
+        assert!(
+            p[0] >= 250 && p[1] <= 10 && p[2] <= 10,
+            "P3 red clips to sRGB red: {p:?}"
+        );
+
+        let bgra = cg_image_to_bgra(&img).unwrap();
+        assert_eq!(bgra.bytes.len(), w * h * 4);
+        assert_eq!(bgra.bytes[3], 255);
+    }
+
+    #[test]
+    fn srgb_image_bytes_pass_through_unchanged() {
+        use objc2_core_graphics::{
+            CGBitmapContextCreate, CGBitmapContextCreateImage, CGColorSpace, CGImageAlphaInfo,
+            CGImageByteOrderInfo,
+        };
+        let (w, h) = (3usize, 2usize);
+        let mut px: Vec<u8> = (0..w * h)
+            .flat_map(|i| [i as u8 * 10, 100, 200, 255])
+            .collect();
+        let srgb = CGColorSpace::with_name(Some(srgb_color_space_name())).unwrap();
+        let info = CGImageAlphaInfo::PremultipliedFirst.0 | CGImageByteOrderInfo::Order32Little.0;
+        let ctx = unsafe {
+            CGBitmapContextCreate(px.as_mut_ptr().cast(), w, h, 8, w * 4, Some(&srgb), info)
+        }
+        .unwrap();
+        let img = CGBitmapContextCreateImage(Some(&ctx)).unwrap();
+        let bgra = cg_image_to_bgra(&img).unwrap();
+        assert_eq!(bgra.bytes, px);
+    }
+
+    #[test]
     fn test_capture_fullscreen_main() {
         let img = capture_fullscreen(0);
         if let Ok(img) = img {
@@ -951,7 +1297,7 @@ mod tests {
 
     #[test]
     fn test_get_shareable_displays() {
-        let displays = get_shareable_displays();
+        let displays = get_shareable_displays(SCK_CONTENT_TIMEOUT);
         if let Some(displays) = displays {
             assert!(!displays.is_empty());
         }

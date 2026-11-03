@@ -31,6 +31,10 @@ const STOP_KILL_GRACE: Duration = Duration::from_secs(5);
 /// A continuous run of failed frame captures lasting this long ends the
 /// recording with `CaptureFailed` instead of silently freezing the video.
 const CAPTURE_FAILURE_LIMIT: Duration = Duration::from_secs(3);
+/// How long the macOS worker waits for the SCStream's first frame before
+/// starting the file with a black frame.
+#[cfg(target_os = "macos")]
+const FIRST_FRAME_TIMEOUT: Duration = Duration::from_secs(2);
 
 #[derive(Copy, Clone)]
 enum PixelFormat {
@@ -458,6 +462,8 @@ enum LoopError {
     /// the frames recorded so far are kept, but the error is returned.
     Capture(RecordError),
     /// Setup failure inside the worker; ffmpeg is killed.
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    // constructed by the macOS loop only
     Fatal(RecordError),
 }
 
@@ -645,6 +651,7 @@ fn frame_byte_len(width: u32, height: u32) -> Result<usize, RecordError> {
 /// Clip `region` (native display pixels) to the display, then scale it into
 /// the downscaled output frame and round to even (libx264/yuv420p needs even
 /// dimensions). Errors if nothing usable remains.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))] // used by the macOS capture loop only
 #[allow(clippy::cast_possible_wrap)]
 fn scale_region_to_output(
     region: &snapforge_domain::Rect,
@@ -846,8 +853,8 @@ fn start_recording_macos_bgra(
     let max_dimension = Some(1920u32);
 
     // Compute output dimensions up front WITHOUT touching SCK on the main
-    // thread — CaptureContext::new would create SCContentFilter /
-    // SCStreamConfiguration, which is exactly what we want to keep off main.
+    // thread — RecordingSource::start creates SCContentFilter / SCStream,
+    // which is exactly what we want to keep off main.
     // Reading the display's pixel size via CGDisplayCopyDisplayMode is safe.
     let (full_width, full_height) =
         capture::macos::compute_recording_output_size(config.display, max_dimension)
@@ -914,6 +921,7 @@ fn start_recording_macos_bgra(
     let state_clone = state.clone();
     let frame_interval = Duration::from_secs_f64(1.0 / config.fps as f64);
     let display = config.display;
+    let fps = config.fps;
 
     // Click tracking — only when the "show clicks" pref is on. When off, the
     // tap is never started and `click_snapshot` stays empty, so the hot-path
@@ -930,8 +938,18 @@ fn start_recording_macos_bgra(
         // feeding click_tracker until the capture loop exits.
         let _click_tap_handle = click_tap_handle;
         let outcome = (|| -> Result<(), LoopError> {
-            let ctx = capture::CaptureContext::new(display, max_dimension)
+            // SCStream (frames pushed by SCK, newest kept in a slot) with an
+            // automatic fallback to one SCScreenshotManager shot per frame.
+            let mut source = capture::RecordingSource::start(display, max_dimension, fps)
                 .map_err(|e| LoopError::Fatal(RecordError::CaptureFailed(e.to_string())))?;
+            tracing::info!(
+                "[record] capturing via {}",
+                if source.is_stream() {
+                    "SCStream"
+                } else {
+                    "per-frame screenshots (fallback)"
+                }
+            );
 
             // Two scratch buffers reused across the entire recording: one holds the
             // most recent captured (and cropped) frame, the other is the per-output
@@ -946,9 +964,10 @@ fn start_recording_macos_bgra(
             let mut click_snapshot: Vec<snapforge_capture::clicks::ClickEvent> =
                 Vec::with_capacity(32);
 
-            // Capture the initial frame.
-            match ctx.capture_frame_raw_bgra() {
-                Ok(f) => crop_bgra_to_region_into(
+            // Capture the initial frame (the stream waits briefly for SCK's
+            // first delivery).
+            let first = source.first_frame(FIRST_FRAME_TIMEOUT, |f| {
+                crop_bgra_to_region_into(
                     &f.bytes,
                     f.width,
                     f.height,
@@ -956,7 +975,15 @@ fn start_recording_macos_bgra(
                     width,
                     height,
                     &mut captured,
-                ),
+                );
+            });
+            match first {
+                Ok(true) => {}
+                Ok(false) => {
+                    tracing::warn!(
+                        "[record] no frame from the stream within {FIRST_FRAME_TIMEOUT:?}; recording starts with a black frame"
+                    );
+                }
                 Err(e) => {
                     // The zeroed scratch buffer is written instead — the
                     // recording starts with a black frame, so leave a trace.
@@ -995,19 +1022,21 @@ fn start_recording_macos_bgra(
                 };
                 write_repeated(&mut writer, prev, due - 1).map_err(LoopError::Write)?;
 
-                match ctx.capture_frame_raw_bgra() {
-                    Ok(raw) => {
-                        failures.record_success();
-                        crop_bgra_to_region_into(
-                            &raw.bytes,
-                            raw.width,
-                            raw.height,
-                            region_in_scaled.as_ref(),
-                            width,
-                            height,
-                            &mut captured,
-                        );
-                    }
+                // A stream with no new frame (screen idle) is a success: the
+                // previous capture is still the current screen content.
+                let frame = source.next_frame(|raw| {
+                    crop_bgra_to_region_into(
+                        &raw.bytes,
+                        raw.width,
+                        raw.height,
+                        region_in_scaled.as_ref(),
+                        width,
+                        height,
+                        &mut captured,
+                    );
+                });
+                match frame {
+                    Ok(_) => failures.record_success(),
                     Err(e) => {
                         // Keep the previous capture (the clicks overlay still
                         // animates over it); give up after a sustained run.
@@ -1217,6 +1246,7 @@ fn draw_clicks_bgra(
 // Forced inline: this is the per-pixel blend on the recording hot loop; the
 // call overhead is measurable, so we deliberately request always-inline.
 #[allow(clippy::inline_always)]
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))] // used by the macOS capture loop only
 #[inline(always)]
 fn blend_u8(src: u8, dst: u8, alpha: u8) -> u8 {
     let s = u16::from(src);
@@ -1888,6 +1918,67 @@ mod tests {
                 Err(e) => panic!("stop failed: {e:?}"),
             }
         }
+    }
+
+    /// End-to-end: record 2 s of display 0 through the real capture path
+    /// (SCStream, or its screenshot fallback) and check the MP4 with
+    /// `ffprobe`. Needs Screen Recording permission for the test binary and
+    /// ffmpeg/ffprobe on PATH, so it's opt-in:
+    /// `cargo test -p snapforge-encode -- --ignored e2e_record_two_seconds --nocapture`
+    #[cfg(target_os = "macos")]
+    #[test]
+    #[ignore = "needs Screen Recording permission, a display, ffmpeg and ffprobe"]
+    fn e2e_record_two_seconds() {
+        assert!(
+            snapforge_capture::capture::has_permission(),
+            "the test binary lacks Screen Recording permission (System Settings > Privacy & Security > Screen Recording)"
+        );
+        let tmp = tempfile::tempdir().unwrap();
+        let out = tmp.path().join("e2e.mp4");
+        let mut config = test_config(&out);
+        config.fps = 30;
+        let handle = start_recording(config).expect("recording should start");
+        std::thread::sleep(Duration::from_secs(2));
+        handle.stop().expect("recording should stop cleanly");
+
+        let probe = Command::new("ffprobe")
+            .args([
+                "-v",
+                "error",
+                "-select_streams",
+                "v:0",
+                "-count_frames",
+                "-show_entries",
+                "stream=width,height,pix_fmt,nb_read_frames,color_space,color_primaries,color_transfer,color_range",
+                "-of",
+                "default=noprint_wrappers=1",
+            ])
+            .arg(&out)
+            .output()
+            .expect("ffprobe should run");
+        let text = String::from_utf8_lossy(&probe.stdout).to_string();
+        eprintln!("ffprobe:\n{text}");
+        assert!(
+            probe.status.success(),
+            "ffprobe failed: {}",
+            String::from_utf8_lossy(&probe.stderr)
+        );
+        let field = |k: &str| {
+            text.lines()
+                .find_map(|l| l.strip_prefix(&format!("{k}=")))
+                .unwrap_or_default()
+                .to_string()
+        };
+        let frames: u64 = field("nb_read_frames").parse().unwrap_or(0);
+        assert!(
+            (45..=75).contains(&frames),
+            "expected ~60 frames at 30 fps, got {frames}"
+        );
+        assert_eq!(field("pix_fmt"), "yuv420p");
+        assert_eq!(field("color_primaries"), "bt709");
+        assert_eq!(field("color_transfer"), "bt709");
+        assert_eq!(field("color_space"), "bt709");
+        assert_eq!(field("color_range"), "tv");
     }
 
     // --- blend_u8: pure integer alpha-blend correctness ---
