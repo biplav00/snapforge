@@ -9,7 +9,9 @@
 #include <QThread>
 #include <QtGlobal>
 
+#include <atomic>
 #include <csignal>
+#include <cstring>
 #include <cstdlib>
 #include <exception>
 
@@ -66,10 +68,14 @@ void qtMessageHandler(QtMsgType type, const QMessageLogContext &ctx, const QStri
 }
 
 // --- async-signal-safe crash capture -------------------------------------
-int g_crashFd = -1;
+// Read from signal handlers, so it is a lock-free atomic. It is set to -1
+// BEFORE the fd is closed and only published after a successful (re)open, so
+// a crash mid-rotation never writes into a closed (or recycled) descriptor.
+std::atomic<int> g_crashFd{-1};
 
 void writeRaw(const char *s) {
-    if (g_crashFd >= 0) { ssize_t n = ::write(g_crashFd, s, strlen(s)); (void)n; }
+    const int fd = g_crashFd.load(std::memory_order_relaxed);
+    if (fd >= 0) { ssize_t n = ::write(fd, s, strlen(s)); (void)n; }
     ssize_t n2 = ::write(STDERR_FILENO, s, strlen(s)); (void)n2;
 }
 
@@ -132,12 +138,21 @@ Logger *Logger::instance() {
 void Logger::install() {
     Logger *l = instance();
 
-    // Log everything during development: enable all app categories down to debug,
-    // mute only Qt's own noisy internals.
-    QLoggingCategory::setFilterRules(QStringLiteral(
-        "*.debug=true\n"
-        "qt.*.debug=false\n"
-        "qt.*.info=false\n"));
+    // Debug builds log everything down to debug (muting only Qt's own noisy
+    // internals). Release builds log Info and above, so the shipped app
+    // doesn't fill the file with per-event debug chatter; set
+    // SNAPFORGE_DEBUG_LOG=1 to get debug output from a release build.
+#ifdef QT_DEBUG
+    const bool verbose = true;
+#else
+    const bool verbose = qEnvironmentVariableIntValue("SNAPFORGE_DEBUG_LOG") == 1;
+#endif
+    QLoggingCategory::setFilterRules(verbose
+        ? QStringLiteral("*.debug=true\n"
+                         "qt.*.debug=false\n"
+                         "qt.*.info=false\n")
+        : QStringLiteral("*.debug=false\n"
+                         "qt.*.info=false\n"));
 
     qInstallMessageHandler(qtMessageHandler);
     l->installCrashHandlers();
@@ -146,18 +161,42 @@ void Logger::install() {
 Logger::Logger(QObject *parent) : QObject(parent) {
     QDir().mkpath(logDir());
     m_filePath = logDir() + QStringLiteral("/snapforge.log");
-    m_file.setFileName(m_filePath);
-    m_file.open(QIODevice::Append | QIODevice::Text);
-    if (m_file.isOpen()) {
-        m_fd = m_file.handle();
-        g_crashFd = m_fd;
-    }
+    QMutexLocker lock(&m_mutex);
+    reopen(QIODevice::Append | QIODevice::Text);
     rotateIfNeeded();
 }
 
 Logger::~Logger() {
+    shutdown();
+}
+
+void Logger::shutdown() {
     QMutexLocker lock(&m_mutex);
-    if (m_file.isOpen()) m_file.close();
+    m_shutdown = true;
+    closeFile();
+}
+
+void Logger::closeFile() {
+    // Caller holds m_mutex. Unpublish the fd first (see g_crashFd).
+    g_crashFd.store(-1);
+    m_fd = -1;
+    if (m_file.isOpen()) {
+        m_file.flush();
+        m_file.close();
+    }
+}
+
+void Logger::reopen(QIODevice::OpenMode mode) {
+    // Caller holds m_mutex.
+    closeFile();
+    m_file.setFileName(m_filePath);
+    if (m_file.open(mode)) {
+        m_fileBytes = m_file.size();
+        m_fd = m_file.handle();
+        g_crashFd.store(m_fd);
+    } else {
+        m_fileBytes = 0;
+    }
 }
 
 void Logger::installCrashHandlers() {
@@ -197,10 +236,16 @@ void Logger::log(QtMsgType level, const QString &category, const QString &messag
         m_buffer.push_back(entry);
         while ((int)m_buffer.size() > kBufferMax) m_buffer.pop_front();
 
-        if (m_file.isOpen()) {
+        if (!m_shutdown && m_file.isOpen()) {
             QByteArray line = (entry.formatted() + QStringLiteral("\n")).toUtf8();
             m_file.write(line);
-            m_file.flush();
+            m_fileBytes += line.size();
+            // Debug lines stay in QFile's buffer (cheap; flushed by the next
+            // info+ line or at shutdown). Info and above hit the disk
+            // immediately so the lines leading up to a crash are on disk —
+            // the crash handler writes the raw fd and can't flush QFile.
+            if (level != QtDebugMsg)
+                m_file.flush();
             rotateIfNeeded();
         }
     }
@@ -220,11 +265,9 @@ void Logger::clear() {
     {
         QMutexLocker lock(&m_mutex);
         m_buffer.clear();
-        if (m_file.isOpen()) {
-            m_file.close();
-            m_file.open(QIODevice::WriteOnly | QIODevice::Truncate | QIODevice::Text);
-            if (m_file.isOpen()) { m_fd = m_file.handle(); g_crashFd = m_fd; }
-        }
+        QFile::remove(m_filePath + QStringLiteral(".1"));
+        if (!m_shutdown && m_file.isOpen())
+            reopen(QIODevice::WriteOnly | QIODevice::Truncate | QIODevice::Text);
     }
     emit cleared();
 }
@@ -232,13 +275,11 @@ void Logger::clear() {
 void Logger::rotateIfNeeded() {
     // Caller holds m_mutex.
     if (!m_file.isOpen()) return;
-    if (m_file.size() < kMaxFileBytes) return;
+    if (m_fileBytes < kMaxFileBytes) return;
 
-    m_file.close();
+    closeFile();
     QString rotated = m_filePath + QStringLiteral(".1");
     QFile::remove(rotated);
     QFile::rename(m_filePath, rotated);
-    m_file.setFileName(m_filePath);
-    m_file.open(QIODevice::Append | QIODevice::Text);
-    if (m_file.isOpen()) { m_fd = m_file.handle(); g_crashFd = m_fd; }
+    reopen(QIODevice::Append | QIODevice::Text);
 }

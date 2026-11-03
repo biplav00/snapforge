@@ -1,5 +1,6 @@
 #include "AnnotationState.h"
 #include <QUuid>
+#include <type_traits>
 
 AnnotationState::AnnotationState(QObject *parent)
     : QObject(parent)
@@ -51,6 +52,41 @@ void AnnotationState::clearAnnotations()
     emit changed();
 }
 
+void AnnotationState::translateAnnotation(Annotation &a, QPointF delta)
+{
+    const double dx = delta.x();
+    const double dy = delta.y();
+    std::visit([&](auto &d) {
+        using T = std::decay_t<decltype(d)>;
+        if constexpr (std::is_same_v<T, ArrowData> || std::is_same_v<T, LineData> ||
+                      std::is_same_v<T, DottedLineData> || std::is_same_v<T, MeasureData>) {
+            d.startX += dx; d.startY += dy;
+            d.endX += dx;   d.endY += dy;
+        } else if constexpr (std::is_same_v<T, CircleData>) {
+            d.cx += dx; d.cy += dy;
+        } else if constexpr (std::is_same_v<T, FreehandData>) {
+            for (QPointF &pt : d.points) pt += delta;
+        } else {
+            // RectData, TextData, HighlightData, BlurData, StepsData,
+            // ColorPickerData — all anchored at (x, y).
+            d.x += dx; d.y += dy;
+        }
+    }, a.data);
+}
+
+void AnnotationState::offsetAll(QPointF delta)
+{
+    if (delta.isNull())
+        return;
+    for (Annotation &a : m_annotations) translateAnnotation(a, delta);
+    if (m_active) translateAnnotation(*m_active, delta);
+    for (auto &snap : m_undoStack)
+        for (Annotation &a : snap) translateAnnotation(a, delta);
+    for (auto &snap : m_redoStack)
+        for (Annotation &a : snap) translateAnnotation(a, delta);
+    ++m_committedRevision;
+    emit changed();
+}
 
 void AnnotationState::setActiveAnnotation(const Annotation &a)
 {

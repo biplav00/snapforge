@@ -17,6 +17,14 @@ public:
     void updateAnnotation(const QString &id, const Annotation &a);
     void clearAnnotations();
 
+    // Translate every annotation (committed, in-progress, and every undo/redo
+    // snapshot) by `delta`, in canvas-local logical coords. Used when the
+    // selection's top-left moves during an edge-resize: annotations are stored
+    // relative to the canvas origin, so without this they'd shift on screen.
+    // Not an undoable step — the snapshots move too, so undo/redo stay aligned.
+    void offsetAll(QPointF delta);
+    static void translateAnnotation(Annotation &a, QPointF delta);
+
     const std::optional<Annotation> &activeAnnotation() const { return m_active; }
     void setActiveAnnotation(const Annotation &a);
     void setActiveAnnotationQuiet(const Annotation &a);  // Update without emitting changed()

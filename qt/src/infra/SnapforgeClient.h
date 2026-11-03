@@ -112,6 +112,13 @@ bool recordStop(RecHandle handle);
 bool recordPause(RecHandle handle);
 bool recordResume(RecHandle handle);
 void recordFreeHandle(RecHandle handle);
+// Liveness probe for a running recording: 1 = worker alive, 0 = the capture/
+// encode worker has exited (a subsequent recordStop returns its error),
+// -1 = invalid handle. Cheap, non-blocking — safe to poll from a GUI timer.
+int recordIsAlive(RecHandle handle);
+// The path the core is actually writing (it may uniquify the requested name to
+// name-1.ext, ...). Empty for an invalid handle or after stop.
+QString recordOutputPath(RecHandle handle);
 
 // --- Clicks (callback + opaque handle passthrough) --------------------------
 ClickHandle clicksStart(ClickCallback callback, void *userData);

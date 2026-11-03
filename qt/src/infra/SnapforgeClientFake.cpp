@@ -57,10 +57,37 @@ RecHandle recordStart(const RecordReq &req) {
     test::state().lastRecordReq = req;
     return test::state().recordStartSucceeds ? RecHandle{&kRecToken} : RecHandle{};
 }
-bool recordStop(RecHandle handle) { return handle.valid(); }
-bool recordPause(RecHandle handle) { return handle.valid(); }
-bool recordResume(RecHandle handle) { return handle.valid(); }
+bool recordStop(RecHandle handle) {
+    auto &st = test::state();
+    ++st.recordStopCalls;
+    // Optional blocking hook so tests can hold the stop worker mid-finalize.
+    // Runs on the stop worker thread.
+    // Copy first: a test may reassign the hook while a worker is parked in it.
+    if (auto hook = st.recordStopHook) hook();
+    if (!handle.valid()) return false;
+    if (!st.recordStopSucceeds) {
+        st.lastError = st.recordStopError;
+        return false;
+    }
+    return true;
+}
+bool recordPause(RecHandle handle) {
+    return handle.valid() && test::state().recordPauseSucceeds;
+}
+bool recordResume(RecHandle handle) {
+    return handle.valid() && test::state().recordResumeSucceeds;
+}
 void recordFreeHandle(RecHandle) {}
+QString recordOutputPath(RecHandle handle) {
+    if (!handle.valid()) return QString();
+    const auto &st = test::state();
+    if (st.recordOutputPathOverride) return *st.recordOutputPathOverride;
+    return st.lastRecordReq ? st.lastRecordReq->outputPath : QString();
+}
+int recordIsAlive(RecHandle handle) {
+    if (!handle.valid()) return -1;
+    return test::state().recordAlive ? 1 : 0;
+}
 
 ClickHandle clicksStart(ClickCallback, void *) {
     if (!test::state().clicksStartSucceeds) {

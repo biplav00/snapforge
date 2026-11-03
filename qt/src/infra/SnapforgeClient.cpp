@@ -140,6 +140,10 @@ bool recordStop(RecHandle handle) { return snapforge_record_stop(handle.p) == 0;
 bool recordPause(RecHandle handle) { return snapforge_record_pause(handle.p) == 0; }
 bool recordResume(RecHandle handle) { return snapforge_record_resume(handle.p) == 0; }
 void recordFreeHandle(RecHandle handle) { snapforge_record_free_handle(handle.p); }
+int recordIsAlive(RecHandle handle) { return snapforge_record_is_alive(handle.p); }
+QString recordOutputPath(RecHandle handle) {
+    return takeOwnedString(snapforge_record_output_path(handle.p));
+}
 
 ClickHandle clicksStart(ClickCallback callback, void *userData) {
     // sf::ClickCallback and SnapforgeClickCallback have the same signature.

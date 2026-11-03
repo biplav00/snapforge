@@ -69,7 +69,7 @@ void TestSmoke::configToHotkeys_roundTrip() {
 
         QVERIFY2(!shortcuts::glyphs(chord).isEmpty(), qPrintable(chord));
 
-#ifdef Q_OS_MAC
+#ifdef Q_OS_MACOS
         uint32_t vk = 0, mods = 0;
         QVERIFY2(shortcuts::toCarbon(chord, &vk, &mods),
                  qPrintable(QStringLiteral("toCarbon failed for %1=%2")

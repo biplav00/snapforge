@@ -14,6 +14,7 @@
 #include <QShowEvent>
 #include <QTabWidget>
 #include <QTimer>
+#include <QPointer>
 #include <QVBoxLayout>
 #include <QKeyEvent>
 #include <QEvent>
@@ -28,6 +29,8 @@
 
 #include "SnapforgeClient.h"
 #include "Logger.h"
+#include "Shortcuts.h"
+#include "HotkeyKeyMap.h"
 
 // ===========================================================================
 // Theme colors
@@ -254,6 +257,10 @@ PreferencesWindow::PreferencesWindow(QWidget *parent)
     resize(620, 560);
     setStyleSheet(windowStyle());
     buildUi();
+    // Load the saved config NOW, not on first show: main.cpp reads the
+    // getters for every capture from app start, and the window may never be
+    // opened in a session.
+    loadConfig();
 }
 
 // ===========================================================================
@@ -411,6 +418,9 @@ QWidget *PreferencesWindow::buildScreenshotsTab()
     m_fmtPngBtn  = new QPushButton(QStringLiteral("PNG"),  w);
     m_fmtJpgBtn  = new QPushButton(QStringLiteral("JPG"),  w);
     m_fmtWebpBtn = new QPushButton(QStringLiteral("WebP"), w);
+    m_fmtPngBtn->setToolTip(QStringLiteral("PNG — lossless"));
+    m_fmtJpgBtn->setToolTip(QStringLiteral("JPG — lossy, uses the quality setting"));
+    m_fmtWebpBtn->setToolTip(QStringLiteral("WebP — lossless (quality setting does not apply)"));
 
     for (auto *btn : {m_fmtPngBtn, m_fmtJpgBtn, m_fmtWebpBtn}) {
         btn->setCheckable(true);
@@ -442,7 +452,9 @@ QWidget *PreferencesWindow::buildScreenshotsTab()
     });
 
     // — Quality —
-    layout->addWidget(makeSectionLabel(QStringLiteral("Quality"), w));
+    // Only JPG is lossy: PNG and WebP (the encoder writes lossless WebP) both
+    // ignore the quality value, so the slider is disabled for them.
+    layout->addWidget(makeSectionLabel(QStringLiteral("JPG Quality"), w));
 
     auto *qualRow = new QHBoxLayout;
     qualRow->setSpacing(12);
@@ -463,6 +475,13 @@ QWidget *PreferencesWindow::buildScreenshotsTab()
         m_qualityLabel->setText(QString::number(v));
     });
 
+    auto *qualHint = new QLabel(
+        QStringLiteral("Applies to JPG only. PNG and WebP are saved lossless."), w);
+    qualHint->setWordWrap(true);
+    qualHint->setStyleSheet(QStringLiteral(
+        "QLabel { color: %1; font-size: 11px; background: transparent; }").arg(g_theme.textMuted));
+    layout->addWidget(qualHint);
+
     // — Filename pattern —
     layout->addWidget(makeSectionLabel(QStringLiteral("Filename Pattern"), w));
 
@@ -470,6 +489,14 @@ QWidget *PreferencesWindow::buildScreenshotsTab()
     m_filenamePattern->setPlaceholderText(QStringLiteral("screenshot-{date}-{time}"));
     m_filenamePattern->setStyleSheet(lineEditStyle());
     layout->addWidget(m_filenamePattern);
+
+    auto *patternHint = new QLabel(
+        QStringLiteral("Tokens: {date}, {time}. Must not contain / or \\ or \"..\". "
+                       "Without {time}, repeated captures get a numbered suffix."), w);
+    patternHint->setWordWrap(true);
+    patternHint->setStyleSheet(QStringLiteral(
+        "QLabel { color: %1; font-size: 11px; background: transparent; }").arg(g_theme.textMuted));
+    layout->addWidget(patternHint);
 
     layout->addStretch();
     onScreenshotFormatChanged();
@@ -646,6 +673,15 @@ const HotkeyDef kHotkeyDefs[] = {
     {"actions", "redo",       "Redo",           "Cmd+Shift+Z"},
     {"actions", "cancel",     "Cancel",         "Escape"},
 };
+
+QString defaultShortcutFor(const QString &section, const QString &actionKey)
+{
+    for (const HotkeyDef &d : kHotkeyDefs) {
+        if (section == QLatin1String(d.section) && actionKey == QLatin1String(d.actionKey))
+            return QString::fromLatin1(d.defaultShortcut);
+    }
+    return {};
+}
 } // namespace
 
 QWidget *PreferencesWindow::buildHotkeysTab()
@@ -969,7 +1005,11 @@ void PreferencesWindow::refreshPermissionStatus()
 void PreferencesWindow::showEvent(QShowEvent *event)
 {
     QWidget::showEvent(event);
-    loadConfig();
+    // Reload only on an app-initiated show (tray / hotkey reopening a closed
+    // window). Spontaneous shows — un-minimise, Space switch, the window
+    // server re-exposing it — must not wipe edits the user hasn't saved yet.
+    if (!event->spontaneous())
+        loadConfig();
     // TCC state can change while the window is hidden (user toggles in System
     // Settings); re-query on every show so the badge is never stale.
     refreshPermissionStatus();
@@ -1008,7 +1048,13 @@ bool PreferencesWindow::eventFilter(QObject *obj, QEvent *event)
             key == Qt::Key_Alt    || key == Qt::Key_Meta) {
             return false;
         }
-        QString newShortcut = formatKeyToShortcut(key, ke->modifiers());
+        const QString newShortcut =
+            formatKeyToShortcut(key, ke->modifiers(), ke->nativeVirtualKey());
+        if (newShortcut.isEmpty()) {
+            // Unrepresentable key — keep listening rather than recording junk.
+            showStatus(QStringLiteral("That key can't be used as a shortcut."), true);
+            return true;
+        }
         stopRecording(m_recordingRowIndex, true, newShortcut);
         return true;
     }
@@ -1041,12 +1087,14 @@ void PreferencesWindow::startRecording(int rowIndex)
     // Grab keyboard focus
     grabKeyboard();
     installEventFilter(this);
+    emit hotkeyCaptureActive(true);
 }
 
 void PreferencesWindow::stopRecording(int rowIndex, bool accept, const QString &newShortcut)
 {
     if (rowIndex < 0 || rowIndex >= m_hotkeyRows.size()) return;
 
+    const bool wasCapturing = m_recordingRowIndex >= 0;
     HotkeyRow &row = m_hotkeyRows[rowIndex];
     row.recording = false;
 
@@ -1067,6 +1115,8 @@ void PreferencesWindow::stopRecording(int rowIndex, bool accept, const QString &
 
     m_recordingRowIndex = -1;
     releaseKeyboard();
+    if (wasCapturing)
+        emit hotkeyCaptureActive(false);
 }
 
 void PreferencesWindow::refreshBadge(int rowIndex)
@@ -1089,31 +1139,60 @@ void PreferencesWindow::refreshBadge(int rowIndex)
     rowLayout->insertWidget(idx < 0 ? 1 : idx, row.badgeWidget, 0, Qt::AlignVCenter);
 }
 
-// Convert Qt key + modifiers to a shortcut string like "Cmd+Shift+S"
-QString PreferencesWindow::formatKeyToShortcut(int key, Qt::KeyboardModifiers mods)
+// Convert Qt key + modifiers to a shortcut string like "Cmd+Shift+S". Token
+// names must stay parseable by shortcuts::toQtKey / toCarbon.
+QString PreferencesWindow::formatKeyToShortcut(int key, Qt::KeyboardModifiers mods,
+                                               quint32 nativeVirtualKey)
 {
-    QStringList parts;
-    if (mods & Qt::ControlModifier) parts << QStringLiteral("Cmd");
-    if (mods & Qt::ShiftModifier)   parts << QStringLiteral("Shift");
-    if (mods & Qt::AltModifier)     parts << QStringLiteral("Alt");
+    if (key == 0 || key == Qt::Key_unknown)
+        return {};
+    if (key == Qt::Key_Control || key == Qt::Key_Shift || key == Qt::Key_Alt ||
+        key == Qt::Key_Meta || key == Qt::Key_CapsLock)
+        return {};
 
-    // Special key names
+    // Shift+1 arrives as Key_Exclam on macOS; record the physical key instead
+    // so the chord round-trips through the keycode-based parsers.
+    key = hotkeykeymap::unshiftedKey(key, mods, nativeVirtualKey);
+
+    QStringList parts;
+    // Qt swaps Command/Control on macOS: ⌘ is ControlModifier and the
+    // physical ⌃ key is MetaModifier (see shortcuts::toQtKey).
+    if (mods & Qt::ControlModifier) parts << QStringLiteral("Cmd");
+    if (mods & Qt::MetaModifier)    parts << QStringLiteral("Ctrl");
+    if (mods & Qt::AltModifier)     parts << QStringLiteral("Alt");
+    if (mods & Qt::ShiftModifier)   parts << QStringLiteral("Shift");
+
+    QString keyName;
     switch (key) {
-    case Qt::Key_Escape:    parts << QStringLiteral("Escape"); break;
-    case Qt::Key_Return:    parts << QStringLiteral("Enter");  break;
-    case Qt::Key_Enter:     parts << QStringLiteral("Enter");  break;
-    case Qt::Key_Backspace: parts << QStringLiteral("Backspace"); break;
-    case Qt::Key_Delete:    parts << QStringLiteral("Delete"); break;
-    case Qt::Key_Tab:       parts << QStringLiteral("Tab");    break;
-    case Qt::Key_Space:     parts << QStringLiteral("Space");  break;
-    case Qt::Key_Comma:     parts << QStringLiteral(",");       break;
-    default: {
-        QString ks = QKeySequence(key).toString();
-        if (!ks.isEmpty()) parts << ks;
+    case Qt::Key_Escape:    keyName = QStringLiteral("Escape");    break;
+    case Qt::Key_Return:
+    case Qt::Key_Enter:     keyName = QStringLiteral("Enter");     break;
+    case Qt::Key_Backspace: keyName = QStringLiteral("Backspace"); break;
+    case Qt::Key_Delete:    keyName = QStringLiteral("Delete");    break;
+    case Qt::Key_Tab:
+    case Qt::Key_Backtab:   keyName = QStringLiteral("Tab");       break;
+    case Qt::Key_Space:     keyName = QStringLiteral("Space");     break;
+    case Qt::Key_Comma:     keyName = QStringLiteral(",");         break;
+    // '+' is the chord separator, so the plus key is spelled "Plus".
+    case Qt::Key_Plus:      keyName = QStringLiteral("Plus");      break;
+    case Qt::Key_Left:      keyName = QStringLiteral("Left");      break;
+    case Qt::Key_Right:     keyName = QStringLiteral("Right");     break;
+    case Qt::Key_Up:        keyName = QStringLiteral("Up");        break;
+    case Qt::Key_Down:      keyName = QStringLiteral("Down");      break;
+    case Qt::Key_Home:      keyName = QStringLiteral("Home");      break;
+    case Qt::Key_End:       keyName = QStringLiteral("End");       break;
+    case Qt::Key_PageUp:    keyName = QStringLiteral("PageUp");    break;
+    case Qt::Key_PageDown:  keyName = QStringLiteral("PageDown");  break;
+    default:
+        keyName = QKeySequence(key).toString(QKeySequence::PortableText);
         break;
     }
-    }
-    return parts.join('+');
+    // Anything QKeySequence renders with a separator inside it can't be
+    // represented as a single token.
+    if (keyName.isEmpty() || (keyName.size() > 1 && keyName.contains(QLatin1Char('+'))))
+        return {};
+    parts << keyName;
+    return parts.join(QLatin1Char('+'));
 }
 
 // ===========================================================================
@@ -1133,8 +1212,9 @@ void PreferencesWindow::onBrowseDirectory()
 
 void PreferencesWindow::onScreenshotFormatChanged()
 {
+    // Only JPG (id 1) is lossy; PNG and WebP are written lossless.
     bool needsQuality = (m_screenshotFmtGroup &&
-                         m_screenshotFmtGroup->checkedId() != 0); // 0 = PNG
+                         m_screenshotFmtGroup->checkedId() == 1);
     if (m_quality) m_quality->setEnabled(needsQuality);
     if (m_qualityLabel) m_qualityLabel->setEnabled(needsQuality);
 }
@@ -1152,41 +1232,115 @@ void PreferencesWindow::onResetHotkeys()
             }
         }
     }
-    m_statusLabel->setText(QStringLiteral("Hotkeys reset to defaults."));
-    QTimer::singleShot(3000, this, [this]() { m_statusLabel->clear(); });
+    showStatus(QStringLiteral("Hotkeys reset to defaults (not saved yet)."), false);
+}
+
+void PreferencesWindow::showStatus(const QString &text, bool error, int clearAfterMs)
+{
+    if (!m_statusLabel) return;
+    m_statusLabel->setStyleSheet(QStringLiteral(
+        "QLabel { color: %1; font-size: 12px; font-family: 'JetBrains Mono', monospace; background: transparent; }"
+    ).arg(error ? QStringLiteral("#ef4444") : g_theme.success));
+    m_statusLabel->setText(text);
+    if (clearAfterMs > 0) {
+        QPointer<QLabel> label(m_statusLabel);
+        QTimer::singleShot(clearAfterMs, this, [label, text]() {
+            // Only clear our own message, not a newer one.
+            if (label && label->text() == text) label->clear();
+        });
+    }
+}
+
+// Canonical identity of a chord for duplicate detection: the parsed key +
+// modifier set, so "cmd+shift+s", "Shift+Cmd+S" and "Cmd+Shift+S" collide.
+static QString chordIdentity(const QString &chord)
+{
+    int key = 0;
+    Qt::KeyboardModifiers mods;
+    if (shortcuts::toQtKey(chord, &key, &mods))
+        return QStringLiteral("%1:%2").arg(int(mods)).arg(key);
+    return chord.trimmed().toUpper();
+}
+
+QString PreferencesWindow::validateBeforeSave() const
+{
+    QStringList problems;
+
+    for (const HotkeyRow &row : m_hotkeyRows) {
+        if (row.shortcut.isEmpty()) continue;
+        const QString label = row.displayName + QStringLiteral(" (") + row.shortcut + QStringLiteral(")");
+        if (row.section == QLatin1String("global")) {
+            // System-wide Carbon hotkeys: need a real modifier and a key the
+            // registration path can map, or they silently never register.
+            if (!shortcuts::isValidGlobalChord(row.shortcut)) {
+                problems << QStringLiteral("Global shortcut %1 must include ⌘, ⌃ or ⌥ "
+                                           "and a supported key.").arg(label);
+            }
+            continue;
+        }
+        // Overlay-local rows (tools / sizes / actions).
+        int key = 0;
+        Qt::KeyboardModifiers mods;
+        if (!shortcuts::toQtKey(row.shortcut, &key, &mods)) {
+            problems << QStringLiteral("%1 is not a recognised shortcut.").arg(label);
+            continue;
+        }
+        if (key == Qt::Key_Return || key == Qt::Key_Enter) {
+            problems << QStringLiteral("%1: Enter is reserved by the capture overlay "
+                                       "(confirm region).").arg(label);
+        }
+        const bool isCancelRow = row.section == QLatin1String("actions") &&
+                                 row.actionKey == QLatin1String("cancel");
+        if (key == Qt::Key_Escape && !isCancelRow) {
+            problems << QStringLiteral("%1: Escape always cancels the capture overlay.").arg(label);
+        }
+    }
+
+    // Duplicate bindings. Every section is live at once (global chords fire
+    // even while the overlay is up; tools/sizes/actions all apply inside it),
+    // so two actions on one chord always means one never fires. Compare the
+    // parsed identity so case / token order can't hide a duplicate.
+    QMap<QString, QStringList> buckets; // identity -> "section: action (chord)"
+    for (const HotkeyRow &row : m_hotkeyRows) {
+        if (row.shortcut.isEmpty()) continue;
+        buckets[chordIdentity(row.shortcut)]
+            << (row.section + QStringLiteral(": ") + row.displayName
+                + QStringLiteral(" (") + row.shortcut + QStringLiteral(")"));
+    }
+    for (auto it = buckets.constBegin(); it != buckets.constEnd(); ++it) {
+        if (it.value().size() > 1) {
+            problems << (QStringLiteral("Same shortcut bound more than once: ")
+                         + it.value().join(QStringLiteral(", ")));
+        }
+    }
+
+    // Filename pattern must stay a single file name inside the save dir.
+    const QString pattern = m_filenamePattern ? m_filenamePattern->text() : QString();
+    if (pattern.contains(QLatin1Char('/')) || pattern.contains(QLatin1Char('\\')) ||
+        pattern.contains(QStringLiteral(".."))) {
+        problems << QStringLiteral("Filename pattern must not contain \"/\", \"\\\" or \"..\".");
+    }
+
+    return problems.join(QLatin1Char('\n'));
 }
 
 void PreferencesWindow::onSave()
 {
-    // Fix #15: block duplicate hotkey bindings from being persisted. Every
-    // section here is live at the same time — global chords are system-wide
-    // Carbon hotkeys (they fire even while the overlay is up), and the
-    // tools/sizes/actions sections all apply inside the annotate overlay —
-    // so two actions on one chord is always a bug: one of them will never
-    // fire. Single pass: bucket every non-empty shortcut; any bucket with
-    // more than one entry is a conflict. Dedupe the reported list so a
-    // shortcut bound three times doesn't show three copies of each row.
-    QMap<QString, QStringList> buckets; // shortcut -> list of "section: action"
-    for (const HotkeyRow &row : m_hotkeyRows) {
-        if (row.shortcut.isEmpty()) continue;
-        buckets[row.shortcut]
-            << (row.section + QStringLiteral(": ") + row.displayName);
-    }
-    QStringList dupes;
-    for (auto it = buckets.constBegin(); it != buckets.constEnd(); ++it) {
-        if (it.value().size() > 1) {
-            dupes << (it.key() + QStringLiteral("  →  ")
-                      + it.value().join(QStringLiteral(", ")));
-        }
-    }
-    if (!dupes.isEmpty()) {
+    const QString problems = validateBeforeSave();
+    if (!problems.isEmpty()) {
+        showStatus(QStringLiteral("Not saved — see the error details."), true, 6000);
         QMessageBox::warning(this,
-            QStringLiteral("Duplicate shortcuts"),
-            QStringLiteral("The following shortcuts are bound to more than one action; "
-                           "change them before saving:\n\n") + dupes.join('\n'));
+            QStringLiteral("Can't save settings"),
+            QStringLiteral("Please fix the following before saving:\n\n") + problems);
         return;
     }
-    saveConfig();
+    if (!saveConfig())
+        return;
+    const QString pattern = m_filenamePattern ? m_filenamePattern->text().trimmed() : QString();
+    if (!pattern.isEmpty() && !pattern.contains(QStringLiteral("{time}"))) {
+        showStatus(QStringLiteral("Saved. Tip: add {time} to the filename pattern — "
+                                  "otherwise captures get numbered suffixes."), false, 6000);
+    }
     emit configSaved();
 }
 
@@ -1202,7 +1356,7 @@ void PreferencesWindow::applyTheme()
     Theme next;
     if (idx == 0) {
         // Auto — detect system appearance
-#ifdef Q_OS_MAC
+#ifdef Q_OS_MACOS
         // Check macOS dark mode
         QPalette pal = QApplication::palette();
         bool sysDark = pal.color(QPalette::Window).lightness() < 128;
@@ -1328,18 +1482,21 @@ void PreferencesWindow::loadConfig()
 {
     QByteArray jsonBytes = sf::configLoadJson();
     if (jsonBytes.isEmpty()) {
-        m_statusLabel->setText(QStringLiteral("Failed to load config."));
+        qWarning("Preferences: config load returned nothing; keeping previous values");
+        showStatus(QStringLiteral("Failed to load config."), true, 0);
         return;
     }
 
     QJsonParseError err;
     QJsonDocument doc = QJsonDocument::fromJson(jsonBytes, &err);
     if (doc.isNull() || !doc.isObject()) {
-        m_statusLabel->setText(QStringLiteral("Config parse error: ") + err.errorString());
+        qWarning("Preferences: config parse error: %s", qPrintable(err.errorString()));
+        showStatus(QStringLiteral("Config parse error: ") + err.errorString(), true, 0);
         return;
     }
 
     QJsonObject obj = doc.object();
+    m_savedJson = obj;
 
     // — General —
     m_saveDir->setText(obj.value(QStringLiteral("save_directory")).toString());
@@ -1425,27 +1582,67 @@ void PreferencesWindow::loadConfig()
     }
 
     // — Hotkeys —
+    // A key missing from the config means "default", not "whatever was in
+    // memory before": otherwise an unsaved edit (or a stale value from a
+    // previous load) would survive a reload and look persisted.
     QJsonObject hotkeys = obj.value(QStringLiteral("hotkeys")).toObject();
     for (int i = 0; i < m_hotkeyRows.size(); ++i) {
         HotkeyRow &row = m_hotkeyRows[i];
         QJsonObject section = hotkeys.value(row.section).toObject();
-        QString stored = section.value(row.actionKey).toString();
-        if (!stored.isEmpty()) {
-            row.shortcut = stored;
+        QString shortcut = section.value(row.actionKey).toString();
+        if (shortcut.isEmpty())
+            shortcut = defaultShortcutFor(row.section, row.actionKey);
+        if (row.shortcut != shortcut) {
+            row.shortcut = shortcut;
             refreshBadge(i);
         }
     }
 
     onScreenshotFormatChanged();
     m_statusLabel->clear();
+
+    // The getters main.cpp reads come from here, not from the widgets.
+    snapshotSavedPrefs();
 }
 
-void PreferencesWindow::saveConfig()
+void PreferencesWindow::snapshotSavedPrefs()
+{
+    m_saved.saveDir          = m_saveDir->text();
+    m_saved.autoCopy         = m_autoCopy->isChecked();
+    m_saved.showNotif        = m_showNotif->isChecked();
+    m_saved.rememberRegion   = m_rememberRegion->isChecked();
+    m_saved.screenshotFormat = qMax(0, m_screenshotFmtGroup->checkedId());
+    m_saved.jpgQuality       = m_quality->value();
+    m_saved.filenamePattern  = m_filenamePattern->text();
+    m_saved.showClicks       = m_showClicks && m_showClicks->isChecked();
+}
+
+// Parse the on-disk config as an object. Returns false (and leaves *out
+// untouched) if it's missing, unparseable, or not an object.
+static bool loadConfigObject(QJsonObject *out)
+{
+    const QByteArray bytes = sf::configLoadJson();
+    if (bytes.isEmpty()) return false;
+    QJsonParseError err{};
+    const QJsonDocument doc = QJsonDocument::fromJson(bytes, &err);
+    if (err.error != QJsonParseError::NoError || !doc.isObject()) return false;
+    *out = doc.object();
+    return true;
+}
+
+bool PreferencesWindow::saveConfig()
 {
     // Seed from the on-disk config so keys this function doesn't rewrite
     // (last_region, and any Rust-only fields) survive instead of being dropped.
-    // The known keys below overwrite their stale values.
-    QJsonObject obj = QJsonDocument::fromJson(sf::configLoadJson()).object();
+    // The known keys below overwrite their stale values. If the disk read
+    // fails, fall back to the last config we successfully loaded/saved rather
+    // than an empty object, which would drop every Rust-only field.
+    QJsonObject obj;
+    if (!loadConfigObject(&obj)) {
+        qWarning("Preferences: could not read config before save; "
+                 "merging onto the last known-good snapshot");
+        obj = m_savedJson;
+    }
 
     // — General —
     obj[QStringLiteral("save_directory")]       = m_saveDir->text();
@@ -1507,11 +1704,13 @@ void PreferencesWindow::saveConfig()
     QByteArray jsonBytes = QJsonDocument(obj).toJson(QJsonDocument::Compact);
     bool ok = sf::configSave(jsonBytes);
     if (ok) {
-        m_statusLabel->setText(QStringLiteral("Saved."));
-        QTimer::singleShot(3000, this, [this]() { m_statusLabel->clear(); });
+        m_savedJson = obj;
+        snapshotSavedPrefs();
+        showStatus(QStringLiteral("Saved."), false);
     } else {
-        m_statusLabel->setText(QStringLiteral("Error: failed to save config."));
+        showStatus(QStringLiteral("Error: failed to save config."), true, 0);
     }
+    return ok;
 }
 
 void PreferencesWindow::setLastRegion(const QRect &region)
@@ -1522,15 +1721,36 @@ void PreferencesWindow::setLastRegion(const QRect &region)
     // Merge-save: load the existing config and overwrite only last_region, so a
     // capture committed while the prefs window has unsaved edits doesn't persist
     // those edits (which a full saveConfig() would).
-    QByteArray jsonBytes = sf::configLoadJson();
-    QJsonObject obj = QJsonDocument::fromJson(jsonBytes).object();
+    //
+    // If the on-disk config can't be read, saving `{last_region}` alone would
+    // wipe every other setting. Merge onto the last known-good snapshot
+    // instead; with no snapshot either, skip persisting (the region still
+    // lives in memory for this session).
+    QJsonObject obj;
+    if (!loadConfigObject(&obj)) {
+        if (m_savedJson.isEmpty()) {
+            qWarning("Preferences: config unreadable and no snapshot; "
+                     "not persisting last region");
+            return;
+        }
+        qWarning("Preferences: config unreadable; persisting last region onto "
+                 "the last known-good snapshot");
+        obj = m_savedJson;
+    }
     QJsonObject lr;
     lr[QStringLiteral("x")] = region.x();
     lr[QStringLiteral("y")] = region.y();
     lr[QStringLiteral("w")] = region.width();
     lr[QStringLiteral("h")] = region.height();
     obj[QStringLiteral("last_region")] = lr;
-    sf::configSave(QJsonDocument(obj).toJson(QJsonDocument::Compact));
+    if (sf::configSave(QJsonDocument(obj).toJson(QJsonDocument::Compact))) {
+        // Keep the snapshot's last_region current, but don't absorb other
+        // on-disk keys into it wholesale — only what we wrote.
+        if (!m_savedJson.isEmpty())
+            m_savedJson[QStringLiteral("last_region")] = lr;
+    } else {
+        qWarning("Preferences: failed to persist last region");
+    }
 }
 
 // ===========================================================================
@@ -1604,8 +1824,15 @@ QWidget *PreferencesWindow::buildLogsTab()
         "border-radius: 6px; padding: 4px 8px; font-size: 12px; min-width: 160px; }"
     ).arg(g_theme.bgInput, g_theme.text, g_theme.border));
     ctrlRow->addWidget(m_logSearch);
-    connect(m_logSearch, &QLineEdit::textChanged,
-            this, [this](const QString &){ reloadLogBuffer(); });
+    // Debounce: reloadLogBuffer re-renders up to 5000 lines, so doing it per
+    // keystroke stalls typing. Parented to m_logSearch so a theme rebuild
+    // (which recreates this tab) takes the timer with it.
+    m_logSearchDebounce = new QTimer(m_logSearch);
+    m_logSearchDebounce->setSingleShot(true);
+    m_logSearchDebounce->setInterval(250);
+    connect(m_logSearchDebounce, &QTimer::timeout, this, [this]() { reloadLogBuffer(); });
+    connect(m_logSearch, &QLineEdit::textChanged, m_logSearchDebounce,
+            [this](const QString &) { m_logSearchDebounce->start(); });
 
     ctrlRow->addStretch();
 

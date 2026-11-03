@@ -35,7 +35,7 @@ TrayIcon::TrayIcon(QObject *parent)
         if (reason == QSystemTrayIcon::Trigger ||
             reason == QSystemTrayIcon::DoubleClick ||
             reason == QSystemTrayIcon::Context) {
-            emit actionStopRecording();
+            if (!m_finalizing) emit actionStopRecording();
         }
     });
 }
@@ -71,11 +71,14 @@ void TrayIcon::initialize() {
 }
 
 void TrayIcon::enterRecordingState(bool paused) {
-    m_inRecordingState = true;
-    m_paused = paused;
-    buildRecordingMenu();
-    m_tray->setToolTip(paused ? "Snapforge — Paused" : "Snapforge — Recording");
+    // Show the stop item first so its status-bar slot is created before the
+    // main item morphs into the pill (keeps the stop button's position stable).
     m_stopTray->show();
+    m_inRecordingState = true;
+    m_finalizing = false;
+    m_paused = paused;
+    scheduleMenuRebuild();
+    m_tray->setToolTip(paused ? "Snapforge — Paused" : "Snapforge — Recording");
     refreshPill(1.0);
     if (paused) {
         m_pulseTimer->stop();
@@ -86,13 +89,38 @@ void TrayIcon::enterRecordingState(bool paused) {
 
 void TrayIcon::leaveRecordingState() {
     m_inRecordingState = false;
+    m_finalizing = false;
     m_paused = false;
     m_elapsedSeconds = 0;
     m_pulseTimer->stop();
     m_stopTray->hide();
     m_tray->setIcon(m_idleIcon);
     m_tray->setToolTip("Snapforge");
-    buildNormalMenu();
+    scheduleMenuRebuild();
+}
+
+void TrayIcon::enterFinalizingState() {
+    if (!m_inRecordingState) return;
+    m_finalizing = true;
+    m_pulseTimer->stop();
+    m_stopTray->hide();
+    m_tray->setToolTip("Snapforge — Finalizing recording…");
+    refreshPill(0.35);
+    scheduleMenuRebuild();
+}
+
+void TrayIcon::scheduleMenuRebuild() {
+    if (m_rebuildPending) return;
+    m_rebuildPending = true;
+    QTimer::singleShot(0, this, &TrayIcon::rebuildMenuNow);
+}
+
+void TrayIcon::rebuildMenuNow() {
+    m_rebuildPending = false;
+    if (m_inRecordingState)
+        buildRecordingMenu();
+    else
+        buildNormalMenu();
 }
 
 void TrayIcon::updateElapsed(int seconds) {
@@ -103,7 +131,7 @@ void TrayIcon::updateElapsed(int seconds) {
 }
 
 void TrayIcon::setPaused(bool paused) {
-    if (!m_inRecordingState) return;
+    if (!m_inRecordingState || m_finalizing) return;
     m_paused = paused;
     if (paused) {
         m_pulseTimer->stop();
@@ -113,7 +141,7 @@ void TrayIcon::setPaused(bool paused) {
         m_tray->setToolTip("Snapforge — Recording");
     }
     refreshPill(1.0);
-    buildRecordingMenu();
+    scheduleMenuRebuild();
 }
 
 void TrayIcon::showMessage(const QString &title,
@@ -333,16 +361,19 @@ void TrayIcon::buildRecordingMenu() {
     const shortcuts::Snapshot cfg;
 
     QAction *recordingLabel = m_menu->addAction(
-        m_paused ? QStringLiteral("⏸ Paused") : QStringLiteral("● Recording..."));
+        m_finalizing ? QStringLiteral("… Finalizing recording")
+        : m_paused   ? QStringLiteral("⏸ Paused")
+                     : QStringLiteral("● Recording..."));
     recordingLabel->setEnabled(false);
 
-    if (m_paused) {
-        m_menu->addAction(QStringLiteral("▶ Resume Recording"), this, &TrayIcon::actionResumeRecording);
-    } else {
-        m_menu->addAction(QStringLiteral("⏸ Pause Recording"), this, &TrayIcon::actionPauseRecording);
-    }
-
-    m_menu->addAction(trayLabel(cfg, QStringLiteral("■ Stop Recording"), "record"), this, &TrayIcon::actionStopRecording);
+    QAction *pauseResume = m_paused
+        ? m_menu->addAction(QStringLiteral("▶ Resume Recording"), this, &TrayIcon::actionResumeRecording)
+        : m_menu->addAction(QStringLiteral("⏸ Pause Recording"), this, &TrayIcon::actionPauseRecording);
+    QAction *stop = m_menu->addAction(trayLabel(cfg, QStringLiteral("■ Stop Recording"), "record"),
+                                      this, &TrayIcon::actionStopRecording);
+    // Nothing to pause or stop while the file is being finalized.
+    pauseResume->setEnabled(!m_finalizing);
+    stop->setEnabled(!m_finalizing);
 
     m_menu->addSeparator();
 
@@ -357,8 +388,5 @@ void TrayIcon::buildRecordingMenu() {
 void TrayIcon::refreshMenu() {
     // Rebuild the menu currently shown (normal vs recording) so updated chord
     // glyphs take effect after a Preferences rebind.
-    if (m_inRecordingState)
-        buildRecordingMenu();
-    else
-        buildNormalMenu();
+    scheduleMenuRebuild();
 }
