@@ -13,7 +13,7 @@ rayon = { workspace = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
-objc2-foundation = { version = "0.3", features = ["NSData", "NSString", "NSArray", "NSError"] }
+objc2-foundation = { version = "0.3", features = ["NSData", "NSString", "NSArray", "NSError", "NSProcessInfo"] }
 objc2-core-graphics = { version = "0.3", default-features = false, features = ["CGImage", "CGDataProvider", "objc2"] }
 objc2-screen-capture-kit = { version = "0.3", features = [
     "SCShareableContent",

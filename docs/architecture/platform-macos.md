@@ -45,10 +45,11 @@ Carbon hotkeys do **not** require Accessibility — they go through a private sy
 
 Phase 2C consolidated the previously-duplicated CGEventTap. The tap now lives in `crates/snapforge-capture/src/clicks.rs::macos_tap`:
 
-- `CGEventTapCreate(kCGSessionEventTap | kCGHIDEventTap, ..., listenOnly)` on `kCGEventLeftMouseDown | kCGEventRightMouseDown`.
-- Handles tap-disable re-enable on timeout / permission revoke.
+- `CGEventTapCreate(kCGHIDEventTap, kCGTailAppendEventTap, kCGEventTapOptionListenOnly, ...)` on `kCGEventLeftMouseDown | kCGEventRightMouseDown`.
+- Handles tap-disable re-enable on timeout / permission revoke. Re-enables are rate-limited per burst: at most 5 within a burst of disables, and the budget refills after 60 s without a disable. Isolated timeouts in a long session never exhaust it, while a revoked-permission loop stops after 5 attempts.
+- Teardown removes the run-loop source and invalidates the mach port before releasing them.
 - Runs on a dedicated CFRunLoop thread spawned by `start()`.
-- Records `ClickEvent { x, y, right_click: bool, ... }` into a shared tracker.
+- Records `ClickEvent { x, y, right_click: bool, ... }` into a shared tracker. `x`/`y` are global desktop **points** (CoreGraphics global space), not physical pixels.
 
 `crates/snapforge-app/src/clicks.rs::start_click_tracking` adds a forwarder thread that polls the tracker every ~16ms (~60Hz) and invokes the user-supplied C callback. Exposed to Qt via `snapforge_clicks_start/stop/free_handle`.
 
@@ -58,7 +59,13 @@ Qt-side wrapper: `qt/src/controllers/ClickTap.{h,cpp}` — a thin platform-agnos
 
 `crates/snapforge-capture/src/capture/macos.rs` wraps SCK for both still capture and continuous recording frames.
 
-- Fallback path: `CGDisplayCreateImage` for fullscreen captures of full-screen apps (commit `6982101`). SCK sometimes misses these.
+- **Display index**: an index into `CGGetActiveDisplayList` with mirror displays removed. Index 0 is the main (menu-bar) display. This lookup is synchronous, needs no Screen Recording grant, and is never cached, so it can't go stale after a topology change. `display_at_point` maps through `CGGetDisplaysWithPoint` into the same list. The `SCDisplay` object is looked up (via `SCShareableContent`, with a 6 s timeout) only inside the SCK paths: the SCK screenshot fallback and `CaptureContext::new`.
+- **Screenshots**: `CGDisplayCreateImage` is the primary path, because SCK often returns black frames for full-screen-Space apps (commit `6982101`). SCK `SCScreenshotManager` is the fallback.
+- **Recording**: `CaptureContext` (SCK `SCScreenshotManager` per frame). `capture_frame_raw_bgra` returns `CaptureError::NoDisplay` once the display goes offline (`CGDisplayIsOnline`).
+- **OS guard**: SCK paths check `NSProcessInfo isOperatingSystemAtLeastVersion` at runtime: 12.3 for `SCShareableContent` and 14.0 for `SCScreenshotManager`. Older systems get `CaptureError::CaptureFailed` instead of an objc2 missing-class panic.
+- **Pixel size**: `CGDisplayBounds × (mode pixelWidth / mode width)`, so rotated displays report rotated dimensions.
+- **Pixel format**: the CGImage converters accept only 32 bpp / 8 bpc little-endian alpha-first images (BGRA in memory). Anything else is rejected so the next capture path is tried. `NoneSkipFirst` images get alpha forced to 255.
+- **Permission**: `has_permission` is a live `CGPreflightScreenCaptureAccess` (never cached, never an SCK probe). `request_permission` prompts at most once per process. A session latch stops SCK queries after a known denial and clears when preflight turns true.
 - xcap-based fallback exists in `crates/snapforge-capture/src/capture/xcap_impl.rs` for non-macOS or feature-flagged builds.
 
 ## Recording → ffmpeg child process
