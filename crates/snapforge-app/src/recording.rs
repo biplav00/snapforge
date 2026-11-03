@@ -6,8 +6,8 @@ use serde::Deserialize;
 use snapforge_domain::Rect;
 use snapforge_encode::record::{ffmpeg, RecordConfig};
 use snapforge_storage::config::{RecordingFormat, RecordingQuality};
-use snapforge_storage::history::{is_incomplete_mp4, ScreenshotHistory};
-use std::path::PathBuf;
+use snapforge_storage::history::is_incomplete_mp4;
+use std::path::{Path, PathBuf};
 
 /// The canonical recording-request schema — the FFI deserializes its JSON
 /// straight into this. One serde definition, shared by every wire path.
@@ -54,23 +54,37 @@ pub struct RecordingHandle {
 }
 
 impl RecordingHandle {
+    /// The file this recording is actually writing. May differ from the
+    /// requested `output_path`: if that name already existed, `start_recording`
+    /// picked a `-N`-suffixed sibling instead of letting ffmpeg overwrite it.
+    pub fn output_path(&self) -> &Path {
+        &self.output_path
+    }
+
+    /// `true` while the encode worker is running or paused; `false` once it
+    /// has exited (including on error — `stop_recording` then returns that
+    /// error) or after the handle was stopped.
+    pub fn is_alive(&self) -> bool {
+        self.inner
+            .as_ref()
+            .is_some_and(ffmpeg::RecordingHandle::is_alive)
+    }
+
+    /// Pause the recording. Errors if the handle was stopped or the encode
+    /// worker has already exited (the encode layer reports `false`).
     pub fn pause(&self) -> Result<(), AppError> {
         match self.inner.as_ref() {
-            Some(h) => {
-                h.pause();
-                Ok(())
-            }
-            None => Err(AppError::InvalidRequest("recording already stopped".into())),
+            Some(h) if h.pause() => Ok(()),
+            _ => Err(AppError::InvalidRequest("recording already stopped".into())),
         }
     }
 
+    /// Resume the recording. Errors if the handle was stopped or the encode
+    /// worker has already exited.
     pub fn resume(&self) -> Result<(), AppError> {
         match self.inner.as_ref() {
-            Some(h) => {
-                h.resume();
-                Ok(())
-            }
-            None => Err(AppError::InvalidRequest("recording already stopped".into())),
+            Some(h) if h.resume() => Ok(()),
+            _ => Err(AppError::InvalidRequest("recording already stopped".into())),
         }
     }
 }
@@ -89,42 +103,75 @@ pub fn start_recording(req: RecordingRequest) -> Result<RecordingHandle, AppErro
         }
     }
 
+    // Never let ffmpeg (`-y`) clobber an existing file: claim a unique name
+    // up front (an empty placeholder that ffmpeg overwrites) and remove the
+    // placeholder if the pipeline fails to start.
+    let output_path = crate::claim_unique_path(&req.output_path)?;
+
     let cfg = RecordConfig {
         display: req.display,
         region: req.region,
-        output_path: req.output_path.clone(),
+        output_path: output_path.clone(),
         format: req.format,
         fps: req.fps,
         quality: req.quality,
         ffmpeg_path: req.ffmpeg_path,
         show_clicks: req.show_clicks,
     };
-    let inner = ffmpeg::start_recording(cfg)?;
+    let inner = match ffmpeg::start_recording(cfg) {
+        Ok(h) => h,
+        Err(e) => {
+            remove_if_empty(&output_path);
+            return Err(e.into());
+        }
+    };
     Ok(RecordingHandle {
         inner: Some(inner),
-        output_path: req.output_path,
+        output_path,
         add_to_history_on_stop: req.add_to_history_on_stop,
     })
 }
 
+/// Delete `path` if it exists and is zero bytes (an unused placeholder).
+fn remove_if_empty(path: &Path) {
+    if std::fs::metadata(path).is_ok_and(|m| m.len() == 0) {
+        let _ = std::fs::remove_file(path);
+    }
+}
+
 /// Stop a recording and wait for the encoder to flush. Consumes the handle.
 /// If `add_to_history_on_stop` was set on the original request, the output
-/// file is added to the history index (incomplete mp4s are silently skipped).
+/// file is added to the history index — best-effort: an empty output (any
+/// format) or an incomplete mp4 is skipped, and an indexing failure is logged
+/// rather than turned into an error (the recording itself succeeded).
 pub fn stop_recording(mut handle: RecordingHandle) -> Result<(), AppError> {
     let inner = handle
         .inner
         .take()
         .ok_or_else(|| AppError::InvalidRequest("recording already stopped".into()))?;
-    inner.stop()?;
+    if let Err(e) = inner.stop() {
+        remove_if_empty(&handle.output_path);
+        return Err(e.into());
+    }
 
     if handle.add_to_history_on_stop {
+        let non_empty = std::fs::metadata(&handle.output_path).is_ok_and(|m| m.len() > 0);
         let path_str = handle.output_path.to_string_lossy().into_owned();
-        if !is_incomplete_mp4(&path_str) {
-            let mut hist = ScreenshotHistory::load()?;
-            hist.add_entry(&path_str)?;
+        if non_empty && !is_incomplete_mp4(&path_str) {
+            crate::screenshot::index_best_effort(&handle.output_path);
+        } else {
+            tracing::warn!(
+                "[recording] not indexing {}: output is empty or incomplete",
+                handle.output_path.display()
+            );
         }
     }
     Ok(())
+}
+
+/// See [`RecordingHandle::is_alive`].
+pub fn is_recording_alive(handle: &RecordingHandle) -> bool {
+    handle.is_alive()
 }
 
 pub fn pause_recording(handle: &RecordingHandle) -> Result<(), AppError> {

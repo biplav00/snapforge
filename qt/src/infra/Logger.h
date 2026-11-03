@@ -41,8 +41,14 @@ public:
     // Absolute path to the active log file.
     QString filePath() const;
 
-    // Wipe in-memory buffer and truncate file.
+    // Wipe in-memory buffer, truncate the file and delete the rotated
+    // snapforge.log.1.
     void clear();
+
+    // Flush + close the file and stop writing to it (and stop the crash
+    // handler from using its fd). Called from main() after the message
+    // handler is uninstalled, before this static is destroyed. Idempotent.
+    void shutdown();
 
 signals:
     void entryAdded(const LogEntry &entry);
@@ -53,6 +59,10 @@ private:
     ~Logger() override;
 
     void rotateIfNeeded();
+    // (Re)open m_file at m_filePath with `mode` and publish its fd to the
+    // crash handler only once the open succeeded. Caller holds m_mutex.
+    void reopen(QIODevice::OpenMode mode);
+    void closeFile();
     void installCrashHandlers();
 
     mutable QMutex m_mutex;
@@ -62,6 +72,8 @@ private:
     QString m_filePath;
     QFile m_file;
     int m_fd = -1;                     // raw fd for async-signal-safe crash writes
+    qint64 m_fileBytes = 0;            // tracked size (QFile::size() would force a flush)
+    bool m_shutdown = false;
 };
 
 #endif

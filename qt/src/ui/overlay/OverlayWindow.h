@@ -4,6 +4,7 @@
 #include <QWidget>
 #include <QList>
 #include <QPair>
+#include <QElapsedTimer>
 #include "AnnotationState.h"
 
 class AnnotationCanvas;
@@ -35,6 +36,11 @@ public:
     // Visible-but-idle returns false so a desynced AppKit hide can't deadlock
     // the hotkey gate in main.cpp.
     bool isBusy() const;
+
+    // NSWindow level the overlay runs at (above the menu bar / Dock / other
+    // apps' fullscreen windows). Popups owned by the overlay (the colour
+    // dialog) must sit above it.
+    static constexpr long kOverlayWindowLevel = 1000;
 
 signals:
     void screenshotReady(QImage composited, int w, int h);
@@ -69,6 +75,12 @@ private:
     };
 
     void activateInternal();
+    // Show + key the overlay once the activation's capture has landed.
+    void presentOverlay();
+    // Tear the whole session down (annotations, modes, selection), hide, and
+    // emit cancelled(). Used by Esc/Cancel, outside clicks and display
+    // hot-plug.
+    void cancelSession();
     // Force the (single, long-lived) overlay window onto `screen`, re-anchoring
     // the reused native window after a display reconfiguration. See the .cpp
     // for why a plain setGeometry() is not enough.
@@ -82,6 +94,11 @@ private:
     void exitRecordSelectMode();
     void positionRecordButtons(const QRect &sel);
     void handleCopy();
+    // Commit pending text and composite; null (after a beep) if not ready.
+    QImage compositeForCommit();
+    QPoint clampToWidget(QPoint p) const;
+    // Device pixels per logical point of the current capture frame.
+    double captureScale() const;
     void handleSaveAndCopy();
     // Save the current region into m_last* and emit lastRegionChanged, if the
     // "remember region" pref is on. Called from every commit path.
@@ -142,6 +159,8 @@ private:
     // Bumped once per activation. Guards stale completion/watchdog callbacks:
     // a later activation supersedes earlier ones, which must not touch state.
     quint64 m_captureSeq = 0;
+    // Started at activation; logs how long until the overlay is on screen.
+    QElapsedTimer m_activationTimer;
     Mode m_mode = Select;
     Purpose m_purpose = Screenshot;
     int m_displayIndex = 0; // which display this overlay captures from

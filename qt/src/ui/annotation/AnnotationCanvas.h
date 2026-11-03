@@ -5,6 +5,7 @@
 #include <QImage>
 #include <QLineEdit>
 #include <QElapsedTimer>
+#include <functional>
 #include "Annotation.h"
 #include "AnnotationState.h"
 
@@ -20,6 +21,21 @@ public:
     QImage compositeImage() const;
 
     bool isTextInputActive() const { return m_waitingForText; }
+
+    // Commit any pending text/step-label input into the annotation state.
+    // Safe to call if no input is active. Called before compositing so a
+    // half-typed label isn't lost on Save/Copy.
+    void commitTextInput();
+
+    // Called for key presses inside the text editor before it handles them;
+    // return true to consume. The overlay uses this so its Save/Copy chords
+    // work while a label is being typed.
+    void setTextKeyInterceptor(std::function<bool(QKeyEvent *)> fn) { m_textKeyInterceptor = std::move(fn); }
+
+    // Device pixels per logical point used to crop/composite: the captured
+    // frame's width over the overlay's (parent's) width, falling back to the
+    // screen DPR. Logs once if it disagrees with the screen DPR.
+    double captureScale() const;
 
 protected:
     void resizeEvent(QResizeEvent *event) override;
@@ -38,7 +54,6 @@ protected:
 
 private:
     void showTextInput(int x, int y);
-    void commitTextInput();
 
     // Returns the DPR of the screen this canvas is on (falling back to the
     // global helper), used both for compositing and the committed-layer cache.
@@ -76,6 +91,7 @@ private:
     bool m_pendingIsSteps = false;
     QString m_editingStepId;   // Non-empty when editing label of existing step
     QColor m_editingStepColor;
+    std::function<bool(QKeyEvent *)> m_textKeyInterceptor;
     int m_editingStepStrokeWidth = 0;
 };
 

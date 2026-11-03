@@ -18,6 +18,12 @@ if(SNAPFORGE_UNIVERSAL)
     message(STATUS "SNAPFORGE_UNIVERSAL: building for arm64;x86_64")
 endif()
 
+# Minimum supported macOS. Must match LSMinimumSystemVersion in Info.plist.in
+# and the MACOSX_DEPLOYMENT_TARGET the Rust staticlib is built with (qt/build.sh
+# and CI export it) so no object in the bundle silently requires a newer OS.
+# Must be set before project().
+set(CMAKE_OSX_DEPLOYMENT_TARGET "14.0" CACHE STRING "Minimum macOS version")
+
 project(snapforge-qt LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
@@ -130,6 +136,7 @@ if(APPLE)
         "-framework ScreenCaptureKit"
         "-framework CoreGraphics"
         "-framework CoreMedia"
+        "-framework CoreVideo"
         "-framework CoreFoundation"
         "-framework Foundation"
         "-framework AppKit"
@@ -145,10 +152,26 @@ if(APPLE)
     )
 endif()
 
+# Self-contained bundle: macdeployqt (Qt frameworks), bundled ffmpeg + its
+# dylibs, third-party licence notices, and an ad-hoc signature, re-run after
+# every link. OFF by default so dev/CI builds don't pay for it (or need
+# dylibbundler / a Homebrew ffmpeg); qt/build.sh — and therefore
+# packaging/macos/build_dmg.sh and the release workflow — turn it ON. A
+# non-bundled build runs fine from the build tree against Homebrew Qt.
+option(SNAPFORGE_BUNDLE "Bundle Qt + ffmpeg into the .app and ad-hoc sign it after each build" OFF)
+
 # macdeployqt bundles Qt frameworks into the .app
 find_program(MACDEPLOYQT macdeployqt HINTS "${Qt6_DIR}/../../../bin")
 
-if(APPLE AND MACDEPLOYQT)
+if(APPLE AND SNAPFORGE_BUNDLE AND NOT MACDEPLOYQT)
+    # Previously a missing macdeployqt silently skipped bundling AND signing,
+    # producing a DMG that only runs on machines with the same Homebrew Qt.
+    message(FATAL_ERROR "SNAPFORGE_BUNDLE=ON but macdeployqt was not found "
+                        "(looked next to ${Qt6_DIR}). Install Qt's tools or "
+                        "configure with -DSNAPFORGE_BUNDLE=OFF.")
+endif()
+
+if(APPLE AND SNAPFORGE_BUNDLE)
     # Every link of snapforge-qt resets the binary's LC_LOAD_DYLIB entries back
     # to the absolute Homebrew paths, which makes the bundle load two copies of
     # Qt at runtime. Re-run macdeployqt after each build so @executable_path
@@ -169,12 +192,24 @@ if(APPLE AND MACDEPLOYQT)
         VERBATIM
     )
 
-    # Ad-hoc sign with a stable identifier. Without this, every CI build
-    # gets a fresh ad-hoc signature, so macOS TCC treats each build as a
-    # different app and the user has to re-grant Screen Recording. Pinning
-    # the identifier to com.snapforge.app keeps TCC's grant stable across
-    # rebuilds. Runs after macdeployqt + ffmpeg bundling so the framework
-    # re-bundling doesn't invalidate the signature.
+    # Ship third-party licence notices (FFmpeg/x264/x265 GPL, Qt LGPL) in
+    # Contents/Resources/Licenses. Runs after ffmpeg bundling (it records the
+    # exact ffmpeg version that was bundled) and before signing.
+    add_custom_command(TARGET snapforge-qt POST_BUILD
+        COMMAND "${CMAKE_SOURCE_DIR}/../packaging/macos/bundle-licenses.sh"
+                "$<TARGET_BUNDLE_DIR:snapforge-qt>" "${Qt6_VERSION}"
+        COMMENT "Bundling third-party licence notices..."
+        VERBATIM
+    )
+
+    # Ad-hoc sign the whole bundle (nested Qt frameworks, ffmpeg + dylibs)
+    # with an explicit identifier so the bundle has a valid, consistent
+    # signature after macdeployqt/dylibbundler rewrote its Mach-Os. NOTE: this
+    # does NOT keep the Screen Recording (TCC) grant across rebuilds — an
+    # ad-hoc signature's designated requirement is its cdhash, which changes
+    # with every build, so users must re-grant after each update. Only a stable
+    # signing identity (Developer ID / Apple Development) fixes that. Runs
+    # after macdeployqt + ffmpeg bundling so re-bundling can't invalidate it.
     add_custom_command(TARGET snapforge-qt POST_BUILD
         COMMAND codesign --force --deep --sign - --identifier com.snapforge.app
                 "$<TARGET_BUNDLE_DIR:snapforge-qt>"
@@ -190,8 +225,11 @@ endif()
 # ---------------------------------------------------------------------------
 # Tests (QTest)
 #
-# Built only under BUILD_TESTING (CTest's default-ON variable), so the normal
-# `cmake --build` of the app never compiles or links the test executables.
+# Built only under BUILD_TESTING. NOTE: include(CTest) defaults BUILD_TESTING
+# to ON, so a plain configure DOES build the tests (convenient for dev: just
+# run ctest). Release builds opt out explicitly — qt/build.sh (and therefore
+# build_dmg.sh / the release workflow) passes -DBUILD_TESTING=OFF, and CI
+# passes -DBUILD_TESTING=ON and runs ctest.
 # Each test links the specific logic units it exercises (not the whole app) so
 # the suite stays headless: no widgets, no tray, no capture. The Rust staticlib
 # + macOS frameworks are linked the same way the app does because the units
@@ -212,6 +250,7 @@ if(BUILD_TESTING)
             "-framework ScreenCaptureKit"
             "-framework CoreGraphics"
             "-framework CoreMedia"
+            "-framework CoreVideo"
             "-framework CoreFoundation"
             "-framework Foundation"
             "-framework AppKit"
@@ -263,11 +302,16 @@ if(BUILD_TESTING)
     endfunction()
 
     # Pure chord parsing/formatting (the dynamic-hotkeys feature). GUILESS.
-    snapforge_add_test(tst_shortcuts
+    # Through the fake seam so chord() reads a test-controlled config instead
+    # of the developer's real ~/.config/snapforge/config.json (hermetic).
+    # Carbon: toCarbon's keyboard-layout lookup (TIS/UCKeyTranslate).
+    snapforge_add_fake_test(tst_shortcuts
         tests/tst_shortcuts.cpp
         src/infra/Shortcuts.cpp
-        src/infra/SnapforgeClient.cpp
     )
+    if(APPLE)
+        target_link_libraries(tst_shortcuts PRIVATE "-framework Carbon")
+    endif()
 
     # RecordingManager state machine + timing + prefs parsing, through the
     # SnapforgeClient seam against the fake — start/stop/pause paths are now
@@ -294,6 +338,10 @@ if(BUILD_TESTING)
         tests/tst_clicktap.cpp
         src/controllers/ClickTap.cpp
     )
+    # QTEST_MAIN constructs a QGuiApplication; offscreen so it needs no
+    # window server (headless CI).
+    set_tests_properties(tst_clicktap PROPERTIES
+        ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
     # Real SnapforgeClient adapter against the real staticlib, headless-safe
     # paths only — verifies it compiles, links, and round-trips the FFI.
@@ -305,13 +353,31 @@ if(BUILD_TESTING)
     # PreferencesWindow config load/save round-trip through the seam (fake).
     # A widget test: needs Qt6::Widgets and runs offscreen so no window server
     # is required.
+    # Shortcuts.cpp: the recorder validates chords via isValidGlobalChord.
     snapforge_add_fake_test(tst_preferences
         tests/tst_preferences.cpp
         src/ui/windows/PreferencesWindow.cpp
         src/infra/Logger.cpp
+        src/infra/Shortcuts.cpp
     )
     target_link_libraries(tst_preferences PRIVATE Qt6::Widgets)
+    if(APPLE)
+        target_link_libraries(tst_preferences PRIVATE "-framework Carbon")
+    endif()
     set_tests_properties(tst_preferences PROPERTIES
+        ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
+    # Annotation canvas/state/renderer through the seam (fake). Widget test,
+    # runs offscreen.
+    snapforge_add_fake_test(tst_annotation
+        tests/tst_annotation.cpp
+        src/ui/annotation/AnnotationCanvas.cpp
+        src/ui/annotation/AnnotationState.cpp
+        src/ui/annotation/AnnotationRenderer.cpp
+    )
+    target_include_directories(tst_annotation PRIVATE src/ui/annotation)
+    target_link_libraries(tst_annotation PRIVATE Qt6::Widgets)
+    set_tests_properties(tst_annotation PROPERTIES
         ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
     # Probe/regression for the compositeImage double-DPR bug (pure QPainter,

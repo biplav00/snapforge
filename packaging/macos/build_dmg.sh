@@ -36,6 +36,70 @@ if [ -z "$VERSION" ]; then
 fi
 echo "=== Packaging Snapforge $VERSION ==="
 
+# 2b. Verification gate: refuse to package a bundle that can't run on a clean
+#     machine. Every check prints what failed; any failure aborts.
+echo "=== Verifying bundle ==="
+VERIFY_FAILED=0
+fail() { echo "verify: FAIL: $*" >&2; VERIFY_FAILED=1; }
+
+# Signature covers every nested binary (ffmpeg, dylibs, Qt frameworks).
+if ! codesign --verify --deep --strict --verbose=2 "$APP_PATH"; then
+    fail "codesign --verify --deep --strict"
+fi
+
+# No Mach-O may load anything from a Homebrew prefix — it would only work on
+# machines that happen to have the same Homebrew packages installed.
+while IFS= read -r -d '' f; do
+    if file -b "$f" | grep -q 'Mach-O'; then
+        # Exclude a dylib's own install id (LC_ID_DYLIB, also listed by
+        # otool -L): it isn't a load command, so a stale Homebrew id is
+        # harmless. Every remaining entry is an LC_LOAD_DYLIB that dyld follows.
+        own_id="$(otool -D "$f" 2>/dev/null | tail -n +2 | head -n1)"
+        bad="$(otool -L "$f" 2>/dev/null | tail -n +2 | awk '{print $1}' \
+               | grep -E '^(/opt/homebrew|/usr/local)/' | grep -vxF "${own_id:-<none>}" || true)"
+        if [ -n "$bad" ]; then
+            fail "${f#"$APP_PATH"/} references Homebrew paths:"
+            echo "$bad" | sed 's/^/        /' >&2
+        fi
+    fi
+done < <(find "$APP_PATH/Contents" -type f -print0)
+
+# Bundled ffmpeg exists and actually runs (catches broken load paths/signature).
+FFMPEG_BIN="$APP_PATH/Contents/MacOS/ffmpeg"
+if [ ! -x "$FFMPEG_BIN" ]; then
+    fail "bundled ffmpeg missing at Contents/MacOS/ffmpeg"
+elif ! "$FFMPEG_BIN" -hide_banner -version >/dev/null 2>&1; then
+    fail "bundled ffmpeg does not run (-version failed)"
+fi
+
+# Architectures: the app (and ffmpeg) must contain every expected slice.
+if [ "${SNAPFORGE_UNIVERSAL:-0}" = "1" ]; then
+    EXPECTED_ARCHS="arm64 x86_64"
+else
+    EXPECTED_ARCHS="$(uname -m)"
+fi
+for bin in "$APP_PATH/Contents/MacOS/Snapforge" "$FFMPEG_BIN"; do
+    [ -e "$bin" ] || continue
+    have="$(lipo -archs "$bin" 2>/dev/null || true)"
+    for a in $EXPECTED_ARCHS; do
+        case " $have " in
+            *" $a "*) ;;
+            *) fail "$(basename "$bin") has archs '$have', missing $a" ;;
+        esac
+    done
+done
+
+# Third-party licence notices must ship with the GPL/LGPL binaries.
+if [ ! -f "$APP_PATH/Contents/Resources/Licenses/THIRD_PARTY_NOTICES.md" ]; then
+    fail "Contents/Resources/Licenses/THIRD_PARTY_NOTICES.md missing"
+fi
+
+if [ "$VERIFY_FAILED" != "0" ]; then
+    echo "error: bundle verification failed — not packaging" >&2
+    exit 1
+fi
+echo "verify: OK (archs: $(lipo -archs "$APP_PATH/Contents/MacOS/Snapforge"))"
+
 # 3. Stage: fresh dir with the app and an /Applications symlink so the user
 #    can drag-install from the mounted DMG.
 rm -rf "$STAGE_DIR"
@@ -60,9 +124,13 @@ hdiutil create \
     -fs HFS+ \
     "$DMG_PATH"
 
-# 5. Code-sign the DMG with the same ad-hoc identity the build uses so
-#    Gatekeeper doesn't quarantine-strip the inner app on first mount.
-#    Replace "-" with a real Developer ID Application identity if available.
+# 5. Ad-hoc sign the DMG (integrity seal only). This does NOT satisfy
+#    Gatekeeper: an ad-hoc-signed, un-notarized download is still quarantined,
+#    so users must right-click → Open (or run `xattr -dr com.apple.quarantine
+#    /Applications/Snapforge.app`) on first launch, and must re-grant Screen
+#    Recording after every update because the ad-hoc cdhash changes. Removing
+#    those steps needs a Developer ID Application identity + notarization,
+#    which this project currently does not use.
 codesign --force --sign - "$DMG_PATH"
 
 rm -rf "$STAGE_DIR"

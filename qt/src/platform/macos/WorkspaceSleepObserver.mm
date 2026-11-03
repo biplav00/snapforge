@@ -24,8 +24,11 @@ WorkspaceSleepObserver::WorkspaceSleepObserver(RecordingManager *rec, QObject *p
                     // handleSystemSleep pauses only an actively-running
                     // recording and remembers that the auto-pause was ours,
                     // so wake won't resume a manual pause.
-                    QMetaObject::invokeMethod(m, "handleSystemSleep",
-                                              Qt::QueuedConnection);
+                    // Called directly: this block already runs on the main
+                    // queue (= the Qt GUI thread). Re-queuing it through the
+                    // Qt event loop let the system sleep before the pause
+                    // actually happened.
+                    m->handleSystemSleep();
                 }];
     id wakeToken = [center
         addObserverForName:NSWorkspaceDidWakeNotification
@@ -36,8 +39,7 @@ WorkspaceSleepObserver::WorkspaceSleepObserver(RecordingManager *rec, QObject *p
                     if (!m) return;
                     // handleSystemWake resumes only if the sleep handler's
                     // auto-pause is what paused the recording.
-                    QMetaObject::invokeMethod(m, "handleSystemWake",
-                                              Qt::QueuedConnection);
+                    m->handleSystemWake();
                 }];
 
     // Retain the observer tokens so we can remove them later.

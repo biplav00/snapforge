@@ -16,15 +16,16 @@
 #include <QPointer>
 #include <QtConcurrent/QtConcurrent>
 #include <QFutureWatcher>
-#include <QThreadPool>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <algorithm>
 #include <cmath>
 #include "SnapforgeClient.h"
 #include "Shortcuts.h"
+#include "HotkeyKeyMap.h"
+#include <QApplication>
 
-#ifdef Q_OS_MAC
+#ifdef Q_OS_MACOS
 #include <objc/runtime.h>
 #include <objc/message.h>
 
@@ -60,7 +61,14 @@ bool OverlayWindow::KeyBinding::matches(const QKeyEvent *event) const {
     if (event->key() == key)
         return true;
     // Prefs records keypad-Enter and Return both as "Enter" — accept either.
-    return key == Qt::Key_Return && event->key() == Qt::Key_Enter;
+    if (key == Qt::Key_Return && event->key() == Qt::Key_Enter)
+        return true;
+    // Prefs records Shift+digit/punctuation as the unshifted key
+    // ("Shift+1"), but macOS delivers the shifted character (Key_Exclam).
+    if (evMods & Qt::ShiftModifier)
+        return hotkeykeymap::unshiftedKey(event->key(), evMods,
+                                          event->nativeVirtualKey()) == key;
+    return false;
 }
 
 OverlayWindow::KeyBinding OverlayWindow::bindingFor(const shortcuts::Snapshot &cfg,
@@ -176,25 +184,46 @@ void OverlayWindow::repositionToScreen(QScreen *screen) {
 }
 
 void OverlayWindow::onScreenConfigChanged() {
-    // Topology changed underneath us. If the overlay is hidden, do nothing: the
-    // next activate() repositions to the cursor's screen from scratch. If it's
-    // visible, re-anchor now so it follows the new layout instead of lingering
-    // on a screen that may have moved or vanished.
-    if (!isVisible())
+    // Topology changed underneath us. If the overlay is idle and hidden, do
+    // nothing: the next activate() repositions to the cursor's screen from
+    // scratch. If a session is live (visible, or its capture still pending),
+    // cancel it: the captured frame, the display index it came from and the
+    // window-local selection all describe a layout that no longer exists, so
+    // moving the window would composite/crop the wrong pixels.
+    if (!isVisible() && !m_captureInFlight)
         return;
-    QScreen *screen = QGuiApplication::screenAt(QCursor::pos());
-    if (!screen)
-        screen = QGuiApplication::primaryScreen();
-    repositionToScreen(screen);
+    qWarning("Overlay: display configuration changed mid-session — cancelling");
+    cancelSession();
+}
+
+void OverlayWindow::cancelSession() {
+    if (m_canvas) m_canvas->cancelTextInput();
+    m_annotationState.clearAnnotations();
+    m_resizing = false;
+    m_activeResize = EdgeNone;
+    exitAnnotateMode();
+    exitRecordSelectMode();
+    m_mode = Select;
+    m_hasRegion = false;
+    m_drawing = false;
+    hideOverlay();
+    emit cancelled();
 }
 
 // Shared internal activation logic
 void OverlayWindow::activateInternal() {
-    QElapsedTimer timer;
-    timer.start();
+
+    // A previous session still on screen would end up in the new capture
+    // frame (the overlay is opaque) — take it down first.
+    if (isVisible()) {
+        hide();
+        syncSelectCursor();
+    }
 
     m_drawing = false;
     m_hasRegion = false;
+    m_resizing = false;
+    m_activeResize = EdgeNone;
     m_annotationState.clearAnnotations();
     exitAnnotateMode();
     exitRecordSelectMode();
@@ -251,11 +280,13 @@ void OverlayWindow::activateInternal() {
         m_endPos.setY(std::clamp(m_endPos.y(), 0, maxY));
     }
 
-    // Show the overlay BEFORE capturing. Previously snapforge_capture_fullscreen
-    // ran synchronously and could block the UI thread for several seconds when
-    // SCK was slow to deliver the first frame. We now show the dimmed overlay
-    // immediately and swap in the screenshot when the worker completes; until
-    // then, paintEvent draws light dim over the real desktop.
+    // Capture FIRST, show the overlay only once the frame has landed. The
+    // overlay is an opaque window (no WA_TranslucentBackground): showing it
+    // before the grab let the capture race the window server and record the
+    // overlay itself (or a flat dim) instead of the desktop. The capture runs
+    // on a worker so the UI thread never blocks on SCK; the hotkey gate stays
+    // closed meanwhile because isBusy() reports a pending capture.
+    m_activationTimer.start();
     int displayIndex = m_displayIndex;
     QPointer<OverlayWindow> self(this);
     auto *watcher = new QFutureWatcher<QImage>(this);
@@ -269,10 +300,9 @@ void OverlayWindow::activateInternal() {
         // This is the in-flight capture resolving — clear the gate regardless
         // of outcome so a failure can't leave isBusy() stuck true.
         self->m_captureInFlight = false;
-        // Discard stale completions: user dismissed overlay or switched display
-        // (Space change) before capture finished. Without these guards we'd
-        // paint the prior Space's screenshot into the current overlay.
-        if (!self->isVisible()) return;
+        // A dismissed session bumps m_captureSeq (hideOverlay), so reaching
+        // here means this activation is still current. Defensive: the display
+        // must still be the one we captured.
         if (self->m_displayIndex != displayIndex) return;
         if (img.isNull()) {
             // Capture failed (SCK timeout, CGDisplayCreateImage null/all-zero,
@@ -293,7 +323,7 @@ void OverlayWindow::activateInternal() {
             QRect sel = self->selectedRect();
             self->m_canvas->setRegion(sel.x(), sel.y(), sel.width(), sel.height());
         }
-        self->update();
+        self->presentOverlay();
     });
     QFuture<QImage> future = QtConcurrent::run([displayIndex]() -> QImage {
         // The client copies the pixels into the QImage and frees the FFI
@@ -317,21 +347,22 @@ void OverlayWindow::activateInternal() {
         self->handleCaptureFailure("capture watchdog timeout (worker stalled)");
     });
 
-    // The region-select crosshair is applied by syncSelectCursor() at the end of
-    // this function (and by every later state transition). It uses an application
-    // override cursor rather than a per-widget setCursor() because the latter is
-    // not reliable on macOS for a stationary pointer — see syncSelectCursor().
+}
 
+// Put the (already captured) session on screen. Called from the capture
+// completion handler only — see activateInternal for why the overlay must not
+// be visible while the frame is being grabbed.
+void OverlayWindow::presentOverlay() {
     show();
     activateWindow();
     raise();
 
-#ifdef Q_OS_MAC
+#ifdef Q_OS_MACOS
     {
         auto *nsView = reinterpret_cast<id>(winId());
         id nsWindow = ((id (*)(id, SEL))objc_msgSend)(nsView, sel_registerName("window"));
         if (nsWindow) {
-            ((void (*)(id, SEL, long))objc_msgSend)(nsWindow, sel_registerName("setLevel:"), 1000);
+            ((void (*)(id, SEL, long))objc_msgSend)(nsWindow, sel_registerName("setLevel:"), kOverlayWindowLevel);
             unsigned long behavior = (1 << 0) | (1 << 4) | (1 << 6) | (1 << 8);
             ((void (*)(id, SEL, unsigned long))objc_msgSend)(
                 nsWindow, sel_registerName("setCollectionBehavior:"), behavior);
@@ -369,12 +400,21 @@ void OverlayWindow::activateInternal() {
     }
 #endif
 
+    // Annotate mode may have been entered while hidden (remembered region /
+    // fullscreen): make sure its widgets sit on top now that we're visible.
+    if (m_mode == Annotate) {
+        if (m_canvas) m_canvas->raise();
+        if (m_toolbar) m_toolbar->raise();
+    }
+
     // Apply the draw-region crosshair now that the window is shown and (on macOS)
     // key. Uses an application override cursor so it survives the AppKit cursor
     // re-evaluations that a stationary pointer would otherwise lose it to.
     syncSelectCursor();
+    update();
 
-    qDebug("Overlay shown in %lld ms", timer.elapsed());
+    qDebug("Overlay shown in %lld ms", m_activationTimer.isValid()
+                                           ? m_activationTimer.elapsed() : -1LL);
 }
 
 void OverlayWindow::activate() {
@@ -475,6 +515,10 @@ OverlayWindow::ResizeEdge OverlayWindow::edgeAt(QPoint pos) const {
 }
 
 void OverlayWindow::beginResize(ResizeEdge edge) {
+    // A half-typed text label is positioned in canvas coords; commit it so it
+    // gets translated with the rest instead of floating at a stale spot.
+    if (m_mode == Annotate && m_canvas)
+        m_canvas->commitTextInput();
     QRect sel = selectedRect();
     m_resizing = true;
     m_activeResize = edge;
@@ -528,11 +572,18 @@ void OverlayWindow::applyResize(QPoint pos) {
     top    = std::max(0, std::min(height() - 1, top));
     bottom = std::max(0, std::min(height() - 1, bottom));
 
+    const QPoint oldTopLeft = selectedRect().topLeft();
     m_startPos = QPoint(left, top);
     m_endPos   = QPoint(right, bottom);
 
     if (m_mode == Annotate && m_canvas) {
         QRect sel = selectedRect();
+        // Annotations are stored in canvas-local coords. Moving the canvas
+        // origin (dragging the top/left edge) would otherwise drag every mark
+        // along with it; shift them back so they stay on the same pixels.
+        const QPoint moved = sel.topLeft() - oldTopLeft;
+        if (!moved.isNull())
+            m_annotationState.offsetAll(QPointF(-moved));
         m_canvas->setRegion(sel.x(), sel.y(), sel.width(), sel.height());
         m_canvas->setGeometry(sel);
         if (m_toolbar) {
@@ -554,6 +605,14 @@ void OverlayWindow::enterAnnotateMode() {
     // Create canvas over the selected region
     if (!m_canvas) {
         m_canvas = new AnnotationCanvas(&m_annotationState, m_screenshot, this);
+        // While a text label is being typed the QLineEdit owns the keyboard,
+        // so Save/Copy chords never reached keyPressEvent. Let the canvas
+        // hand them to us: commit the text, then act.
+        m_canvas->setTextKeyInterceptor([this](QKeyEvent *ev) {
+            if (m_bindSave.matches(ev)) { handleSaveAndCopy(); return true; }
+            if (m_bindCopy.matches(ev)) { handleCopy(); return true; }
+            return false;
+        });
     } else {
         // Canvas is reused across activations — refresh its screenshot
         // reference so it crops from the LATEST capture, not the first one.
@@ -569,13 +628,8 @@ void OverlayWindow::enterAnnotateMode() {
         m_toolbar = new AnnotationToolbar(&m_annotationState, this);
         connect(m_toolbar, &AnnotationToolbar::saveRequested, this, &OverlayWindow::handleSaveAndCopy);
         connect(m_toolbar, &AnnotationToolbar::copyRequested, this, &OverlayWindow::handleCopy);
-        connect(m_toolbar, &AnnotationToolbar::cancelRequested, this, [this]() {
-            exitAnnotateMode();
-            m_hasRegion = false;
-            m_drawing = false;
-            hideOverlay();
-            emit cancelled();
-        });
+        connect(m_toolbar, &AnnotationToolbar::cancelRequested,
+                this, &OverlayWindow::cancelSession);
     }
     m_toolbar->positionRelativeTo(sel.x(), sel.y(), sel.width(), sel.height());
     m_toolbar->show();
@@ -657,13 +711,8 @@ void OverlayWindow::enterRecordSelectMode() {
             "  color: rgba(255, 255, 255, 220);"
             "}"
         );
-        connect(m_btnRecordCancel, &QPushButton::clicked, this, [this]() {
-            exitRecordSelectMode();
-            m_hasRegion = false;
-            m_drawing = false;
-            hideOverlay();
-            emit cancelled();
-        });
+        connect(m_btnRecordCancel, &QPushButton::clicked,
+                this, &OverlayWindow::cancelSession);
     }
 
     positionRecordButtons(sel);
@@ -781,6 +830,11 @@ void OverlayWindow::emitRecordFullscreen() {
 // ---- end record-select ----
 
 void OverlayWindow::hideOverlay() {
+    // Ending the session supersedes any capture still in flight: bump the
+    // sequence so its completion/watchdog no-op instead of re-showing a
+    // dismissed overlay, and release the busy gate.
+    ++m_captureSeq;
+    m_captureInFlight = false;
     hide();
     syncSelectCursor();
 }
@@ -809,17 +863,20 @@ void OverlayWindow::syncSelectCursor() {
 }
 
 bool OverlayWindow::isBusy() const {
+    // The overlay stays hidden until its capture lands (see activateInternal),
+    // so a pending capture is busy even while invisible. Bounded: the
+    // completion handler or the 8s watchdog always clears it.
+    if (m_captureInFlight) return true;
     if (!isVisible()) return false;
     // Visible but idle (no draw in progress, no committed region, default mode,
     // and capture already landed) = stale window AppKit may have hidden behind
     // our back. Allow the hotkey to recover by re-entering activate().
     if (m_drawing || m_hasRegion) return true;
     if (m_mode == Annotate || m_mode == RecordSelect) return true;
-    // Busy only while a capture is genuinely pending. A *failed* capture clears
-    // this flag (via handleCaptureFailure) instead of leaving m_screenshot null
+    // (A pending capture was handled above. A *failed* capture clears that
+    // flag via handleCaptureFailure instead of leaving m_screenshot null
     // forever — the old `m_screenshot.isNull()` test latched busy permanently
-    // after any capture failure and killed the hotkey until app restart.
-    if (m_captureInFlight) return true;
+    // after any capture failure and killed the hotkey until app restart.)
     return false;
 }
 
@@ -839,15 +896,32 @@ void OverlayWindow::handleCaptureFailure(const char *reason) {
                        "Recording, then try again."));
 }
 
-void OverlayWindow::handleCopy() {
-    if (!m_canvas) return;
-    // Capture hasn't landed yet (user acted while the async fullscreen grab
-    // was still in flight — possible via remembered-region/fullscreen, which
-    // enter annotate mode before the screenshot resolves). compositeImage()
-    // would be blank. Ignore and keep the overlay up; the completion handler
-    // refreshes the canvas, so a retry works.
-    if (m_captureInFlight) return;
+// Shared Save/Copy precondition. Returns the composited image, or a null
+// image (after beeping) if the session can't produce one yet.
+QImage OverlayWindow::compositeForCommit() {
+    if (!m_canvas) return QImage();
+    // Capture hasn't landed yet. The overlay is normally hidden until then,
+    // but don't composite a blank frame if we get here anyway — tell the user
+    // instead of silently ignoring the action; a retry works once the
+    // completion handler refreshes the canvas.
+    if (m_captureInFlight || m_screenshot.isNull()) {
+        qWarning("Overlay: Save/Copy ignored — capture not ready yet");
+        QApplication::beep();
+        return QImage();
+    }
+    // A label still being typed lives only in the QLineEdit — commit it so
+    // it makes it into the image (hiding the canvas would discard it).
+    m_canvas->commitTextInput();
     QImage composited = m_canvas->compositeImage();
+    if (composited.isNull()) {
+        qWarning("Overlay: Save/Copy produced an empty image");
+        QApplication::beep();
+    }
+    return composited;
+}
+
+void OverlayWindow::handleCopy() {
+    QImage composited = compositeForCommit();
     if (composited.isNull()) return;
 
     rememberCurrentRegion();
@@ -860,11 +934,7 @@ void OverlayWindow::handleCopy() {
 }
 
 void OverlayWindow::handleSaveAndCopy() {
-    if (!m_canvas) return;
-    // See handleCopy: skip while the async capture is still pending so a blank
-    // composite isn't saved/copied; retry works once the canvas refreshes.
-    if (m_captureInFlight) return;
-    QImage composited = m_canvas->compositeImage();
+    QImage composited = compositeForCommit();
     if (composited.isNull()) return;
 
     rememberCurrentRegion();
@@ -873,8 +943,10 @@ void OverlayWindow::handleSaveAndCopy() {
     exitAnnotateMode();
     hideOverlay();
 
+    // Save only. Whether a save also copies is the "Auto copy to clipboard"
+    // preference, which main.cpp's screenshotReady handler applies — emitting
+    // clipboardReady here too copied twice and ignored the setting.
     emit screenshotReady(composited, composited.width(), composited.height());
-    emit clipboardReady(composited, composited.width(), composited.height());
 }
 
 void OverlayWindow::paintEvent(QPaintEvent *) {
@@ -910,14 +982,22 @@ void OverlayWindow::paintEvent(QPaintEvent *) {
         p.setPen(darkPen);
         p.drawRect(sel);
 
-        // Dimension label
-        QString label = QString("%1 \u00d7 %2").arg(sel.width()).arg(sel.height());
+        // Dimension label, in device pixels (what the saved image will be),
+        // not logical points.
+        const double scale = captureScale();
+        QString label = QString("%1 \u00d7 %2")
+                            .arg(qRound(sel.width() * scale))
+                            .arg(qRound(sel.height() * scale));
         QFont font("Menlo", 11);
         p.setFont(font);
         QFontMetrics fm(font);
         QRect labelRect = fm.boundingRect(label);
         int lx = sel.x() + sel.width() / 2 - labelRect.width() / 2 - 4;
         int ly = sel.y() - labelRect.height() - 8;
+        // Selection touching the top edge: put the label just inside it
+        // instead of off-screen. Keep it horizontally on-screen too.
+        if (ly < 2) ly = sel.y() + 6;
+        lx = std::clamp(lx, 2, std::max(2, width() - labelRect.width() - 10));
         p.fillRect(lx - 2, ly - 1, labelRect.width() + 8, labelRect.height() + 4,
                    QColor(0, 0, 0, 180));
         p.setPen(Qt::white);
@@ -961,14 +1041,16 @@ void OverlayWindow::mousePressEvent(QMouseEvent *event) {
             // Previously this entered a "draw new region" state that left
             // the overlay visible, which the hotkey handler treats as busy
             // (see Fix #14 in main.cpp::hotkeyHandler).
+            //
+            // Once the user has drawn anything, a stray click outside must not
+            // throw the work away: ignore it (Esc / Cancel still cancel).
             QRect sel = selectedRect();
             if (!sel.contains(event->pos())) {
-                m_annotationState.clearAnnotations();
-                exitAnnotateMode();
-                m_hasRegion = false;
-                m_drawing = false;
-                hideOverlay();
-                emit cancelled();
+                const bool hasWork = !m_annotationState.annotations().isEmpty()
+                                  || m_annotationState.activeAnnotation().has_value()
+                                  || (m_canvas && m_canvas->isTextInputActive());
+                if (!hasWork)
+                    cancelSession();
             }
             // Clicks inside the region are handled by AnnotationCanvas
             return;
@@ -996,15 +1078,9 @@ void OverlayWindow::mousePressEvent(QMouseEvent *event) {
             return;
         }
 
-        // Select mode: edge resize when we already have a region
-        if (m_hasRegion && !m_drawing && m_mode == Select) {
-            ResizeEdge edge = edgeAt(event->pos());
-            if (edge != EdgeNone) {
-                beginResize(edge);
-                return;
-            }
-        }
-
+        // Select mode never holds a committed region (every commit path moves
+        // to Annotate/RecordSelect, every exit path clears m_hasRegion), so a
+        // press here always starts a fresh rubber-band.
         m_startPos = event->pos();
         m_endPos = event->pos();
         m_drawing = true;
@@ -1021,7 +1097,9 @@ void OverlayWindow::mouseMoveEvent(QMouseEvent *event) {
     }
 
     if (m_drawing) {
-        m_endPos = event->pos();
+        // Clamp: a drag past the screen edge must not produce a selection
+        // (and crop) outside the captured frame.
+        m_endPos = clampToWidget(event->pos());
         update();
         return;
     }
@@ -1082,6 +1160,7 @@ void OverlayWindow::mouseReleaseEvent(QMouseEvent *event) {
 
     if (event->button() == Qt::LeftButton && m_drawing) {
         m_drawing = false;
+        m_endPos = clampToWidget(event->pos());
         QRect sel = selectedRect();
         if (sel.width() > 5 && sel.height() > 5) {
             if (m_purpose == Record) {
@@ -1097,9 +1176,17 @@ void OverlayWindow::mouseReleaseEvent(QMouseEvent *event) {
 }
 
 void OverlayWindow::keyPressEvent(QKeyEvent *event) {
+    // Escape ALWAYS cancels, whatever the user bound "Cancel" to — it's the
+    // universal way out of a full-screen overlay. (While a text label is
+    // being typed the canvas consumes Escape to discard the label first.)
+    const bool isCancel = event->key() == Qt::Key_Escape || m_bindCancel.matches(event);
+
     if (m_mode == Annotate) {
-        // If text input is active in the canvas, let it handle keys
+        // If text input is active in the canvas, let it handle keys (Save /
+        // Copy chords are forwarded via the canvas's key interceptor).
         if (m_canvas && m_canvas->isTextInputActive()) {
+            if (m_bindSave.matches(event)) { handleSaveAndCopy(); return; }
+            if (m_bindCopy.matches(event)) { handleCopy(); return; }
             QWidget::keyPressEvent(event);
             return;
         }
@@ -1123,14 +1210,9 @@ void OverlayWindow::keyPressEvent(QKeyEvent *event) {
             return;
         }
 
-        // Cancel (default Escape): exit annotate mode and hide
-        if (m_bindCancel.matches(event)) {
-            m_annotationState.clearAnnotations();
-            exitAnnotateMode();
-            m_hasRegion = false;
-            m_drawing = false;
-            hideOverlay();
-            emit cancelled();
+        // Cancel (Escape, or the user's Cancel binding): exit and hide
+        if (isCancel) {
+            cancelSession();
             return;
         }
 
@@ -1155,87 +1237,37 @@ void OverlayWindow::keyPressEvent(QKeyEvent *event) {
             emitRecordRegion();
             return;
         }
-        // Cancel (default Escape)
-        if (m_bindCancel.matches(event)) {
-            exitRecordSelectMode();
-            m_hasRegion = false;
-            m_drawing = false;
-            hideOverlay();
-            emit cancelled();
+        // Cancel (Escape, or the user's Cancel binding)
+        if (isCancel) {
+            cancelSession();
             return;
         }
         return;
     }
 
-    // Select mode
-    if (m_bindCancel.matches(event)) {
-        // Cancel (default Escape)
-        m_hasRegion = false;
-        m_drawing = false;
-        hideOverlay();
-        emit cancelled();
-    } else if (event->key() == Qt::Key_Return && m_hasRegion) {
-        enterAnnotateMode();
-    } else if (m_bindCopy.matches(event) && m_hasRegion) {
-        // Copy to clipboard (default Cmd+C)
-        QRect sel = selectedRect();
+    // Select mode (drawing / about to draw a region). There is no committed
+    // region in this mode — enter*Mode() runs on mouse release — so the only
+    // key that does anything is cancel. (The old Return / Cmd+C branches here
+    // were gated on m_hasRegion and could never run.)
+    if (isCancel)
+        cancelSession();
+}
 
-        // Fix #19: ignore zero-size regions.
-        if (sel.width() < 2 || sel.height() < 2) {
-            emit regionInvalid(QStringLiteral("selection is too small"));
-            return;
-        }
+QPoint OverlayWindow::clampToWidget(QPoint p) const {
+    return QPoint(std::clamp(p.x(), 0, std::max(0, width() - 1)),
+                  std::clamp(p.y(), 0, std::max(0, height() - 1)));
+}
 
-        // sel is widget-local and the overlay covers exactly one display, so
-        // the region's display is THIS overlay's screen. (The old
-        // geometry().contains(sel) search compared local coords to global rects
-        // and picked the wrong screen's DPR on multi-monitor setups.)
-        QScreen *selScreen = this->screen();
-        double dpr = selScreen ? selScreen->devicePixelRatio()
-                               : sf::displayScaleFactor();
-        int px = static_cast<int>(sel.x() * dpr);
-        int py = static_cast<int>(sel.y() * dpr);
-        int pw = static_cast<int>(sel.width() * dpr);
-        int ph = static_cast<int>(sel.height() * dpr);
-
-        // Hide overlay first, then capture+copy on a worker so SCK latency
-        // doesn't block the UI thread. By the time the worker captures, the
-        // overlay is gone and the underlying desktop is what we want anyway.
-        int displayIndex = m_displayIndex;
-        m_hasRegion = false;
-        m_drawing = false;
-        hideOverlay();
-        emit cancelled();
-        // hide() only *queues* the panel's removal with the window server;
-        // capturing immediately can still grab a frame containing the dim
-        // layer/marching-ants border. (The Enter/confirm path is immune — it
-        // composites from the screenshot pre-captured at activation instead
-        // of re-capturing.) Defer ~2 frames so the panel is actually gone.
-        QTimer::singleShot(35, this, [displayIndex, px, py, pw, ph]() {
-        QThreadPool::globalInstance()->start([displayIndex, px, py, pw, ph]() {
-            // Raw capture stays on the primitive (snapforge_capture_region):
-            // this is the unmodified desktop bitmap with no annotations to
-            // preserve. We pipe it through the use-case clipboard path so
-            // the clipboard write goes via snapforge_save_prerendered
-            // (output_path omitted = clipboard-only).
-            auto captured = sf::captureRegion(
-                static_cast<uint32_t>(displayIndex),
-                sf::Region{px, py, static_cast<uint32_t>(pw), static_cast<uint32_t>(ph)});
-            if (captured) {
-                const QImage &img = *captured;
-                sf::SaveReq req;            // outputPath empty = clipboard-only
-                req.copyToClipboard = true;
-                if (!sf::savePrerendered(img.constBits(),
-                                         static_cast<size_t>(img.sizeInBytes()),
-                                         static_cast<uint32_t>(img.width()),
-                                         static_cast<uint32_t>(img.height()),
-                                         req)) {
-                    const QString err = sf::lastError();
-                    if (!err.isEmpty())
-                        qWarning("Cmd+C clipboard copy failed: %s", qUtf8Printable(err));
-                }
-            }
-        });
-        }); // singleShot
-    }
+// Device pixels per logical point of the current capture. Derived from the
+// captured frame itself (its width over the overlay's width) rather than
+// QScreen::devicePixelRatio(): they normally agree, but if they don't (scaled
+// display modes, a reconfiguration between capture and paint) the frame is
+// the ground truth for every crop.
+double OverlayWindow::captureScale() const {
+    const double screenDpr = screen() ? screen()->devicePixelRatio() : 0.0;
+    if (!m_screenshot.isNull() && width() > 0)
+        return double(m_screenshot.width()) / double(width());
+    if (screenDpr > 0.0) return screenDpr;
+    const double f = sf::displayScaleFactor();
+    return f > 0.0 ? f : 1.0;
 }

@@ -17,14 +17,17 @@ jobs:
     name: Build & test (macOS)
     if: ${{ !startsWith(github.event.head_commit.message, 'chore(release):') }}
     runs-on: macos-14
+    env:
+      # Keep in sync with CMAKE_OSX_DEPLOYMENT_TARGET / LSMinimumSystemVersion.
+      MACOSX_DEPLOYMENT_TARGET: "14.0"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Install Qt6 + bundling deps
         run: brew install qt dylibbundler ffmpeg
 
       - name: Cache cargo registry & target
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: |
             ~/.cargo/registry
@@ -43,8 +46,19 @@ jobs:
       - name: clippy (deny warnings)
         run: cargo clippy --workspace --all-targets -- -D warnings
 
+      # The non-macOS fallback code (cfg(not(target_os = "macos"))) is never
+      # compiled by the macOS build above; type-check it for Windows so it
+      # can't rot. Warnings are errors, as for clippy above.
+      - name: cargo check (Windows target, non-macOS fallbacks)
+        env:
+          RUSTFLAGS: "-D warnings"
+        run: |
+          rustup target add x86_64-pc-windows-msvc
+          cargo check --workspace --target x86_64-pc-windows-msvc --all-targets
+
       - name: Install cargo-deny
-        run: cargo install cargo-deny --locked
+        # Pinned so a new cargo-deny release can't break CI unannounced.
+        run: cargo install cargo-deny --locked --version 0.20.2
 
       - name: cargo-deny (advisories, licenses, bans, sources)
         run: cargo deny check
@@ -56,8 +70,15 @@ jobs:
       - name: Build snapforge-ffi (release)
         run: cargo build --release -p snapforge-ffi
 
+      # BUILD_TESTING=ON builds the QTest suite; SNAPFORGE_BUNDLE stays OFF
+      # (bundling/signing is exercised by the release workflow's DMG build).
       - name: Configure Qt build
-        run: cmake -S qt -B qt/build -DCMAKE_PREFIX_PATH="$(brew --prefix qt)"
+        run: cmake -S qt -B qt/build -DCMAKE_PREFIX_PATH="$(brew --prefix qt)" -DBUILD_TESTING=ON
 
-      - name: Build Qt app
+      - name: Build Qt app + tests
         run: cmake --build qt/build --parallel
+
+      - name: Qt tests (ctest)
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: ctest --test-dir qt/build --output-on-failure

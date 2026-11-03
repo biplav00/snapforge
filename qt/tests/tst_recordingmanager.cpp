@@ -9,6 +9,9 @@
 #include <QtTest/QtTest>
 #include <QSignalSpy>
 #include <QTemporaryDir>
+#include <atomic>
+#include <chrono>
+#include <thread>
 
 #include "RecordingManager.h"
 #include "SnapforgeClientTesting.h"
@@ -42,7 +45,31 @@ private slots:
     void stop_success_emitsStopped();
     void stop_missingOutputFile_emitsError();
     void stop_whenIdle_emitsNothing();
+    void start_rejectedWhileStopping();
+    void stop_emitsFinalizingAndIsBusyUntilDone();
+    void deadWorker_detectedByTimer_emitsErrorAndGoesIdle();
+    void pauseFailure_emitsWarningNotError();
+    void resumeFailure_emitsWarningNotError();
+    void stopWatchdog_firesAndReopensStartGate();
+    void sleepWake_autoResumesOnlyAutoPause();
+    void outputPath_isUniqueForBackToBackStarts();
+    void showClicksEnabled_reflectsSavedConfig();
+    void outputPath_followsCoreUniquifiedPath();
 };
+
+namespace {
+// Holds the fake recordStop on the worker thread until released.
+struct StopGate {
+    std::atomic<bool> released{false};
+    void install() {
+        sf::test::state().recordStopHook = [this]() {
+            while (!released.load())
+                std::this_thread::sleep_for(std::chrono::milliseconds(2));
+        };
+    }
+    void release() { released.store(true); }
+};
+} // namespace
 
 void TestRecordingManager::initialState_isIdle() {
     RecordingManager mgr;
@@ -228,6 +255,225 @@ void TestRecordingManager::stop_whenIdle_emitsNothing() {
     mgr.stopRecording();
     QCOMPARE(stoppedSpy.count(), 0);
     QCOMPARE(errorSpy.count(), 0);
+}
+
+void TestRecordingManager::start_rejectedWhileStopping() {
+    StopGate gate;
+    gate.install();
+    RecordingManager mgr;
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    mgr.startRecording(0, QRect(), dir.path());
+    QVERIFY(mgr.isRecording());
+
+    mgr.stopRecording();
+    QVERIFY(!mgr.isRecording());
+    QVERIFY(mgr.isBusy());
+
+    QSignalSpy warningSpy(&mgr, &RecordingManager::recordingWarning);
+    QSignalSpy startedSpy(&mgr, &RecordingManager::recordingStarted);
+    mgr.startRecording(0, QRect(), dir.path());
+    QCOMPARE(startedSpy.count(), 0);
+    QCOMPARE(warningSpy.count(), 1);
+    QVERIFY(warningSpy.takeFirst().at(0).toString().contains(QStringLiteral("finalizing")));
+
+    QSignalSpy errorSpy(&mgr, &RecordingManager::recordingError);
+    gate.release();
+    QVERIFY(errorSpy.wait(5000)); // no output file -> "empty or missing"
+    QVERIFY(!mgr.isBusy());
+}
+
+void TestRecordingManager::stop_emitsFinalizingAndIsBusyUntilDone() {
+    RecordingManager mgr;
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    mgr.startRecording(0, QRect(), dir.path());
+    QFile f(mgr.outputPath());
+    QVERIFY(f.open(QIODevice::WriteOnly));
+    f.write("x");
+    f.close();
+
+    QSignalSpy finalizingSpy(&mgr, &RecordingManager::recordingFinalizing);
+    QSignalSpy stoppedSpy(&mgr, &RecordingManager::recordingStopped);
+    mgr.stopRecording();
+    QCOMPARE(finalizingSpy.count(), 1);
+    QVERIFY(mgr.isBusy());
+    QVERIFY(stoppedSpy.wait(5000));
+    QVERIFY(!mgr.isBusy());
+}
+
+void TestRecordingManager::deadWorker_detectedByTimer_emitsErrorAndGoesIdle() {
+    RecordingManager mgr;
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    mgr.startRecording(0, QRect(), dir.path());
+    QVERIFY(mgr.isRecording());
+
+    // The Rust worker dies on its own; stop then reports its real error.
+    sf::test::state().recordAlive = false;
+    sf::test::state().recordStopSucceeds = false;
+    sf::test::state().recordStopError = QStringLiteral("ffmpeg exited with status 1");
+
+    QSignalSpy errorSpy(&mgr, &RecordingManager::recordingError);
+    QSignalSpy finalizingSpy(&mgr, &RecordingManager::recordingFinalizing);
+    // The 1s tick polls recordIsAlive.
+    QVERIFY(errorSpy.wait(5000));
+    QCOMPARE(finalizingSpy.count(), 1);
+    QVERIFY(errorSpy.takeFirst().at(0).toString().contains(QStringLiteral("ffmpeg exited")));
+    QVERIFY(!mgr.isRecording());
+    QVERIFY(!mgr.isBusy());
+    QCOMPARE(sf::test::state().recordStopCalls, 1);
+}
+
+void TestRecordingManager::pauseFailure_emitsWarningNotError() {
+    RecordingManager mgr;
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    mgr.startRecording(0, QRect(), dir.path());
+    sf::test::state().recordPauseSucceeds = false;
+
+    QSignalSpy warningSpy(&mgr, &RecordingManager::recordingWarning);
+    QSignalSpy errorSpy(&mgr, &RecordingManager::recordingError);
+    QSignalSpy pausedSpy(&mgr, &RecordingManager::recordingPaused);
+    mgr.pauseRecording();
+    QCOMPARE(warningSpy.count(), 1);
+    QCOMPARE(errorSpy.count(), 0);
+    QCOMPARE(pausedSpy.count(), 0);
+    QVERIFY(!mgr.isPaused());
+    QVERIFY(mgr.isRecording());
+}
+
+void TestRecordingManager::resumeFailure_emitsWarningNotError() {
+    RecordingManager mgr;
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    mgr.startRecording(0, QRect(), dir.path());
+    mgr.pauseRecording();
+    QVERIFY(mgr.isPaused());
+    sf::test::state().recordResumeSucceeds = false;
+
+    QSignalSpy warningSpy(&mgr, &RecordingManager::recordingWarning);
+    QSignalSpy errorSpy(&mgr, &RecordingManager::recordingError);
+    mgr.resumeRecording();
+    QCOMPARE(warningSpy.count(), 1);
+    QCOMPARE(errorSpy.count(), 0);
+    QVERIFY(mgr.isPaused());
+    QVERIFY(mgr.isRecording());
+}
+
+void TestRecordingManager::stopWatchdog_firesAndReopensStartGate() {
+    StopGate gate;
+    gate.install();
+    {
+        RecordingManager mgr;
+        mgr.setStopTimeoutMs(100);
+        QTemporaryDir dir;
+        QVERIFY(dir.isValid());
+        mgr.startRecording(0, QRect(), dir.path());
+
+        QSignalSpy errorSpy(&mgr, &RecordingManager::recordingError);
+        QSignalSpy stoppedSpy(&mgr, &RecordingManager::recordingStopped);
+        mgr.stopRecording();
+        QVERIFY(mgr.isBusy());
+        QVERIFY(errorSpy.wait(5000));
+        QVERIFY(errorSpy.takeFirst().at(0).toString().contains(QStringLiteral("too long")));
+        QVERIFY(!mgr.isBusy());
+
+        // A new recording can start while the wedged worker is still stuck.
+        sf::test::state().recordStopHook = nullptr; // only affects new stops
+        QSignalSpy startedSpy(&mgr, &RecordingManager::recordingStarted);
+        mgr.startRecording(0, QRect(), dir.path());
+        QCOMPARE(startedSpy.count(), 1);
+        QVERIFY(mgr.isRecording());
+
+        // The wedged worker finishing late must not touch the new session.
+        gate.release();
+        QTest::qWait(200);
+        QCOMPARE(stoppedSpy.count(), 0);
+        QCOMPARE(errorSpy.count(), 0);
+        QVERIFY(mgr.isRecording());
+    } // dtor joins the (now finished) late worker and stops the new session
+}
+
+void TestRecordingManager::sleepWake_autoResumesOnlyAutoPause() {
+    RecordingManager mgr;
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    mgr.startRecording(0, QRect(), dir.path());
+
+    // Running -> sleep pauses, wake resumes.
+    mgr.handleSystemSleep();
+    QVERIFY(mgr.isPaused());
+    mgr.handleSystemWake();
+    QVERIFY(!mgr.isPaused());
+
+    // Manual pause survives a sleep/wake cycle.
+    mgr.pauseRecording();
+    QVERIFY(mgr.isPaused());
+    mgr.handleSystemSleep();
+    mgr.handleSystemWake();
+    QVERIFY(mgr.isPaused());
+
+    // A failed auto-pause doesn't arm auto-resume.
+    mgr.resumeRecording();
+    sf::test::state().recordPauseSucceeds = false;
+    mgr.handleSystemSleep();
+    QVERIFY(!mgr.isPaused());
+    sf::test::state().recordPauseSucceeds = true;
+    mgr.pauseRecording();
+    mgr.handleSystemWake();
+    QVERIFY(mgr.isPaused());
+}
+
+void TestRecordingManager::outputPath_isUniqueForBackToBackStarts() {
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    RecordingManager mgr;
+    mgr.startRecording(0, QRect(), dir.path());
+    const QString first = mgr.outputPath();
+    QFile f(first);
+    QVERIFY(f.open(QIODevice::WriteOnly));
+    f.write("x");
+    f.close();
+    QSignalSpy stoppedSpy(&mgr, &RecordingManager::recordingStopped);
+    mgr.stopRecording();
+    QVERIFY(stoppedSpy.wait(5000));
+
+    mgr.startRecording(0, QRect(), dir.path());
+    QVERIFY(mgr.outputPath() != first);
+    QVERIFY(!QFile::exists(mgr.outputPath()));
+}
+
+void TestRecordingManager::showClicksEnabled_reflectsSavedConfig() {
+    sf::test::state().configJson =
+        QByteArrayLiteral(R"({"recording":{"show_clicks":true}})");
+    RecordingManager mgr;
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    mgr.startRecording(0, QRect(), dir.path());
+    QVERIFY(mgr.showClicksEnabled());
+    QVERIFY(sf::test::state().lastRecordReq->showClicks);
+}
+
+void TestRecordingManager::outputPath_followsCoreUniquifiedPath() {
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString real = dir.path() + QStringLiteral("/recording_core-1.mp4");
+    sf::test::state().recordOutputPathOverride = real;
+    RecordingManager mgr;
+    QSignalSpy startedSpy(&mgr, &RecordingManager::recordingStarted);
+    mgr.startRecording(0, QRect(), dir.path());
+    QCOMPARE(mgr.outputPath(), real);
+    QCOMPARE(startedSpy.takeFirst().at(0).toString(), real);
+
+    QFile f(real);
+    QVERIFY(f.open(QIODevice::WriteOnly));
+    f.write("x");
+    f.close();
+    QSignalSpy stoppedSpy(&mgr, &RecordingManager::recordingStopped);
+    mgr.stopRecording();
+    QVERIFY(stoppedSpy.wait(5000));
+    QCOMPARE(stoppedSpy.takeFirst().at(0).toString(), real);
 }
 
 QTEST_GUILESS_MAIN(TestRecordingManager)

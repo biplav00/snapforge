@@ -10,6 +10,17 @@
 #include <QMouseEvent>
 #include <QScreen>
 #include <QApplication>
+#include <QPointer>
+
+#ifdef Q_OS_MACOS
+#include <objc/runtime.h>
+#include <objc/message.h>
+#endif
+
+// NSWindow level of the capture overlay (OverlayWindow::kOverlayWindowLevel).
+// Popups the toolbar opens must sit above it or they appear behind the
+// full-screen overlay.
+static constexpr long kAboveOverlayLevel = 1001;
 
 // ---------------------------------------------------------------------------
 // Static constant definitions
@@ -101,6 +112,10 @@ AnnotationToolbar::AnnotationToolbar(AnnotationState *state, QWidget *parent)
     , m_state(state)
 {
     setAttribute(Qt::WA_TranslucentBackground);
+    // Presses on the toolbar background, on its margins, or on a DISABLED
+    // button (undo/redo with nothing to undo) would otherwise bubble up to
+    // the OverlayWindow, which treats them as a click outside the region.
+    setAttribute(Qt::WA_NoMousePropagation);
 
     buildUi();
 
@@ -378,14 +393,37 @@ void AnnotationToolbar::onColorSwatchClicked(const QColor &color)
 
 void AnnotationToolbar::onCustomColorClicked()
 {
-    const QColor chosen = QColorDialog::getColor(
-        m_state->strokeColor(), this, QStringLiteral("Choose color"),
-        QColorDialog::ShowAlphaChannel
-    );
-    if (chosen.isValid()) {
-        m_state->setStrokeColor(chosen);
-        updateColorSwatches();
+    // QColorDialog::getColor opens the native NSColorPanel at a normal window
+    // level — BEHIND the level-1000 overlay, where the user can't reach it.
+    // Use Qt's own dialog instead and lift its NSWindow above the overlay.
+    if (m_colorDialog) {
+        m_colorDialog->raise();
+        m_colorDialog->activateWindow();
+        return;
     }
+    auto *dlg = new QColorDialog(m_state->strokeColor(), this);
+    dlg->setWindowTitle(QStringLiteral("Choose color"));
+    dlg->setOptions(QColorDialog::ShowAlphaChannel | QColorDialog::DontUseNativeDialog);
+    dlg->setWindowFlag(Qt::WindowStaysOnTopHint, true);
+    dlg->setWindowModality(Qt::ApplicationModal);
+    dlg->setAttribute(Qt::WA_DeleteOnClose);
+    m_colorDialog = dlg;
+    connect(dlg, &QColorDialog::colorSelected, this, [this](const QColor &c) {
+        if (!c.isValid()) return;
+        m_state->setStrokeColor(c);
+        updateColorSwatches();
+    });
+    dlg->show();
+#ifdef Q_OS_MACOS
+    if (auto *nsView = reinterpret_cast<id>(dlg->winId())) {
+        id nsWindow = ((id (*)(id, SEL))objc_msgSend)(nsView, sel_registerName("window"));
+        if (nsWindow)
+            ((void (*)(id, SEL, long))objc_msgSend)(nsWindow, sel_registerName("setLevel:"),
+                                                     kAboveOverlayLevel);
+    }
+#endif
+    dlg->raise();
+    dlg->activateWindow();
 }
 
 void AnnotationToolbar::onStrokeWidthClicked(int width)
@@ -447,7 +485,9 @@ void AnnotationToolbar::mousePressEvent(QMouseEvent *event)
             m_dragStartGlobal = event->globalPosition().toPoint();
         }
     }
-    QWidget::mousePressEvent(event);
+    // Accept (QWidget's default handler ignores): the toolbar owns every
+    // press inside it, it's never an "outside the region" click.
+    event->accept();
 }
 
 void AnnotationToolbar::mouseMoveEvent(QMouseEvent *event)
@@ -456,7 +496,7 @@ void AnnotationToolbar::mouseMoveEvent(QMouseEvent *event)
         const QPoint delta = event->globalPosition().toPoint() - m_dragStartGlobal;
         move(m_dragStartPos + delta);
     }
-    QWidget::mouseMoveEvent(event);
+    event->accept();
 }
 
 void AnnotationToolbar::mouseReleaseEvent(QMouseEvent *event)
@@ -464,7 +504,7 @@ void AnnotationToolbar::mouseReleaseEvent(QMouseEvent *event)
     if (event->button() == Qt::LeftButton) {
         m_dragging = false;
     }
-    QWidget::mouseReleaseEvent(event);
+    event->accept();
 }
 
 // ---------------------------------------------------------------------------

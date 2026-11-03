@@ -20,6 +20,11 @@ fi
 # leave the final staticlib at exactly this path.
 RUST_TARGET_DIR="$ROOT_DIR/target/$PROFILE_DIR"
 
+# Minimum macOS for every artefact: the Rust staticlib (rustc/cc read this env
+# var) must match CMAKE_OSX_DEPLOYMENT_TARGET in qt/CMakeLists.txt and
+# LSMinimumSystemVersion in qt/Info.plist.in.
+export MACOSX_DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET:-14.0}"
+
 # SNAPFORGE_UNIVERSAL=1 opts into a universal (arm64 + x86_64) build. Default
 # (unset / not "1") behaviour is unchanged: a single host-arch cargo build and
 # a host-arch CMake configure, exactly as before.
@@ -81,11 +86,16 @@ CMAKE_UNIVERSAL_FLAG=""
 if [ "$UNIVERSAL" = "1" ]; then
     CMAKE_UNIVERSAL_FLAG="-DSNAPFORGE_UNIVERSAL=ON"
 fi
+# SNAPFORGE_BUNDLE=ON: self-contained, ad-hoc-signed .app (Qt + ffmpeg +
+# licences). BUILD_TESTING=OFF: release builds don't compile the test suite
+# (CI configures with ON and runs ctest separately).
 cmake -B build -DCMAKE_PREFIX_PATH="$QT_PREFIX" -DCMAKE_BUILD_TYPE="$BUILD_TYPE" \
+    -DCMAKE_OSX_DEPLOYMENT_TARGET="$MACOSX_DEPLOYMENT_TARGET" \
+    -DSNAPFORGE_BUNDLE=ON -DBUILD_TESTING=OFF \
     $CMAKE_UNIVERSAL_FLAG
 
 echo "=== Building Qt app ==="
-cmake --build build
+cmake --build build --parallel
 
 echo "=== Done ==="
 echo "Binary: $SCRIPT_DIR/build/Snapforge.app"

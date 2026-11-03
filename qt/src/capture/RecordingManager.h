@@ -10,6 +10,7 @@
 #include <atomic>
 #include <future>
 #include <thread>
+#include <vector>
 
 #include "SnapforgeClient.h"
 
@@ -20,7 +21,15 @@ public:
     ~RecordingManager();
 
     bool isRecording() const;
+    // Recording OR still finalizing a stopped recording. Callers that would
+    // start a new capture (Record hotkey / tray) must check this, not
+    // isRecording(): the handle is nulled the moment stop begins.
+    bool isBusy() const;
+    bool isStopping() const { return m_stopping; }
     bool isPaused() const;
+    // The show-clicks pref actually applied to the current/last recording
+    // (cached at start), as opposed to an unsaved Preferences checkbox.
+    bool showClicksEnabled() const { return m_prefShowClicks; }
     QString outputPath() const;
     int elapsedSeconds() const;
 
@@ -38,6 +47,9 @@ public slots:
 
 signals:
     void recordingStarted(QString outputPath);
+    // stopRecording() handed the session to the finalize worker; the UI should
+    // show a "Finalizing…" state until recordingStopped/recordingError.
+    void recordingFinalizing();
     void recordingStopped(QString outputPath);
     void recordingPaused();
     void recordingResumed();
@@ -55,11 +67,24 @@ public slots:
     // PreferencesWindow::configSaved so we don't parse JSON on every start.
     void reloadPrefs();
 
+public:
+    // UI fallback deadline for an interactive stop (default 30s). If the
+    // finalize worker hasn't reported back by then, recordingError is emitted
+    // and the start gate re-opens; the stuck worker is kept and reaped later
+    // (or bounded by the dtor deadline). Exposed for tests.
+    void setStopTimeoutMs(int ms) { m_stopTimeoutMs = ms; }
+
 private:
     void loadPrefsIfNeeded();
+    void onTick();
     // Main-thread continuation of stopRecording(): validates the output and
-    // emits recordingStopped/recordingError once the worker's recordStop is done.
-    void finishStop(bool ok, const QString &err);
+    // emits recordingStopped/recordingError once the worker's recordStop is
+    // done. `gen` identifies the stop; a result for a stop the watchdog has
+    // already given up on is logged and dropped.
+    void finishStop(quint64 gen, bool ok, const QString &err, const QString &path);
+    void onStopTimeout();
+    // Join every stop worker that has already finished (non-blocking).
+    void reapStopJobs();
 
     // Atomic so dtor and stopRecording cannot both observe the same non-null
     // pointer and end up double-stopping / double-freeing it. Whoever swaps
@@ -79,11 +104,20 @@ private:
     // Interactive stop runs recordStop on a worker so a slow ffmpeg finalize
     // can't beachball the GUI thread. m_stopping gates startRecording while
     // the finalize is in flight (the handle is already nulled, so isRecording
-    // alone would let a new start through). The dtor waits on m_stopDone with
-    // the same 30s deadline it applies to its own in-place stop.
+    // alone would let a new start through). Normally there is at most one
+    // job; a worker the watchdog gave up on stays here until it finishes. The
+    // dtor waits on all of them under the same 30s deadline it applies to its
+    // own in-place stop.
+    struct StopJob {
+        quint64 gen = 0;
+        std::thread worker;
+        std::shared_future<void> done;
+    };
     bool m_stopping = false;
-    std::thread m_stopWorker;
-    std::future<void> m_stopDone;
+    quint64 m_stopGen = 0;        // generation of the stop currently awaited
+    std::vector<StopJob> m_stopJobs;
+    QTimer *m_stopWatchdog = nullptr;
+    int m_stopTimeoutMs = 40000; // > Rust worst case (25s stop deadline + 5s kill grace + indexing)
 
     // Cached recording prefs (M13). Reloaded on reloadPrefs().
     bool    m_prefsLoaded = false;

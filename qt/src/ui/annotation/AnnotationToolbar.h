@@ -3,11 +3,13 @@
 
 #include <QWidget>
 #include <QColor>
+#include <QPointer>
 #include "Annotation.h"
 
 class AnnotationState;
 class QAbstractButton;
 class QPushButton;
+class QColorDialog;
 
 class AnnotationToolbar : public QWidget {
     Q_OBJECT
@@ -59,6 +61,9 @@ private:
     bool m_dragging = false;
     QPoint m_dragStartPos;
     QPoint m_dragStartGlobal;
+
+    // Open custom-colour dialog, if any (non-modal-blocking, see .cpp).
+    QPointer<QColorDialog> m_colorDialog;
 };
 
 #endif // ANNOTATIONTOOLBAR_H

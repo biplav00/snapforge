@@ -45,10 +45,11 @@ Carbon hotkeys do **not** require Accessibility — they go through a private sy
 
 Phase 2C consolidated the previously-duplicated CGEventTap. The tap now lives in `crates/snapforge-capture/src/clicks.rs::macos_tap`:
 
-- `CGEventTapCreate(kCGSessionEventTap | kCGHIDEventTap, ..., listenOnly)` on `kCGEventLeftMouseDown | kCGEventRightMouseDown`.
-- Handles tap-disable re-enable on timeout / permission revoke.
+- `CGEventTapCreate(kCGHIDEventTap, kCGTailAppendEventTap, kCGEventTapOptionListenOnly, ...)` on `kCGEventLeftMouseDown | kCGEventRightMouseDown`.
+- Handles tap-disable re-enable on timeout / permission revoke. Re-enables are rate-limited per burst: at most 5 within a burst of disables, and the budget refills after 60 s without a disable. Isolated timeouts in a long session never exhaust it, while a revoked-permission loop stops after 5 attempts.
+- Teardown removes the run-loop source and invalidates the mach port before releasing them.
 - Runs on a dedicated CFRunLoop thread spawned by `start()`.
-- Records `ClickEvent { x, y, right_click: bool, ... }` into a shared tracker.
+- Records `ClickEvent { x, y, right_click: bool, ... }` into a shared tracker. `x`/`y` are global desktop **points** (CoreGraphics global space), not physical pixels.
 
 `crates/snapforge-app/src/clicks.rs::start_click_tracking` adds a forwarder thread that polls the tracker every ~16ms (~60Hz) and invokes the user-supplied C callback. Exposed to Qt via `snapforge_clicks_start/stop/free_handle`.
 
@@ -56,9 +57,17 @@ Qt-side wrapper: `qt/src/controllers/ClickTap.{h,cpp}` — a thin platform-agnos
 
 ## ScreenCaptureKit
 
-`crates/snapforge-capture/src/capture/macos.rs` wraps SCK for both still capture and continuous recording frames.
+`crates/snapforge-capture/src/capture/macos.rs` wraps SCK (and the CoreGraphics fallback) for still capture and the recording frame source. The `SCStream` recorder is in `crates/snapforge-capture/src/capture/macos/stream.rs`.
 
-- Fallback path: `CGDisplayCreateImage` for fullscreen captures of full-screen apps (commit `6982101`). SCK sometimes misses these.
+- **Display index**: an index into `CGGetActiveDisplayList` with mirror displays removed. Index 0 is the main (menu-bar) display. This lookup is synchronous, needs no Screen Recording grant, and is never cached, so it can't go stale after a topology change. `display_at_point` maps through `CGGetDisplaysWithPoint` into the same list. The `SCDisplay` object is looked up through `SCShareableContent` only inside the SCK paths. The timeout is 3 s for screenshots and 6 s for recording setup.
+- **Screenshots**: SCK `SCScreenshotManager captureImageWithFilter:configuration:completionHandler:` is the primary path. It uses a full-display filter with no excluded windows, so it captures the menu bar, the Dock and every window, the same content the CG path captured. The config asks for native pixel size, BGRA, sRGB and no cursor, and the capture has a 3 s timeout. The deprecated `CGDisplayCreateImage` is only a fallback, used when SCK fails (timeout, error, no Screen Recording grant) or returns an all-black frame. SCK can return black for some fullscreen-Space apps (commit `6982101`). The first non-black image wins. If both images are black, the black image is returned rather than an error, because the screen may really be black. Without the grant (`CGPreflightScreenCaptureAccess` false), SCK is skipped entirely, so no TCC prompt is raised and the CG path behaves as before. Qt shows the region overlay only after the capture completes, so the overlay never appears in the shot.
+- **Recording**: `RecordingSource` uses `StreamCapture` (one `SCStream`, frames pushed to an `SCStreamOutput` delegate) and falls back to `CaptureContext` (one `SCScreenshotManager` screenshot per frame) if the stream can't start. Both return `CaptureError::NoDisplay` once the display goes offline (`CGDisplayIsOnline`). See `recording-pipeline.md`.
+- **Colour management**: all captured pixels are sRGB. The SCK paths (screenshots, the stream, and the per-frame fallback) set `SCStreamConfiguration.colorSpaceName = kCGColorSpaceSRGB`. A CGImage whose colour space isn't named `kCGColorSpaceSRGB` is redrawn by CoreGraphics into an sRGB bitmap context (`PremultipliedFirst | ByteOrder32Little`, so BGRA in memory, alpha forced to 255) before its bytes are read. This covers `CGDisplayCreateImage` output, which is in the display's profile, often Display P3. Before this change, Display P3 bytes were saved untagged and colours shifted. MP4s are tagged BT.709, whose primaries match sRGB.
+- **OS guard**: the minimum OS is macOS 14 (`LSMinimumSystemVersion`). The SCK paths still check `NSProcessInfo isOperatingSystemAtLeastVersion` at runtime: 12.3 for `SCShareableContent`, and 14.0 for `SCScreenshotManager` and `SCStream` capture. On an older system they return `CaptureError::CaptureFailed` instead of hitting objc2's missing-class panic.
+- **Frameworks**: the Rust staticlib needs ScreenCaptureKit, CoreGraphics, CoreMedia, **CoreVideo** (the `CVPixelBuffer*` calls in the stream callback), CoreFoundation, Foundation, AppKit, IOKit, IOSurface, Security and Carbon. These are listed in `qt/CMakeLists.txt` for the app and the test targets.
+- **Pixel size**: `CGDisplayBounds × (mode pixelWidth / mode width)`, so rotated displays report rotated dimensions.
+- **Pixel format**: the CGImage converters read the image's bytes directly only when the image is sRGB and 32 bpp / 8 bpc little-endian alpha-first (BGRA in memory). Any other image, whether it has a different layout or a non-sRGB colour space, goes through the sRGB redraw described above. `NoneSkipFirst` images get alpha forced to 255. The stream path accepts only non-planar `32BGRA` pixel buffers.
+- **Permission**: `has_permission` is a live `CGPreflightScreenCaptureAccess` (never cached, never an SCK probe). `request_permission` prompts at most once per process. A session latch stops SCK queries after a known denial and clears when preflight turns true.
 - xcap-based fallback exists in `crates/snapforge-capture/src/capture/xcap_impl.rs` for non-macOS or feature-flagged builds.
 
 ## Recording → ffmpeg child process

@@ -14,6 +14,12 @@
 #     available we WARN and ship an arch-limited bundle (won't run on the
 #     missing arch) rather than fail the build.
 #
+# Naming: the real binary is Contents/MacOS/ffmpeg. ffmpeg-<triple> symlinks
+# point at it for every arch in the app, because the Rust lookup
+# (snapforge-encode find_ffmpeg) tries ffmpeg-<its own triple> first and then
+# plain `ffmpeg` — in a universal app each Rust slice has a different triple,
+# so both names must resolve.
+#
 # Requires: brew, dylibbundler (install: brew install dylibbundler).
 #
 # Usage: bundle-ffmpeg.sh <path-to-Snapforge.app>
@@ -50,13 +56,17 @@ esac
 
 MACOS_DIR="$APP/Contents/MacOS"
 FRAMEWORKS_DIR="$APP/Contents/Frameworks"
-DEST="$MACOS_DIR/ffmpeg-$SUFFIX"
+DEST="$MACOS_DIR/ffmpeg"
+HOST_BREW_PREFIX="$(brew --prefix)"
 
 mkdir -p "$FRAMEWORKS_DIR"
 
 echo "=== Bundling ffmpeg ($SUFFIX) from $FFMPEG_PREFIX ==="
+# Remove a previous run's copy/symlinks first so cp never writes through a
+# symlink and a stale arch-suffixed regular file can't shadow the new binary.
+rm -f "$DEST" "$MACOS_DIR"/ffmpeg-*-apple-darwin
 cp "$FFMPEG_PREFIX/bin/ffmpeg" "$DEST"
-chmod +x "$DEST"
+chmod u+w,+x "$DEST"
 
 # dylibbundler:
 #   -of  overwrite existing files in destination
@@ -64,11 +74,44 @@ chmod +x "$DEST"
 #   -x   binary to fix
 #   -d   destination dir for copied dylibs
 #   -p   load-path prefix to write into binaries
-dylibbundler \
+#   -s   extra search paths (resolves @rpath deps without prompting)
+# dylibbundler 1.0.5 PROMPTS on stdin for any dependency it can't locate;
+# answering "quit" makes it exit non-zero instead of hanging a CI job (or
+# silently reading EOF in a loop). printf (not `yes`) so pipefail doesn't trip
+# on SIGPIPE when dylibbundler never reads.
+printf 'quit\nquit\nquit\n' | dylibbundler \
     -of -b \
     -x "$DEST" \
     -d "$FRAMEWORKS_DIR" \
-    -p "@executable_path/../Frameworks/"
+    -p "@executable_path/../Frameworks/" \
+    -s "$HOST_BREW_PREFIX/lib" \
+    -s "$FFMPEG_PREFIX/lib"
+
+# Rewrite every load command / install id of a THIN Mach-O that still points
+# into a Homebrew prefix (or @rpath) to the bundled copy in Frameworks/, then
+# re-sign it ad hoc (install_name_tool invalidates the signature, and an
+# invalidly-signed arm64 slice is killed at launch).
+#   fixup_thin_macho <file> <is_dylib:0|1>
+fixup_thin_macho() {
+    local f="$1" is_dylib="$2" dep base
+    if [ "$is_dylib" = "1" ]; then
+        install_name_tool -id "@executable_path/../Frameworks/$(basename "$f")" "$f" 2>/dev/null || true
+    fi
+    # otool -L: first line is the file name; for a dylib the next line is its
+    # own id. Skip system libraries.
+    while IFS= read -r dep; do
+        case "$dep" in
+            /usr/local/*|/opt/homebrew/*|@rpath/*|@loader_path/*)
+                base="$(basename "$dep")"
+                if [ ! -e "$FRAMEWORKS_DIR/$base" ]; then
+                    echo "WARNING: $(basename "$f") depends on $dep, which is not bundled" >&2
+                fi
+                install_name_tool -change "$dep" "@executable_path/../Frameworks/$base" "$f"
+                ;;
+        esac
+    done < <(otool -L "$f" | tail -n +2 | awk '{print $1}')
+    codesign --force --sign - "$f" >/dev/null 2>&1 || true
+}
 
 # ---------------------------------------------------------------------------
 # Universal pass (only when the app binary is fat). dylibbundler above produced
@@ -123,7 +166,8 @@ if echo "$APP_ARCHS" | grep -q "arm64" && echo "$APP_ARCHS" | grep -q "x86_64"; 
             if lipo -archs "$bundled" 2>/dev/null | grep -q "$OTHER_ARCH"; then
                 return 0
             fi
-            local other_slice
+            local other_slice is_dylib=0
+            case "$bundled" in *.dylib) is_dylib=1 ;; esac
             other_slice="$(mktemp -t sf_other_slice)"
             # Extract just the other arch from the source (it may itself be fat).
             if lipo "$other_src" -thin "$OTHER_ARCH" -output "$other_slice" 2>/dev/null; then
@@ -136,6 +180,12 @@ if echo "$APP_ARCHS" | grep -q "arm64" && echo "$APP_ARCHS" | grep -q "x86_64"; 
                 rm -f "$other_slice"
                 return 0
             fi
+            chmod u+w "$other_slice"
+            # The grafted slice comes straight from the other Homebrew prefix
+            # with absolute /usr/local (or /opt/homebrew) load paths —
+            # dylibbundler only rewrote the host slice. Fix it up BEFORE the
+            # merge so no slice of the shipped bundle references Homebrew.
+            fixup_thin_macho "$other_slice" "$is_dylib"
             lipo -create "$bundled" "$other_slice" -output "$bundled"
             rm -f "$other_slice"
         }
@@ -150,10 +200,19 @@ if echo "$APP_ARCHS" | grep -q "arm64" && echo "$APP_ARCHS" | grep -q "x86_64"; 
         shopt -s nullglob
         for dylib in "$FRAMEWORKS_DIR"/*.dylib; do
             base="$(basename "$dylib")"
-            # Find the matching other-arch dylib (first hit wins). Resolve
-            # symlinks so we lipo the real Mach-O, not a relative link.
-            other_lib="$(find "$OTHER_BREW_PREFIX/opt" "$OTHER_BREW_PREFIX/Cellar" \
-                -name "$base" -type f 2>/dev/null | head -n1 || true)"
+            # Find the matching other-arch dylib. Prefer the LINKED version
+            # via opt/<formula>/lib (opt/* are symlinks to the active keg, so
+            # a plain `find opt -type f` never descended into them and the
+            # first — arbitrary, possibly stale — Cellar hit won). Fall back
+            # to lib/ and then the Cellar only if opt has no match.
+            other_lib=""
+            for cand in "$OTHER_BREW_PREFIX"/opt/*/lib/"$base" "$OTHER_BREW_PREFIX/lib/$base"; do
+                if [ -e "$cand" ]; then other_lib="$cand"; break; fi
+            done
+            if [ -z "$other_lib" ]; then
+                other_lib="$(find "$OTHER_BREW_PREFIX/Cellar" -name "$base" \( -type f -o -type l \) \
+                    2>/dev/null | sort -V | tail -n1 || true)"
+            fi
             if [ -z "$other_lib" ]; then
                 echo "WARNING: no $OTHER_ARCH match for $base under" \
                      "$OTHER_BREW_PREFIX — bundle stays $ARCH-only for this lib" >&2
@@ -172,4 +231,13 @@ else
     fi
 fi
 
-echo "=== ffmpeg bundled: $DEST ==="
+# Arch-suffixed names for every arch the bundled ffmpeg actually has (see the
+# naming note at the top). Relative symlinks so the bundle stays relocatable.
+for A in $(lipo -archs "$DEST"); do
+    case "$A" in
+        arm64)  ln -sf ffmpeg "$MACOS_DIR/ffmpeg-aarch64-apple-darwin" ;;
+        x86_64) ln -sf ffmpeg "$MACOS_DIR/ffmpeg-x86_64-apple-darwin" ;;
+    esac
+done
+
+echo "=== ffmpeg bundled: $DEST ($(lipo -archs "$DEST")) ==="

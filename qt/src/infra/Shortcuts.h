@@ -2,6 +2,7 @@
 
 #include <QJsonObject>
 #include <QString>
+#include <QStringList>
 #include <Qt>
 #include <cstdint>
 
@@ -75,11 +76,37 @@ bool toQtKey(const QString &chord, int *key, Qt::KeyboardModifiers *mods);
 // Render a chord string ("Cmd+Shift+S") as macOS glyphs ("⌘⇧S").
 QString glyphs(const QString &chord);
 
-#ifdef Q_OS_MAC
+// Split a chord into its tokens. '+' separates tokens, so the plus KEY is
+// written "Plus" ("Cmd+Plus" — what the Preferences recorder emits) or as a
+// trailing "++" ("Cmd++", QKeySequence's spelling); both yield the token "+".
+QStringList chordTokens(const QString &chord);
+
+// True if `chord` may be registered as a system-wide hotkey: it has at least
+// one of Cmd / Ctrl (physical ⌃, Qt::MetaModifier) / Alt — Shift alone or no
+// modifier would hijack normal typing — AND its key maps to a virtual keycode
+// (toCarbon on macOS). Call as shortcuts::isValidGlobalChord(c) or
+// Shortcuts::isValidGlobalChord(c).
+bool isValidGlobalChord(const QString &chord);
+
+#ifdef Q_OS_MACOS
 // Parse a chord into a Carbon virtual keycode (*vk) and modifier mask (*mods,
 // cmdKey/shiftKey/optionKey/controlKey). Returns false if the key token has no
-// known virtual keycode (caller should skip registration and warn).
+// known virtual keycode (caller should skip registration and warn). Character
+// keys are resolved through the current keyboard layout (UCKeyTranslate), so
+// "Cmd+Z" binds the key labelled Z on QWERTZ/AZERTY too; falls back to the US
+// ANSI positions. Supports letters, digits, punctuation, Plus, Space, Return,
+// Tab, Escape, Backspace (⌫), Delete (⌦), arrows, Home/End/PageUp/PageDown
+// and F1–F12. Does NOT check modifiers — use isValidGlobalChord for that.
 bool toCarbon(const QString &chord, uint32_t *vk, uint32_t *mods);
+
+// Qt::Key for what the main-block key `nativeVirtualKey` types with NO
+// modifiers in the current keyboard layout — the inverse of the lookup
+// toCarbon() registers through. Returns 0 if unknown, or when
+// SNAPFORGE_HOTKEY_ANSI_ONLY=1 (tests), so callers fall back to US positions.
+int layoutUnshiftedQtKey(quint32 nativeVirtualKey);
 #endif
 
 } // namespace shortcuts
+
+// CamelCase alias so UI code can spell it Shortcuts::isValidGlobalChord(...).
+namespace Shortcuts = shortcuts;

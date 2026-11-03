@@ -18,6 +18,7 @@
 #include <QResizeEvent>
 #include <QScrollArea>
 #include <QShowEvent>
+#include <QTimer>
 #include <QUrl>
 #include <QVBoxLayout>
 #include <QtConcurrent/QtConcurrent>
@@ -33,7 +34,9 @@ static bool extensionIsImage(const QString &ext) {
 }
 
 static bool extensionIsVideo(const QString &ext) {
-    static const QStringList vids = {"mp4", "mov", "m4v", "webm"};
+    // GIF recordings are listed with videos (the recorder produces them); they
+    // get no "Copy image" button, matching the other recordings.
+    static const QStringList vids = {"mp4", "mov", "m4v", "webm", "gif"};
     return vids.contains(ext.toLower());
 }
 
@@ -45,6 +48,7 @@ HistoryCard::HistoryCard(const HistoryEntry &entry, QWidget *parent)
     : QFrame(parent)
     , m_path(entry.path)
     , m_timestamp(entry.timestamp)
+    , m_thumbPath(entry.thumbnailPath)
 {
     setFrameShape(QFrame::NoFrame);
     setFixedWidth(220);
@@ -57,22 +61,17 @@ HistoryCard::HistoryCard(const HistoryEntry &entry, QWidget *parent)
     root->setSpacing(6);
 
     // --- Thumbnail ---
+    // Thumbnail is decoded asynchronously by HistoryWindow (setThumbnail).
     auto *thumbLabel = new QLabel(this);
+    m_thumbLabel = thumbLabel;
     thumbLabel->setFixedHeight(130);
     thumbLabel->setAlignment(Qt::AlignCenter);
     thumbLabel->setScaledContents(false);
     thumbLabel->setStyleSheet("QLabel { background: #1e2330; border-radius: 8px; }");
-
-    if (!entry.thumbnailPath.isEmpty()) {
-        QPixmap px(entry.thumbnailPath);
-        if (!px.isNull()) {
-            thumbLabel->setPixmap(px.scaled(184, 120, Qt::KeepAspectRatio, Qt::SmoothTransformation));
-        } else {
-            thumbLabel->setText(isVideo() ? "[video]" : "[no preview]");
-        }
-    } else {
+    if (m_thumbPath.isEmpty())
         thumbLabel->setText(isVideo() ? "[video]" : "[no preview]");
-    }
+    else
+        thumbLabel->setText(QStringLiteral("…"));
     root->addWidget(thumbLabel);
 
     // --- Filename ---
@@ -130,8 +129,9 @@ HistoryCard::HistoryCard(const HistoryEntry &entry, QWidget *parent)
         btnRow->addWidget(copyBtn);
     }
 
-    auto *delBtn = new QPushButton("Del", this);
-    delBtn->setToolTip("Delete");
+    auto *delBtn = new QPushButton("Remove", this);
+    // Only drops the history entry; the file on disk is left alone.
+    delBtn->setToolTip("Remove from history (the file is not deleted)");
     delBtn->setFixedHeight(24);
     delBtn->setStyleSheet(
         "QPushButton { background: #1e2330; color: #ef4444; border: 1px solid rgba(239,68,68,0.2);"
@@ -145,6 +145,15 @@ HistoryCard::HistoryCard(const HistoryEntry &entry, QWidget *parent)
     btnRow->addWidget(delBtn);
 
     root->addLayout(btnRow);
+}
+
+void HistoryCard::setThumbnail(const QImage &img) {
+    if (!m_thumbLabel) return;
+    if (img.isNull()) {
+        m_thumbLabel->setText(isVideo() ? "[video]" : "[no preview]");
+        return;
+    }
+    m_thumbLabel->setPixmap(QPixmap::fromImage(img)); // carries its devicePixelRatio
 }
 
 bool HistoryCard::isImage() const {
@@ -172,6 +181,17 @@ HistoryWindow::HistoryWindow(QWidget *parent)
     );
 
     setupUi();
+
+    m_refreshTimer = new QTimer(this);
+    m_refreshTimer->setSingleShot(true);
+    m_refreshTimer->setInterval(0);
+    connect(m_refreshTimer, &QTimer::timeout, this, &HistoryWindow::doRefreshHistory);
+
+    // Search filters on every keystroke otherwise, rebuilding all cards.
+    m_searchDebounce = new QTimer(this);
+    m_searchDebounce->setSingleShot(true);
+    m_searchDebounce->setInterval(250);
+    connect(m_searchDebounce, &QTimer::timeout, this, &HistoryWindow::applyFilters);
 }
 
 void HistoryWindow::setupUi() {
@@ -276,8 +296,13 @@ void HistoryWindow::showEvent(QShowEvent *event) {
 }
 
 void HistoryWindow::refreshHistory() {
+    m_refreshTimer->start();
+}
+
+void HistoryWindow::doRefreshHistory() {
     QByteArray raw = sf::historyListJson();
     if (raw.isEmpty()) {
+        m_allEntries.clear();
         loadEntries({});
         return;
     }
@@ -367,6 +392,7 @@ void HistoryWindow::loadEntries(const QList<HistoryEntry> &entries) {
         connect(card, &HistoryCard::showInFolderRequested, this, &HistoryWindow::onShowInFolder);
         connect(card, &HistoryCard::copyRequested,        this, &HistoryWindow::onCopyEntry);
         m_cards.append(card);
+        requestThumbnail(card);
     }
 
     m_colCount = -1; // force placement even if the width didn't change
@@ -411,7 +437,53 @@ void HistoryWindow::updateFooter() {
 // --- Slots ---
 
 void HistoryWindow::onSearchChanged(const QString &) {
-    applyFilters();
+    m_searchDebounce->start();
+}
+
+void HistoryWindow::requestThumbnail(HistoryCard *card) {
+    const QString path = card->thumbnailPath();
+    if (path.isEmpty()) return;
+    const double dpr = devicePixelRatioF() > 0 ? devicePixelRatioF() : 1.0;
+    const QString key = path + QLatin1Char('@') + QString::number(dpr);
+    auto hit = m_thumbCache.constFind(key);
+    if (hit != m_thumbCache.constEnd()) {
+        card->setThumbnail(hit.value());
+        return;
+    }
+    if (m_thumbPending.contains(key)) return; // card gets filled on completion
+    m_thumbPending.insert(key);
+
+    auto *watcher = new QFutureWatcher<QImage>(this);
+    QPointer<HistoryWindow> guard(this);
+    connect(watcher, &QFutureWatcher<QImage>::finished, this, [this, guard, watcher, key, path]() {
+        if (!guard) return; // watcher died with us
+        const QImage img = watcher->result();
+        watcher->deleteLater();
+        m_thumbPending.remove(key);
+        m_thumbCache.insert(key, img);
+        // Cards may have been rebuilt (search/filter) since the request —
+        // fill whichever current cards show this file.
+        for (HistoryCard *c : m_cards) {
+            if (c && c->thumbnailPath() == path) c->setThumbnail(img);
+        }
+    });
+    // QImage (not QPixmap) is safe off the GUI thread. Scale to device pixels
+    // so the thumbnail is sharp on Retina.
+    watcher->setFuture(QtConcurrent::run([path, dpr]() -> QImage {
+        QImage img(path);
+        if (img.isNull()) return QImage();
+        QImage scaled = img.scaled(QSize(qRound(184 * dpr), qRound(120 * dpr)),
+                                   Qt::KeepAspectRatio, Qt::SmoothTransformation);
+        scaled.setDevicePixelRatio(dpr);
+        return scaled;
+    }));
+}
+
+void HistoryWindow::flashStatus(const QString &text) {
+    if (!m_countLabel) return;
+    m_countLabel->setText(text);
+    QPointer<HistoryWindow> guard(this);
+    QTimer::singleShot(3000, this, [guard]() { if (guard) guard->updateFooter(); });
 }
 
 void HistoryWindow::onFilterChanged(int) {
@@ -432,13 +504,24 @@ void HistoryWindow::onClearAll() {
 
     if (btn != QMessageBox::Yes) return;
 
-    sf::historyClear();
+    if (!sf::historyClear()) {
+        qWarning("History: clear failed: %s", qUtf8Printable(sf::lastError()));
+        flashStatus(QStringLiteral("Could not clear history."));
+        return;
+    }
     m_allEntries.clear();
     loadEntries({});
 }
 
 void HistoryWindow::onDeleteEntry(const QString &path) {
-    sf::historyDelete(path);
+    // Only drop the card if the index really forgot the entry; otherwise it
+    // would silently reappear on the next refresh.
+    if (!sf::historyDelete(path)) {
+        qWarning("History: remove failed for %s: %s", qUtf8Printable(path),
+                 qUtf8Printable(sf::lastError()));
+        flashStatus(QStringLiteral("Could not remove entry from history."));
+        return;
+    }
 
     // Remove from master list
     m_allEntries.erase(

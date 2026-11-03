@@ -16,9 +16,12 @@
 #include <QMap>
 #include <QString>
 #include <QPlainTextEdit>
+#include <QJsonObject>
+#include <QRect>
 #include <functional>
 
 class QTabWidget;
+class QTimer;
 
 // ---------------------------------------------------------------------------
 // HotkeyRow — one row in the hotkeys editor
@@ -44,15 +47,28 @@ class PreferencesWindow : public QWidget {
 public:
     explicit PreferencesWindow(QWidget *parent = nullptr);
 
-    // Accessors for main.cpp to read current prefs
-    bool autoCopyEnabled() const { return m_autoCopy && m_autoCopy->isChecked(); }
-    bool showNotifEnabled() const { return m_showNotif && m_showNotif->isChecked(); }
-    bool rememberRegionEnabled() const { return m_rememberRegion && m_rememberRegion->isChecked(); }
-    QString saveDirectory() const { return m_saveDir ? m_saveDir->text() : QString(); }
-    int screenshotFormat() const { return m_screenshotFmtGroup ? m_screenshotFmtGroup->checkedId() : 0; }
-    int jpgQuality() const { return m_quality ? m_quality->value() : 90; }
-    QString filenamePattern() const { return m_filenamePattern ? m_filenamePattern->text() : QString(); }
-    bool showClicksEnabled() const { return m_showClicks && m_showClicks->isChecked(); }
+    // Accessors for main.cpp to read current prefs. These return the SAVED
+    // configuration (loaded at construction, refreshed on every load/save),
+    // never the live widget state — so prefs apply from app start without the
+    // window ever being opened, and unsaved edits don't leak into behaviour.
+    bool autoCopyEnabled() const { return m_saved.autoCopy; }
+    bool showNotifEnabled() const { return m_saved.showNotif; }
+    bool rememberRegionEnabled() const { return m_saved.rememberRegion; }
+    QString saveDirectory() const { return m_saved.saveDir; }
+    int screenshotFormat() const { return m_saved.screenshotFormat; }
+    int jpgQuality() const { return m_saved.jpgQuality; }
+    QString filenamePattern() const { return m_saved.filenamePattern; }
+    bool showClicksEnabled() const { return m_saved.showClicks; }
+
+    // Convert Qt key + modifiers (+ the hardware virtual keycode, 0 if
+    // unknown) to a chord string like "Cmd+Shift+S". Public for tests.
+    // Qt swaps Command/Control on macOS: ControlModifier (⌘) -> "Cmd",
+    // MetaModifier (physical ⌃) -> "Ctrl". Shifted digits/punctuation are
+    // recorded as their unshifted key ("Shift+1", not "Shift+!"), and the plus
+    // key is spelled "Plus". Returns an empty string for keys that can't be
+    // represented.
+    static QString formatKeyToShortcut(int key, Qt::KeyboardModifiers mods,
+                                       quint32 nativeVirtualKey = 0);
 
     // Remembered region (window-local coords), persisted across restarts. Empty
     // if none saved yet.
@@ -63,6 +79,11 @@ public:
 
 signals:
     void configSaved();
+    // True while the hotkey recorder is capturing a chord (keyboard grabbed),
+    // false once it stops — accepted, aborted, or the window hides. main.cpp
+    // unregisters the Carbon global hotkeys while active so pressing an
+    // existing global chord records it instead of firing the action.
+    void hotkeyCaptureActive(bool active);
 
 protected:
     void showEvent(QShowEvent *event) override;
@@ -94,7 +115,9 @@ private:
     void reloadLogBuffer();
 
     void loadConfig();
-    void saveConfig();
+    bool saveConfig();
+    // Copy the (just loaded or saved) widget values into m_saved.
+    void snapshotSavedPrefs();
 
 public:
     // Fix #20: re-run the current theme preference. Called from a
@@ -108,7 +131,10 @@ private:
     void startRecording(int rowIndex);
     void stopRecording(int rowIndex, bool accept, const QString &newShortcut = {});
     void refreshBadge(int rowIndex);
-    static QString formatKeyToShortcut(int key, Qt::KeyboardModifiers mods);
+    // Validate the hotkey rows + filename pattern before saving. Returns an
+    // empty string if OK, else a user-facing error message.
+    QString validateBeforeSave() const;
+    void showStatus(const QString &text, bool error, int clearAfterMs = 3000);
 
     // General tab
     QLineEdit   *m_saveDir        = nullptr;
@@ -117,6 +143,24 @@ private:
     QCheckBox   *m_rememberRegion = nullptr;
     // Persisted remembered region (not a widget — loaded/saved with the config).
     QRect        m_lastRegion;
+
+    // Snapshot of the last successfully loaded/saved configuration. The
+    // public getters read from here (see above).
+    struct SavedPrefs {
+        QString saveDir;
+        bool    autoCopy = false;
+        bool    showNotif = false;
+        bool    rememberRegion = false;
+        int     screenshotFormat = 0; // 0 = PNG, 1 = JPG, 2 = WebP
+        int     jpgQuality = 90;
+        QString filenamePattern;
+        bool    showClicks = false;
+    };
+    SavedPrefs   m_saved;
+    // Full JSON of the last good load/save. Seed for merge-saves when the
+    // on-disk config can't be read, so a transient load failure never writes
+    // back a partial object that wipes the user's settings.
+    QJsonObject  m_savedJson;
 
     // Screenshots tab — card buttons in exclusive group
     QButtonGroup *m_screenshotFmtGroup = nullptr;
@@ -159,6 +203,7 @@ private:
     QCheckBox      *m_logAutoScroll  = nullptr;
     QLabel         *m_logPathLabel   = nullptr;
     QLineEdit      *m_logSearch      = nullptr;
+    QTimer         *m_logSearchDebounce = nullptr;
 };
 
 #endif // PREFERENCESWINDOW_H

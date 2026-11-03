@@ -13,7 +13,7 @@ The single old `snapforge-core` crate was split into focused crates plus a use-c
 | `crates/snapforge-domain` | Value types shared by every layer (no I/O). | `Rect`, `CaptureFormat`, `LastRegion` |
 | `crates/snapforge-capture` | Screen capture backends + global click tap. | `capture::capture_fullscreen`, `capture::capture_region`, `display_count`, `has/request_permission`, `display_at_point`, `display_scale_factor`, `clicks::macos_tap` (CGEventTap on its own CFRunLoop thread; tracks left + right via the `right_click: bool` field) |
 | `crates/snapforge-encode` | Image and video encoding. | `format::save_image`, `format::encode_image`, `record::ffmpeg::{start_recording, RecordingHandle}`, `record::RecordConfig` |
-| `crates/snapforge-storage` | Persistent I/O — config, clipboard, history. | `clipboard::copy_image_to_clipboard`, `config::AppConfig`, `history::ScreenshotHistory`, `history::is_incomplete_mp4` |
+| `crates/snapforge-storage` | Persistent I/O — config, clipboard, history. | `clipboard::copy_image_to_clipboard`, `config::AppConfig`, `history::ScreenshotHistory` (mutations — `add_entry`/`remove_entry`/`clear`/`update` — are associated fns that do load→modify→save under one process-wide lock; durable `write_atomic` = unique temp + fsync + rename), `history::is_incomplete_mp4` |
 | `crates/snapforge-app` | High-level use cases — orchestrate the leaf crates into single end-to-end operations. **This is what `snapforge-ffi` wraps.** | `screenshot::{take_screenshot, save_prerendered}`, `recording::{start_recording, stop_recording, pause_recording, resume_recording, RecordingHandle}`, `clicks::start_click_tracking` (forwarder thread blocks on the capture tracker's event-sink channel — no polling), `AppError`. The `*Request` DTOs (`ScreenshotRequest`, `SavePrerenderedRequest`, `RecordingRequest`) are the **canonical serde schema** the FFI deserializes JSON straight into — one definition of every field, default, and enum spelling. |
 
 ### `crates/snapforge-ffi`
@@ -28,7 +28,7 @@ C ABI wrapper. Translates Rust types ↔ C types. Owns lifetime registries.
 - All exported strings are `*mut c_char`. Caller must `snapforge_free_string`.
 - All exported buffers are `*mut u8` + `len`. Caller must `snapforge_free_buffer(ptr, len)`. **Length must match what was returned** — `BUFFER_REGISTRY` rejects the free and leaks rather than corrupt the heap.
 - Opaque handles (recording, clicks) are `*mut c_void`. Tracked in `HANDLE_REGISTRY`. Unknown pointers are rejected without dereferencing. In-band magic word catches use-after-free.
-- All use-case errors flow through one `LAST_APP_ERROR` static. Read via `snapforge_app_last_error()` (returns owned string). The legacy per-domain `LAST_RECORDING_ERROR` was removed alongside the recording primitives in Phase 2D.
+- All errors flow through one thread-local `LAST_APP_ERROR` (errno-style: read it on the thread that made the call). Read via `snapforge_app_last_error()` (returns owned string). The legacy per-domain `LAST_RECORDING_ERROR` was removed alongside the recording primitives in Phase 2D.
 
 ## Qt frontend (`qt/src/`)
 

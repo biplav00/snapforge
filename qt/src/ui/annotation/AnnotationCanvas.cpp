@@ -7,6 +7,7 @@
 #include <QResizeEvent>
 #include <QMouseEvent>
 #include <QKeyEvent>
+#include <QKeySequence>
 #include <QScreen>
 #include <cmath>
 
@@ -72,7 +73,7 @@ void AnnotationCanvas::setRegion(int x, int y, int w, int h) {
         // Crop with the SAME DPR source compositeImage() uses (this screen's
         // DPR, not the primary display's). Mixing the two shifts/empties the
         // crop on a secondary display with a different scale factor.
-        double dpr = effectiveDpr();
+        double dpr = captureScale();
         int px = static_cast<int>(x * dpr);
         int py = static_cast<int>(y * dpr);
         int pw = static_cast<int>(w * dpr);
@@ -125,6 +126,24 @@ double AnnotationCanvas::effectiveDpr() const {
     return dpr > 0.0 ? dpr : 1.0;
 }
 
+double AnnotationCanvas::captureScale() const {
+    const double screenDpr = effectiveDpr();
+    const QWidget *overlay = parentWidget();
+    if (m_fullScreenshot.isNull() || !overlay || overlay->width() <= 0)
+        return screenDpr;
+    const double scale = double(m_fullScreenshot.width()) / double(overlay->width());
+    if (scale <= 0.0)
+        return screenDpr;
+    static bool warned = false;
+    if (!warned && std::abs(scale - screenDpr) > 0.01) {
+        warned = true;
+        qWarning("AnnotationCanvas: capture scale %.3f (frame %d px / overlay %d pt) "
+                 "differs from screen DPR %.3f; using the capture scale",
+                 scale, m_fullScreenshot.width(), overlay->width(), screenDpr);
+    }
+    return scale;
+}
+
 // ---------------------------------------------------------------------------
 // ensureCommittedLayer
 // ---------------------------------------------------------------------------
@@ -168,7 +187,8 @@ void AnnotationCanvas::ensureCommittedLayer() const {
 // ---------------------------------------------------------------------------
 
 QImage AnnotationCanvas::compositeImage() const {
-    const double dpr = effectiveDpr();
+    // Same scale the crop was made with, so annotation coords line up with it.
+    const double dpr = captureScale();
     // The screenshot-backed result is at PIXEL size (logical points * dpr) and
     // the painter below scales by dpr. A no-screenshot fallback must match that
     // pixel size — allocating at logical size() clipped annotations to the
@@ -315,10 +335,12 @@ void AnnotationCanvas::mousePressEvent(QMouseEvent *event) {
     // --- Steps ---
     if (tool == ToolType::Steps) {
         // Check if clicking on an existing step to edit its label
-        double hitRadius = 8.0 + m_state->strokeWidth() * 3.0 + 4.0;
         for (const Annotation &a : m_state->annotations()) {
             if (a.tool != ToolType::Steps) continue;
             if (!std::holds_alternative<StepsData>(a.data)) continue;
+            // Each step's own size (matches AnnotationRenderer::renderSteps),
+            // not the currently selected stroke width.
+            const double hitRadius = 8.0 + a.strokeWidth * 3.0 + 4.0;
             const auto &sd = std::get<StepsData>(a.data);
             double dx = pos.x() - sd.x;
             double dy = pos.y() - sd.y;
@@ -528,6 +550,8 @@ void AnnotationCanvas::showTextInput(int x, int y) {
     m_lineEdit->setFocus(Qt::PopupFocusReason);
 
     connect(m_lineEdit, &QLineEdit::returnPressed, this, &AnnotationCanvas::commitTextInput);
+    // Also commit when focus leaves the editor (clicking the toolbar, Save…).
+    connect(m_lineEdit, &QLineEdit::editingFinished, this, &AnnotationCanvas::commitTextInput);
 }
 
 void AnnotationCanvas::commitTextInput() {
@@ -568,6 +592,10 @@ void AnnotationCanvas::commitTextInput() {
         }
     }
 
+    // Disconnect first: deleting a focused editor emits editingFinished,
+    // which must not re-enter here.
+    m_lineEdit->disconnect(this);
+    m_lineEdit->removeEventFilter(this);
     m_lineEdit->deleteLater();
     m_lineEdit = nullptr;
     update();
@@ -605,6 +633,11 @@ bool AnnotationCanvas::eventFilter(QObject *watched, QEvent *event) {
             cancelTextInput();
             return true;
         }
+        // Let the owner act on its chords (Save/Copy) — but leave Cmd+C to
+        // the editor when it has a text selection to copy.
+        const bool editorCopy = ke->matches(QKeySequence::Copy) && m_lineEdit->hasSelectedText();
+        if (!editorCopy && m_textKeyInterceptor && m_textKeyInterceptor(ke))
+            return true;
     }
     return QWidget::eventFilter(watched, event);
 }

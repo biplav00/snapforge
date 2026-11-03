@@ -43,7 +43,7 @@ static void renderRect(QPainter &p, const RectData &d, const QColor &color, int 
     QPen pen(color, strokeWidth, Qt::SolidLine, Qt::SquareCap, Qt::MiterJoin);
     p.setPen(pen);
     p.setBrush(Qt::NoBrush);
-    p.drawRect(QRectF(d.x, d.y, d.width, d.height));
+    p.drawRect(QRectF(d.x, d.y, d.width, d.height).normalized());
 }
 
 static void renderCircle(QPainter &p, const CircleData &d, const QColor &color, int strokeWidth) {
@@ -95,17 +95,24 @@ static void renderHighlight(QPainter &p, const HighlightData &d, const QColor &c
     p.setOpacity(0.3);
     p.setPen(Qt::NoPen);
     p.setBrush(color);
-    p.fillRect(QRectF(d.x, d.y, d.width, d.height), color);
+    p.fillRect(QRectF(d.x, d.y, d.width, d.height).normalized(), color);
     p.restore();
 }
 
-static void renderBlur(QPainter &p, const BlurData &d, const QImage &screenshotRegion) {
+static void renderBlur(QPainter &p, const BlurData &raw, const QImage &screenshotRegion) {
+    // The in-progress drag stores signed width/height (the canvas normalises
+    // only on release), so a drag up/left has negative extents and the block
+    // loops below would never run — normalise here so the live preview shows.
+    BlurData d = raw;
+    if (d.width < 0)  { d.x += d.width;  d.width  = -d.width; }
+    if (d.height < 0) { d.y += d.height; d.height = -d.height; }
+
     if (screenshotRegion.isNull()) {
         // Fallback: dashed rect
         QPen pen(Qt::gray, 1, Qt::DashLine);
         p.setPen(pen);
         p.setBrush(Qt::NoBrush);
-        p.drawRect(QRectF(d.x, d.y, d.width, d.height));
+        p.drawRect(QRectF(d.x, d.y, d.width, d.height).normalized());
         return;
     }
 
@@ -187,7 +194,8 @@ static void renderSteps(QPainter &p, const StepsData &d, const QColor &color, in
     }
 }
 
-static void renderMeasure(QPainter &p, const MeasureData &d, const QColor &color, int strokeWidth) {
+static void renderMeasure(QPainter &p, const MeasureData &d, const QColor &color, int strokeWidth,
+                          const QImage &screenshotRegion) {
     // Dashed line
     QPen dashPen(color, strokeWidth, Qt::CustomDashLine, Qt::RoundCap, Qt::RoundJoin);
     dashPen.setDashPattern({6.0, 4.0});
@@ -203,7 +211,17 @@ static void renderMeasure(QPainter &p, const MeasureData &d, const QColor &color
     // Distance label at midpoint
     double dx = d.endX - d.startX;
     double dy = d.endY - d.startY;
-    double dist = std::sqrt(dx * dx + dy * dy);
+    // Annotation coords are logical points; report device pixels so the label
+    // matches the saved image. The cropped screenshot carries the capture DPR
+    // (tagged by AnnotationCanvas::setRegion) in every render path — live
+    // paint, cached layer and composite — so it's the consistent source. Fall
+    // back to the paint device's DPR when there's no screenshot.
+    double dpr = screenshotRegion.isNull() ? 0.0 : screenshotRegion.devicePixelRatio();
+    if (dpr <= 0.0 && p.device())
+        dpr = p.device()->devicePixelRatioF();
+    if (dpr <= 0.0)
+        dpr = 1.0;
+    double dist = std::sqrt(dx * dx + dy * dy) * dpr;
     QString label = QString("%1px").arg(static_cast<int>(std::round(dist)));
 
     double mx = (d.startX + d.endX) / 2.0;
@@ -258,7 +276,7 @@ void render(QPainter &p, const Annotation &a, const QImage &screenshotRegion) {
         } else if constexpr (std::is_same_v<T, StepsData>) {
             renderSteps(p, data, a.color, a.strokeWidth);
         } else if constexpr (std::is_same_v<T, MeasureData>) {
-            renderMeasure(p, data, a.color, a.strokeWidth);
+            renderMeasure(p, data, a.color, a.strokeWidth, screenshotRegion);
         } else if constexpr (std::is_same_v<T, ColorPickerData>) {
             // No render
         }

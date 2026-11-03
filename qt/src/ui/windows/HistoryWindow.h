@@ -12,6 +12,11 @@
 #include <QHBoxLayout>
 #include <QFrame>
 #include <QList>
+#include <QHash>
+#include <QImage>
+#include <QSet>
+
+class QTimer;
 
 struct HistoryEntry {
     QString path;
@@ -25,6 +30,10 @@ public:
     explicit HistoryCard(const HistoryEntry &entry, QWidget *parent = nullptr);
     bool isImage() const;
     bool isVideo() const;
+    QString thumbnailPath() const { return m_thumbPath; }
+    // Install a decoded thumbnail (already scaled to device pixels with its
+    // devicePixelRatio set). A null image shows the "no preview" text.
+    void setThumbnail(const QImage &img);
 
 signals:
     void deleteRequested(const QString &path);
@@ -34,6 +43,8 @@ signals:
 private:
     QString m_path;
     QString m_timestamp;
+    QString m_thumbPath;
+    QLabel *m_thumbLabel = nullptr;
 };
 
 class HistoryWindow : public QWidget {
@@ -42,6 +53,8 @@ public:
     explicit HistoryWindow(QWidget *parent = nullptr);
 
 public slots:
+    // Coalesced: several calls in one event-loop turn (main.cpp's explicit
+    // refresh + our own showEvent) trigger a single reload.
     void refreshHistory();
 
 protected:
@@ -59,6 +72,11 @@ private slots:
 
 private:
     void setupUi();
+    void doRefreshHistory();
+    // Fill the card's thumbnail from the cache, or decode it off the GUI
+    // thread and fill every card showing that file when it lands.
+    void requestThumbnail(HistoryCard *card);
+    void flashStatus(const QString &text);
     void loadEntries(const QList<HistoryEntry> &entries);
     // Re-place the EXISTING cards into the grid at the current viewport width.
     // No-op if the column count is unchanged. Resize uses this; only an entry
@@ -78,6 +96,14 @@ private:
     QGridLayout *m_gridLayout  = nullptr;
     QLabel      *m_countLabel  = nullptr;
     QPushButton *m_clearAllBtn = nullptr;
+
+    QTimer *m_refreshTimer = nullptr;
+    QTimer *m_searchDebounce = nullptr;
+    // Decoded thumbnails keyed by "path@dpr", so a search keystroke rebuilding
+    // the cards never re-reads the files. Pending decodes are tracked to avoid
+    // launching the same one twice.
+    QHash<QString, QImage> m_thumbCache;
+    QSet<QString> m_thumbPending;
 
     QList<HistoryEntry> m_allEntries;
     QList<HistoryCard *> m_cards;

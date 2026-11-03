@@ -1,7 +1,6 @@
 #include "RecordingController.h"
 
 #include "ClickTap.h"
-#include "PreferencesWindow.h"
 #include "RecordingManager.h"
 #include "TrayIcon.h"
 
@@ -28,6 +27,8 @@ RecordingController::RecordingController(RecordingManager  *recording,
       m_prefs(prefs) {
     QObject::connect(m_recording, &RecordingManager::recordingStarted,
                      this, &RecordingController::onStarted);
+    QObject::connect(m_recording, &RecordingManager::recordingFinalizing,
+                     m_tray, &TrayIcon::enterFinalizingState);
     QObject::connect(m_recording, &RecordingManager::recordingStopped,
                      this, &RecordingController::onStopped);
     QObject::connect(m_recording, &RecordingManager::recordingPaused,
@@ -51,7 +52,10 @@ void RecordingController::onStarted(const QString & /*path*/) {
     // Accessibility permission up front and warn — the encoder's own tap fails
     // silently otherwise.
     // ponytail: probe-then-stop; the encoder owns rendering now.
-    if (m_prefs && m_prefs->showClicksEnabled() && m_clickTap) {
+    // Use the pref the manager actually applied to this recording (cached at
+    // start from the saved config) — not the Preferences checkbox, which may
+    // hold an unsaved edit.
+    if (m_recording->showClicksEnabled() && m_clickTap) {
         if (!m_clickTap->start()) {
             m_tray->showMessage(
                 "Snapforge — Clicks won't show in the recording",

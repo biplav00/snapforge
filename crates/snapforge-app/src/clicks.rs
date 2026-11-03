@@ -61,11 +61,12 @@ impl Drop for ClickHandle {
 ///
 /// On macOS this requires Accessibility permission; if the permission is
 /// missing the underlying `start_macos_tap` returns `None` and this function
-/// returns an error.
+/// returns [`AppError::PermissionDenied`].
 ///
-/// On non-macOS targets the tap is currently a no-op (the forwarder thread
-/// still spins but never produces events) — kept compiling so the FFI layer
-/// has a single code path.
+/// On non-macOS targets there is no tap: nothing keeps the tracker (and its
+/// channel Sender) alive past this call, so the forwarder's `recv()` sees a
+/// disconnected channel and exits immediately — no events, no CPU use. Kept
+/// compiling so the FFI layer has a single code path.
 pub fn start_click_tracking<F>(callback: F) -> Result<ClickHandle, AppError>
 where
     F: Fn(ClickEvent) + Send + 'static,
@@ -80,7 +81,7 @@ where
 
     #[cfg(target_os = "macos")]
     let tap = tracker.start_macos_tap().ok_or_else(|| {
-        AppError::InvalidRequest(
+        AppError::PermissionDenied(
             "failed to start click event tap (Accessibility permission required)".into(),
         )
     })?;
@@ -99,7 +100,7 @@ where
                 });
             }
         })
-        .map_err(|e| AppError::InvalidRequest(format!("failed to spawn forwarder: {}", e)))?;
+        .map_err(|e| AppError::Internal(format!("failed to spawn forwarder: {}", e)))?;
 
     Ok(ClickHandle {
         forwarder: Some(forwarder),

@@ -18,6 +18,36 @@ pub enum CaptureError {
     ImageDataFailed,
 }
 
+/// Intersect `region` (pixel coordinates relative to the captured frame,
+/// origin possibly negative) with a `frame_w` x `frame_h` frame.
+///
+/// Returns `(x, y, width, height)` of the visible part, or `None` when the
+/// intersection is empty. Unlike a bare `x.max(0)`, a negative origin also
+/// shrinks the extent by the clipped amount, so the far edge stays where the
+/// caller asked for it.
+pub(crate) fn clip_region_to_frame(
+    region: Rect,
+    frame_w: u32,
+    frame_h: u32,
+) -> Option<(u32, u32, u32, u32)> {
+    fn clip_axis(start: i32, len: u32, limit: u32) -> Option<(u32, u32)> {
+        let lo = i64::from(start).clamp(0, i64::from(limit));
+        let hi = (i64::from(start) + i64::from(len)).clamp(0, i64::from(limit));
+        (hi > lo).then(|| (lo as u32, (hi - lo) as u32))
+    }
+    let (x, w) = clip_axis(region.x, region.width, frame_w)?;
+    let (y, h) = clip_axis(region.y, region.height, frame_h)?;
+    Some((x, y, w, h))
+}
+
+/// Crop `full` to `region` using [`clip_region_to_frame`]; an empty
+/// intersection is a `CaptureFailed` error.
+pub(crate) fn crop_to_region(full: &RgbaImage, region: Rect) -> Result<RgbaImage, CaptureError> {
+    let (x, y, w, h) = clip_region_to_frame(region, full.width(), full.height())
+        .ok_or(CaptureError::CaptureFailed)?;
+    Ok(image::imageops::crop_imm(full, x, y, w, h).to_image())
+}
+
 pub fn capture_fullscreen(display: usize) -> Result<RgbaImage, CaptureError> {
     #[cfg(target_os = "macos")]
     {
@@ -64,10 +94,11 @@ pub fn request_permission() -> bool {
     }
 }
 
-/// A reusable capture context for fast repeated captures (e.g. recording).
-/// Create once on a background thread, call capture_frame() per frame.
+/// Recording frame sources (macOS): `RecordingSource` picks `StreamCapture`
+/// (SCStream) and falls back to `CaptureContext` (one screenshot per frame).
+/// Create on a background thread and poll per frame.
 #[cfg(target_os = "macos")]
-pub use macos::{CaptureContext, RawFrame};
+pub use macos::{CaptureContext, RawFrame, RecordingSource, StreamCapture};
 
 /// Get the point-to-pixel scale factor of the primary display.
 pub fn display_scale_factor() -> f64 {
@@ -215,6 +246,78 @@ mod tests {
             height: 100,
         };
         assert!(capture_region(0, off).is_err());
+    }
+
+    fn rect(x: i32, y: i32, width: u32, height: u32) -> Rect {
+        Rect {
+            x,
+            y,
+            width,
+            height,
+        }
+    }
+
+    #[test]
+    fn clip_region_inside_frame_is_unchanged() {
+        assert_eq!(
+            clip_region_to_frame(rect(10, 20, 30, 40), 100, 100),
+            Some((10, 20, 30, 40))
+        );
+    }
+
+    #[test]
+    fn clip_region_negative_origin_shrinks_extent() {
+        // x=-10,w=50 covers columns -10..40 → visible 0..40 (width 40), not
+        // 0..50 as the old `x.max(0)` produced.
+        assert_eq!(
+            clip_region_to_frame(rect(-10, -5, 50, 25), 100, 100),
+            Some((0, 0, 40, 20))
+        );
+    }
+
+    #[test]
+    fn clip_region_overhanging_far_edge_is_clamped() {
+        assert_eq!(
+            clip_region_to_frame(rect(90, 95, 50, 50), 100, 100),
+            Some((90, 95, 10, 5))
+        );
+        assert_eq!(
+            clip_region_to_frame(rect(0, 0, u32::MAX, u32::MAX), 100, 80),
+            Some((0, 0, 100, 80))
+        );
+    }
+
+    #[test]
+    fn clip_region_empty_intersections_are_none() {
+        // Entirely left of / above the frame.
+        assert_eq!(clip_region_to_frame(rect(-50, 0, 50, 10), 100, 100), None);
+        assert_eq!(clip_region_to_frame(rect(0, -50, 10, 50), 100, 100), None);
+        // Entirely past the far edge.
+        assert_eq!(clip_region_to_frame(rect(100, 0, 10, 10), 100, 100), None);
+        // Zero-size.
+        assert_eq!(clip_region_to_frame(rect(5, 5, 0, 10), 100, 100), None);
+        // Extreme values must not overflow. i32::MIN + u32::MAX ends at
+        // i32::MAX, so this rect spans the whole frame.
+        assert_eq!(
+            clip_region_to_frame(rect(i32::MIN, i32::MIN, u32::MAX, u32::MAX), 100, 100),
+            Some((0, 0, 100, 100))
+        );
+        assert_eq!(
+            clip_region_to_frame(rect(i32::MIN, i32::MIN, 1000, 1000), 100, 100),
+            None
+        );
+        assert_eq!(
+            clip_region_to_frame(rect(i32::MAX, i32::MAX, u32::MAX, u32::MAX), 100, 100),
+            None
+        );
+    }
+
+    #[test]
+    fn crop_to_region_handles_negative_origin() {
+        let full = RgbaImage::new(100, 100);
+        let img = crop_to_region(&full, rect(-10, -10, 30, 30)).unwrap();
+        assert_eq!((img.width(), img.height()), (20, 20));
+        assert!(crop_to_region(&full, rect(-30, 0, 30, 30)).is_err());
     }
 
     #[test]

@@ -4,13 +4,16 @@
 //! Maintains a queue of recent clicks that can be composited into recording frames.
 
 use std::sync::{mpsc, Arc, Mutex};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone, Copy)]
 pub struct ClickEvent {
-    /// Screen x coordinate in physical pixels
+    /// Global desktop x coordinate in display *points* (CoreGraphics global
+    /// space: origin at the main display's top-left, not scaled by the
+    /// backing scale factor). Multiply by the display's scale factor and
+    /// subtract its origin to get per-display pixels.
     pub x: f64,
-    /// Screen y coordinate in physical pixels
+    /// Global desktop y coordinate in display points (see `x`).
     pub y: f64,
     /// True for a right-mouse-down event, false for left-mouse-down.
     pub right_click: bool,
@@ -112,6 +115,49 @@ impl ClickTracker {
 #[cfg(target_os = "macos")]
 pub use macos_tap::MacOSClickTapHandle;
 
+/// Rate limiter for re-enabling a click tap that macOS disabled.
+///
+/// A tap gets disabled transiently (callback over its time budget) or
+/// persistently (Accessibility revoked — every re-enable is immediately
+/// followed by another disable). Allow at most `max` re-enables in a burst;
+/// a burst ends once `window` passes with no disable, after which the budget
+/// resets. A long session therefore survives any number of isolated
+/// timeouts, while a revoke loop is cut off after `max` quick attempts.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+#[derive(Debug)]
+struct ReenableLimiter {
+    max: u32,
+    window: Duration,
+    last_disable: Option<Instant>,
+    attempts_in_window: u32,
+}
+
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+impl ReenableLimiter {
+    const fn new(max: u32, window: Duration) -> Self {
+        Self {
+            max,
+            window,
+            last_disable: None,
+            attempts_in_window: 0,
+        }
+    }
+
+    /// Record a disable at `now`. Returns `Some(attempt)` (1-based, within
+    /// the current window) if the tap should be re-enabled, `None` to give up.
+    fn on_disable(&mut self, now: Instant) -> Option<u32> {
+        let quiet = self
+            .last_disable
+            .is_none_or(|last| now.saturating_duration_since(last) > self.window);
+        if quiet {
+            self.attempts_in_window = 0;
+        }
+        self.last_disable = Some(now);
+        self.attempts_in_window = self.attempts_in_window.saturating_add(1);
+        (self.attempts_in_window <= self.max).then_some(self.attempts_in_window)
+    }
+}
+
 #[cfg(test)]
 // Tests compare click coordinates against exact integer-valued f64 literals
 // (e.g. 10.0) that are stored verbatim — exact equality is correct here.
@@ -209,6 +255,45 @@ mod tests {
         assert_eq!(buf[0].x, 7.0, "stale entry should have been cleared");
     }
 
+    #[test]
+    fn reenable_limiter_caps_a_tight_burst() {
+        let mut l = ReenableLimiter::new(5, Duration::from_secs(60));
+        let t0 = Instant::now();
+        for i in 1..=5 {
+            assert_eq!(
+                l.on_disable(t0 + Duration::from_millis(i * 10)),
+                Some(i as u32)
+            );
+        }
+        // Sixth disable within the burst (permission revoked loop) → give up.
+        assert_eq!(l.on_disable(t0 + Duration::from_millis(100)), None);
+        assert_eq!(l.on_disable(t0 + Duration::from_secs(30)), None);
+    }
+
+    #[test]
+    fn reenable_limiter_resets_after_quiet_window() {
+        // Isolated transient timeouts spread over a long session must never
+        // exhaust the budget.
+        let mut l = ReenableLimiter::new(5, Duration::from_secs(60));
+        let t0 = Instant::now();
+        for i in 0..50u64 {
+            assert_eq!(l.on_disable(t0 + Duration::from_secs(i * 61)), Some(1));
+        }
+    }
+
+    #[test]
+    fn reenable_limiter_window_is_measured_from_last_disable() {
+        // Disables every 59s keep the burst alive (each is within the window
+        // of the previous one), so the cap still applies.
+        let mut l = ReenableLimiter::new(2, Duration::from_secs(60));
+        let t0 = Instant::now();
+        assert_eq!(l.on_disable(t0), Some(1));
+        assert_eq!(l.on_disable(t0 + Duration::from_secs(59)), Some(2));
+        assert_eq!(l.on_disable(t0 + Duration::from_secs(118)), None);
+        // Then a quiet minute restores the budget.
+        assert_eq!(l.on_disable(t0 + Duration::from_secs(179)), Some(1));
+    }
+
     // Tap creation requires Accessibility permission and a live CGSession;
     // skip in CI / sandbox by default.
     #[cfg(target_os = "macos")]
@@ -223,7 +308,7 @@ mod tests {
 
 #[cfg(target_os = "macos")]
 mod macos_tap {
-    use super::ClickTracker;
+    use super::{ClickTracker, ReenableLimiter};
     use std::ffi::c_void;
     use std::mem::ManuallyDrop;
     use std::ptr;
@@ -250,9 +335,12 @@ mod macos_tap {
     const KCG_EVENT_TAP_DISABLED_BY_TIMEOUT: u32 = 0xFFFF_FFFE;
     /// Emitted when the tap was disabled via `CGEventTapEnable(false)`.
     const KCG_EVENT_TAP_DISABLED_BY_USER_INPUT: u32 = 0xFFFF_FFFF;
-    /// If we fail to re-enable this many times in a row, give up — otherwise
-    /// we could spin forever on a permanently revoked permission.
+    /// Re-enable at most this many times per burst of disables (see
+    /// [`ReenableLimiter`]) — otherwise we could spin forever on a permanently
+    /// revoked permission.
     const MAX_REENABLE_ATTEMPTS: u32 = 5;
+    /// A burst of disables ends after this long without another disable.
+    const REENABLE_WINDOW: std::time::Duration = std::time::Duration::from_secs(60);
 
     #[repr(C)]
     struct CGPoint {
@@ -283,6 +371,8 @@ mod macos_tap {
         ) -> CFRunLoopSourceRef;
         fn CFRunLoopGetCurrent() -> CFRunLoopRef;
         fn CFRunLoopAddSource(rl: CFRunLoopRef, source: CFRunLoopSourceRef, mode: CFStringRef);
+        fn CFRunLoopRemoveSource(rl: CFRunLoopRef, source: CFRunLoopSourceRef, mode: CFStringRef);
+        fn CFMachPortInvalidate(port: CFMachPortRef);
         // `seconds` is CFTimeInterval (f64); `return_after_source_handled` is
         // a CF Boolean (unsigned char). Returns a CFRunLoopRunResult (SInt32).
         fn CFRunLoopRunInMode(
@@ -338,7 +428,9 @@ mod macos_tap {
     struct CallbackData {
         tracker: ClickTracker,
         tap: std::sync::atomic::AtomicPtr<c_void>,
-        reenable_attempts: std::sync::atomic::AtomicU32,
+        /// Only touched from the tap's callback (single run-loop thread); the
+        /// Mutex just satisfies `Sync` for the shared `Arc`.
+        reenable: std::sync::Mutex<ReenableLimiter>,
         /// Clone of the handle's stop flag — once set, teardown owns the tap
         /// (the worker will disable and CFRelease it), so the callback must
         /// not re-enable it.
@@ -372,34 +464,40 @@ mod macos_tap {
             }
             let tap = data.tap.load(std::sync::atomic::Ordering::SeqCst);
             if !tap.is_null() {
-                let attempts = data
-                    .reenable_attempts
-                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
-                    + 1;
-                if attempts <= MAX_REENABLE_ATTEMPTS {
+                let verdict = data
+                    .reenable
+                    .lock()
+                    .ok()
+                    .and_then(|mut l| l.on_disable(std::time::Instant::now()));
+                if let Some(attempt) = verdict {
                     CGEventTapEnable(tap, true);
                     tracing::warn!(
-                        "[clicks] event tap disabled (type 0x{:x}); re-enabled (attempt {})",
+                        "[clicks] event tap disabled (type 0x{:x}); re-enabled (attempt {} in window)",
                         event_type,
-                        attempts
+                        attempt
                     );
                 } else {
                     tracing::error!(
-                        "[clicks] event tap disabled (type 0x{:x}); giving up after {} attempts — \
-                         Accessibility permission may have been revoked",
+                        "[clicks] event tap disabled (type 0x{:x}); giving up after {} re-enables \
+                         within {:?} — Accessibility permission may have been revoked",
                         event_type,
-                        attempts
+                        MAX_REENABLE_ATTEMPTS,
+                        REENABLE_WINDOW
                     );
                 }
             }
             return event;
         }
 
-        // NOTE: the re-enable counter is intentionally monotonic. Resetting it
-        // on a healthy click lets a permanently-denied permission loop forever
-        // (revoke → re-enable fails → click from another app → reset → revoke
-        // again). After MAX_REENABLE_ATTEMPTS permanent failures we log once
-        // and stop retrying; the tap stays disabled and the tracker goes quiet.
+        // NOTE: the re-enable budget is time-windowed, NOT reset by healthy
+        // clicks. Resetting on a click would let a permanently-denied
+        // permission loop forever (revoke → re-enable → disabled again →
+        // click → reset → ...). Instead the budget only refills after
+        // REENABLE_WINDOW passes with no disable at all, so isolated transient
+        // timeouts over a long session never exhaust it, while a revoke loop
+        // (disables arriving back-to-back) is cut off after
+        // MAX_REENABLE_ATTEMPTS. Once we give up the tap stays disabled and
+        // the tracker goes quiet until the next `start`.
         let loc = CGEventGetLocation(event);
         let right_click = event_type == KCG_EVENT_RIGHT_MOUSE_DOWN;
         data.tracker.add(loc.x, loc.y, right_click);
@@ -429,7 +527,10 @@ mod macos_tap {
             let data = Arc::new(CallbackData {
                 tracker,
                 tap: std::sync::atomic::AtomicPtr::new(std::ptr::null_mut()),
-                reenable_attempts: std::sync::atomic::AtomicU32::new(0),
+                reenable: std::sync::Mutex::new(ReenableLimiter::new(
+                    MAX_REENABLE_ATTEMPTS,
+                    REENABLE_WINDOW,
+                )),
                 stop: Arc::clone(&stop_worker),
             });
             // Heap-allocate a copy of the Arc that the C callback will borrow.
@@ -466,6 +567,20 @@ mod macos_tap {
             data.tap.store(tap, std::sync::atomic::Ordering::SeqCst);
 
             let source = unsafe { CFMachPortCreateRunLoopSource(ptr::null(), tap, 0) };
+            if source.is_null() {
+                tracing::error!("[clicks] CFMachPortCreateRunLoopSource failed");
+                unsafe {
+                    // The tap was never enabled or attached; invalidate so CG
+                    // drops it, then release and free the callback data.
+                    data.tap
+                        .store(ptr::null_mut(), std::sync::atomic::Ordering::SeqCst);
+                    CFMachPortInvalidate(tap);
+                    CFRelease(tap);
+                    let _ = Box::from_raw(data_raw);
+                }
+                let _ = tx.send(SetupResult::Err);
+                return;
+            }
             let current_rl = unsafe { CFRunLoopGetCurrent() };
             unsafe {
                 CFRunLoopAddSource(current_rl, source, kCFRunLoopCommonModes);
@@ -501,6 +616,11 @@ mod macos_tap {
                 // crosses threads at teardown: only this thread ever touches
                 // it once the stop flag is up.
                 CGEventTapEnable(tap, false);
+                // Detach from the run loop and invalidate the port before
+                // releasing, so no further callback can be scheduled against
+                // `data_raw` once it is freed below.
+                CFRunLoopRemoveSource(current_rl, source, kCFRunLoopCommonModes);
+                CFMachPortInvalidate(tap);
                 CFRelease(source);
                 CFRelease(tap);
                 // Free the raw Arc last, so any callback in-flight has already returned.

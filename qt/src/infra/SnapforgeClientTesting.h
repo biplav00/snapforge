@@ -10,6 +10,7 @@
 
 #include <QByteArray>
 #include <QString>
+#include <functional>
 #include <optional>
 
 namespace sf::test {
@@ -26,6 +27,18 @@ struct State {
     std::optional<QString> screenshotResult = QString("/fake/shot.png");
     std::optional<QString> savePrerenderedResult = QString("/fake/pre.png");
     bool recordStartSucceeds = true;
+    // recordIsAlive() result for a valid handle (false == worker exited).
+    bool recordAlive = true;
+    // recordOutputPath() result; nullopt == echo the requested outputPath.
+    std::optional<QString> recordOutputPathOverride;
+    bool recordPauseSucceeds = true;
+    bool recordResumeSucceeds = true;
+    bool recordStopSucceeds = true;
+    QString recordStopError = QStringLiteral("fake: encoder exited");
+    // Called (on the stop worker thread) at the start of recordStop; tests use
+    // it to hold the finalize in flight. Must be thread-safe.
+    std::function<void()> recordStopHook;
+    int recordStopCalls = 0; // written on the stop worker before it posts back
     bool hasPermission = true;
     bool requestPermissionResult = true;
     QByteArray configJson;       // returned by configLoadJson()

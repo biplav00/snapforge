@@ -40,6 +40,10 @@ public slots:
     // menu so Pause ↔ Resume swap.
     void setPaused(bool paused);
 
+    // Stop was requested and the file is being finalized: show "Finalizing…",
+    // disable Pause/Stop, hide the stop button. Cleared by leaveRecordingState.
+    void enterFinalizingState();
+
     // Pass-through to QSystemTrayIcon::showMessage so callers don't need to
     // reach the underlying object directly.
     void showMessage(const QString &title,
@@ -71,6 +75,13 @@ private:
 
     void buildNormalMenu();
     void buildRecordingMenu();
+    // Rebuild the menu for the current state on the next event-loop turn.
+    // Menu changes are always deferred: most state changes are triggered
+    // from one of this menu's own QActions, and clear()ing the menu (which
+    // deletes that action) inside its triggered() handler is a use-after-free
+    // waiting to happen. Coalesces multiple requests into one rebuild.
+    void scheduleMenuRebuild();
+    void rebuildMenuNow();
 
     void refreshPill(double alpha);
 
@@ -87,6 +98,8 @@ private:
 
     bool m_inRecordingState = false;
     bool m_paused           = false;
+    bool m_finalizing       = false;
+    bool m_rebuildPending   = false;
     int  m_elapsedSeconds   = 0;
     bool m_pulseHigh        = true;
 };

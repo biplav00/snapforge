@@ -1,6 +1,7 @@
 #include <QApplication>
 #include <QSystemTrayIcon>
 #include <QDir>
+#include <QFileInfo>
 #include <QDateTime>
 #include <QShortcut>
 #include <QTimer>
@@ -8,6 +9,10 @@
 #include <QEvent>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QStringList>
+#include <atomic>
+#include <csignal>
+#include <cstdio>
 #include "OverlayWindow.h"
 #include "RecordingManager.h"
 #include "HistoryWindow.h"
@@ -18,16 +23,16 @@
 #include "Logger.h"
 #include "Shortcuts.h"
 #include "SnapforgeClient.h"
-#ifdef Q_OS_MAC
+#ifdef Q_OS_MACOS
 #include "WorkspaceSleepObserver.h"
 #include "SpaceChangeObserver.h"
 #endif
 
 // Preferences window — used by the mac hotkey handler below AND by the
-// save/copy paths, so it lives outside the Q_OS_MAC block.
+// save/copy paths, so it lives outside the Q_OS_MACOS block.
 static PreferencesWindow *g_prefsRef = nullptr;
 
-#ifdef Q_OS_MAC
+#ifdef Q_OS_MACOS
 #include <Carbon/Carbon.h>
 #include <objc/runtime.h>
 #include <objc/message.h>
@@ -49,11 +54,22 @@ static const UInt32 kHotkeyIDPreferences = 5;
 // Previously we only kept the last one, so two were leaked on app exit.
 static std::array<EventHotKeyRef, 5> g_hotkeys = { nullptr, nullptr, nullptr, nullptr, nullptr };
 
+static const OSType kHotkeySignature = 'SNPF';
+
 OSStatus hotkeyHandler(EventHandlerCallRef, EventRef event, void *) {
-    EventHotKeyID firedID;
-    GetEventParameter(event, kEventParamDirectObject,
-                      typeEventHotKeyID, nullptr,
-                      sizeof(firedID), nullptr, &firedID);
+    EventHotKeyID firedID{};
+    const OSStatus paramStatus = GetEventParameter(event, kEventParamDirectObject,
+                                                   typeEventHotKeyID, nullptr,
+                                                   sizeof(firedID), nullptr, &firedID);
+    if (paramStatus != noErr) {
+        qWarning("hotkey: GetEventParameter failed (status=%d)", static_cast<int>(paramStatus));
+        return eventNotHandledErr;
+    }
+    // Only dispatch our own registrations; anything else (another component
+    // in-process registering hotkeys) is passed on untouched.
+    if (firedID.signature != kHotkeySignature) {
+        return eventNotHandledErr;
+    }
 
     // Fix #14: ignore any hotkey that would re-enter the overlay while it's
     // already doing real work (drawing, region committed, annotating, or
@@ -114,6 +130,16 @@ OSStatus hotkeyHandler(EventHandlerCallRef, EventRef event, void *) {
         if (g_recording && g_overlay) {
             if (g_recording->isRecording()) {
                 QTimer::singleShot(0, g_recording, &RecordingManager::stopRecording);
+            } else if (g_recording->isBusy()) {
+                // Still finalizing the previous recording: don't open the
+                // region picker for a start that would be rejected anyway.
+                QApplication::beep();
+                auto *tray = qobject_cast<QSystemTrayIcon *>(
+                    qApp->property("systemTray").value<QObject *>());
+                if (tray) {
+                    tray->showMessage("Snapforge", "Still finalizing the previous recording",
+                                      QSystemTrayIcon::Information, 2000);
+                }
             } else if (overlayBusy) {
                 notifyBusy();
             } else {
@@ -168,9 +194,10 @@ OSStatus hotkeyHandler(EventHandlerCallRef, EventRef event, void *) {
 }
 
 // Wrap RegisterEventHotKey so a failed registration (e.g. another app already
-// owns the chord) is logged instead of silently swallowed. `name` is shown so
-// the user can correlate the warning with the action that won't fire.
-static void registerHotkeyChecked(unsigned int virtualKey,
+// owns the chord) is logged and reported instead of silently swallowed. `name`
+// is shown so the user can correlate the warning with the action that won't
+// fire. Returns false on failure.
+static bool registerHotkeyChecked(unsigned int virtualKey,
                                   unsigned int modifiers,
                                   EventHotKeyID hotKeyID,
                                   EventHotKeyRef *outRef,
@@ -181,7 +208,9 @@ static void registerHotkeyChecked(unsigned int virtualKey,
         qWarning("RegisterEventHotKey failed for %s (status=%d) — chord may be in use by another app",
                  name, static_cast<int>(status));
         *outRef = nullptr;
+        return false;
     }
+    return true;
 }
 
 static UInt32 hotkeyIdFor(const QString &actionKey) {
@@ -193,29 +222,50 @@ static UInt32 hotkeyIdFor(const QString &actionKey) {
     return 0;
 }
 
-// Register every global chord from the shared config (shortcuts::chord), parsed
+// Register every global chord from the shared config (one Snapshot), parsed
 // into Carbon vk+mods. g_hotkeys[i] mirrors shortcuts::kGlobalActions[i] so
-// unregisterGlobalHotkeys can release them all. An unparseable or in-use chord
-// is logged and left null — the rest still register.
-static void registerAllChords() {
+// unregisterGlobalHotkeys can release them all. An invalid or in-use chord is
+// logged and left null — the rest still register. Returns a human-readable
+// entry ("⌘⇧S (screenshot)") per chord that did NOT register, for the tray.
+static QStringList registerAllChords() {
     EventHotKeyID hotKeyID;
-    hotKeyID.signature = 'SNPF';
+    hotKeyID.signature = kHotkeySignature;
+    QStringList failed;
+    const shortcuts::Snapshot cfg;
 
     int i = 0;
     for (const auto &action : shortcuts::kGlobalActions) {
         const QString key = QString::fromLatin1(action.actionKey);
-        const QString chord = shortcuts::chord(key);
+        const QString chord = cfg.chord(key);
+        const QString label = QStringLiteral("%1 (%2)").arg(shortcuts::glyphs(chord), key);
         uint32_t vk = 0, mods = 0;
         hotKeyID.id = hotkeyIdFor(key);
-        if (shortcuts::toCarbon(chord, &vk, &mods)) {
+        g_hotkeys[i] = nullptr;
+        if (shortcuts::isValidGlobalChord(chord) && shortcuts::toCarbon(chord, &vk, &mods)) {
             const QByteArray name = QStringLiteral("%1 (%2)").arg(chord, key).toUtf8();
-            registerHotkeyChecked(vk, mods, hotKeyID, &g_hotkeys[i], name.constData());
+            if (!registerHotkeyChecked(vk, mods, hotKeyID, &g_hotkeys[i], name.constData()))
+                failed << label;
         } else {
-            qWarning("Hotkey '%s' has unparseable chord \"%s\" — not registered",
+            qWarning("Hotkey '%s' has invalid chord \"%s\" (needs Cmd/Ctrl/Alt + a known key) — not registered",
                      action.actionKey, qPrintable(chord));
-            g_hotkeys[i] = nullptr;
+            failed << label;
         }
         ++i;
+    }
+    return failed;
+}
+
+// One tray banner listing every chord that didn't register, so a dead hotkey
+// isn't only visible in the log.
+static void reportHotkeyFailures(const QStringList &failed) {
+    if (failed.isEmpty()) return;
+    auto *tray = qobject_cast<QSystemTrayIcon *>(
+        qApp->property("systemTray").value<QObject *>());
+    if (tray) {
+        tray->showMessage("Snapforge — Hotkeys unavailable",
+                          "Could not register: " + failed.join(", ")
+                              + ". Another app may be using them; change them in Preferences.",
+                          QSystemTrayIcon::Warning, 6000);
     }
 }
 
@@ -225,9 +275,22 @@ void registerGlobalHotkey() {
     eventType.eventKind  = kEventHotKeyPressed;
 
     // Install the dispatch handler exactly once; chords are (re)bound separately.
-    InstallApplicationEventHandler(&hotkeyHandler, 1, &eventType, nullptr, nullptr);
+    const OSStatus st = InstallApplicationEventHandler(&hotkeyHandler, 1, &eventType,
+                                                       nullptr, nullptr);
+    if (st != noErr) {
+        qCritical("InstallApplicationEventHandler failed (status=%d) — global hotkeys disabled",
+                  static_cast<int>(st));
+        auto *tray = qobject_cast<QSystemTrayIcon *>(
+            qApp->property("systemTray").value<QObject *>());
+        if (tray) {
+            tray->showMessage("Snapforge — Hotkeys unavailable",
+                              "Global hotkeys could not be installed; use the menu bar icon.",
+                              QSystemTrayIcon::Warning, 6000);
+        }
+        return;
+    }
 
-    registerAllChords();
+    reportHotkeyFailures(registerAllChords());
 }
 
 void unregisterGlobalHotkeys() {
@@ -244,7 +307,7 @@ void unregisterGlobalHotkeys() {
 // dispatch handler installed in registerGlobalHotkey stays put.
 void reloadGlobalHotkeys() {
     unregisterGlobalHotkeys();
-    registerAllChords();
+    reportHotkeyFailures(registerAllChords());
 }
 #endif
 
@@ -253,8 +316,17 @@ void reloadGlobalHotkeys() {
 // snapforge_set_log_callback at startup. Fires from arbitrary Rust threads;
 // Logger::log is mutex-guarded so this is safe to call off the main thread.
 // Must not throw — keep it noexcept and trivial.
+// snapforge_set_log_callback ignores NULL, so the callback can't be
+// unregistered; this flag turns it into a stderr fallback once main() is
+// returning and the Logger singleton is about to be destroyed.
+static std::atomic<bool> g_rustLogToLogger{true};
+
 static void rustLogCallback(int level, const char *msg) noexcept {
     if (!msg) return;
+    if (!g_rustLogToLogger.load(std::memory_order_acquire)) {
+        fprintf(stderr, "%s\n", msg);
+        return;
+    }
     QtMsgType qtLevel;
     switch (level) {
         case sf::LogTrace:
@@ -352,14 +424,17 @@ static void saveImage(const QImage &img) {
                             static_cast<size_t>(rgba.sizeInBytes()),
                             rgba.width(), rgba.height(), req);
     if (saved) {
-        qDebug("Saved: %s", qPrintable(path));
+        // The core may uniquify the name (foo-1.png) to avoid overwriting an
+        // existing file; report the path it actually wrote.
+        const QString savedPath = saved->isEmpty() ? path : *saved;
+        qDebug("Saved: %s", qPrintable(savedPath));
 
         // Show notification if enabled
         if (g_prefsRef && g_prefsRef->showNotifEnabled()) {
             auto *tray = qobject_cast<QSystemTrayIcon *>(
                 qApp->property("systemTray").value<QObject *>());
             if (tray) {
-                tray->showMessage("Snapforge", "Screenshot saved: " + filename,
+                tray->showMessage("Snapforge", "Screenshot saved: " + QFileInfo(savedPath).fileName(),
                                   QSystemTrayIcon::Information, 2000);
             }
         }
@@ -401,6 +476,10 @@ static void copyImage(const QImage &img) {
 }
 
 int main(int argc, char *argv[]) {
+    // A write to the ffmpeg pipe after ffmpeg died must surface as EPIPE, not
+    // kill the whole app. The encoder also guards this; belt-and-braces.
+    signal(SIGPIPE, SIG_IGN);
+
     // CRITICAL: Suppress Qt's internal [NSApp activateIgnoringOtherApps:YES]
     // in QCocoaWindow::raise(). Without this, raise() triggers a Space switch.
     qputenv("QT_MAC_SET_RAISE_PROCESS", "0");
@@ -412,6 +491,20 @@ int main(int argc, char *argv[]) {
     // Route Rust `tracing` diagnostics into the same log file. Done right after
     // Logger::install so any Rust call below (permission check, etc.) is logged.
     sf::setLogCallback(rustLogCallback);
+
+    // Declared before every other local so it is destroyed LAST, after all the
+    // stack objects below (whose destructors may still log into the file).
+    // It then stops routing logs into the Logger singleton before that
+    // function-local static is destroyed after main returns: later Qt messages
+    // go to Qt's default stderr handler, late Rust records to stderr (the FFI
+    // ignores a NULL callback, so we gate ours instead of unregistering it).
+    struct LogShutdownGuard {
+        ~LogShutdownGuard() {
+            g_rustLogToLogger.store(false, std::memory_order_release);
+            qInstallMessageHandler(nullptr);
+            Logger::instance()->shutdown();
+        }
+    } logShutdownGuard;
 
     QApplication app(argc, argv);
     app.setApplicationName("Snapforge");
@@ -433,7 +526,7 @@ int main(int argc, char *argv[]) {
         }
     }
 
-#ifdef Q_OS_MAC
+#ifdef Q_OS_MACOS
     // Set activation policy to Accessory — this is the KEY to preventing
     // Space switches. An accessory app can show windows over fullscreen
     // apps without macOS pulling the user to another Space.
@@ -477,7 +570,7 @@ int main(int argc, char *argv[]) {
     // Create manager/window instances
     RecordingManager recording;
 
-#ifdef Q_OS_MAC
+#ifdef Q_OS_MACOS
     // Fix #10: auto-pause/resume around system sleep.
     WorkspaceSleepObserver sleepObserver(&recording);
     Q_UNUSED(sleepObserver);
@@ -556,18 +649,46 @@ int main(int argc, char *argv[]) {
     // the live Carbon hotkeys, the tray menu glyphs, and (already handled) the
     // prefs badges. Re-register + rebuild the menu on save so nothing drifts.
     QObject::connect(&prefs, &PreferencesWindow::configSaved, &tray, &TrayIcon::refreshMenu);
-#ifdef Q_OS_MAC
+#ifdef Q_OS_MACOS
     QObject::connect(&prefs, &PreferencesWindow::configSaved, &tray, []() { reloadGlobalHotkeys(); });
+    // While Preferences is recording a new chord, the live Carbon hotkeys must
+    // be released — otherwise pressing an already-bound chord fires the action
+    // instead of reaching the recorder. Re-register (from saved config) when
+    // capture ends, whether accepted or cancelled.
+    QObject::connect(&prefs, &PreferencesWindow::hotkeyCaptureActive, &tray, [](bool active) {
+        if (active) {
+            unregisterGlobalHotkeys();
+        } else {
+            unregisterGlobalHotkeys(); // idempotent; guards a double "false"
+            reportHotkeyFailures(registerAllChords());
+        }
+    });
 #endif
 
-    QObject::connect(&tray, &TrayIcon::actionScreenshot,
-                     &overlay, &OverlayWindow::activate);
-    QObject::connect(&tray, &TrayIcon::actionFullscreen,
-                     &overlay, &OverlayWindow::activateFullscreen);
+    // Tray entry points get the same "capture in progress" guard as the
+    // hotkeys: OverlayWindow::isBusy() is also true while a capture is pending
+    // and the overlay is still hidden, so a second activate would stack a
+    // second capture.
+    auto trayCaptureBusy = [&]() {
+        if (!overlay.isBusy()) return false;
+        tray.showMessage("Snapforge", "Capture in progress",
+                         QSystemTrayIcon::Information, 2000);
+        return true;
+    };
+    QObject::connect(&tray, &TrayIcon::actionScreenshot, [&]() {
+        if (!trayCaptureBusy()) overlay.activate();
+    });
+    QObject::connect(&tray, &TrayIcon::actionFullscreen, [&]() {
+        if (!trayCaptureBusy()) overlay.activateFullscreen();
+    });
     QObject::connect(&tray, &TrayIcon::actionRecordToggle, [&]() {
         if (recording.isRecording()) {
             recording.stopRecording();
-        } else {
+        } else if (recording.isBusy()) {
+            // Finalizing the previous file — a start would be rejected.
+            tray.showMessage("Snapforge", "Still finalizing the previous recording",
+                             QSystemTrayIcon::Information, 2000);
+        } else if (!trayCaptureBusy()) {
             overlay.activateForRecording();
         }
     });
@@ -608,7 +729,7 @@ int main(int argc, char *argv[]) {
                                             &app);
     Q_UNUSED(recordingController);
 
-#ifdef Q_OS_MAC
+#ifdef Q_OS_MACOS
     registerGlobalHotkey();
     QObject::connect(&app, &QCoreApplication::aboutToQuit, []() {
         // Zero globals BEFORE tearing down the Carbon hotkey registration so
@@ -629,7 +750,7 @@ int main(int argc, char *argv[]) {
     // somehow didn't fire) — globals are raw pointers to stack objects that
     // are about to unwind; null them before return.
     g_prefsRef = nullptr;
-#ifndef Q_OS_MAC
+#ifndef Q_OS_MACOS
     // No-op on non-mac builds: the mac-only globals don't exist here.
 #else
     g_overlay = nullptr;

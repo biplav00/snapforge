@@ -43,7 +43,7 @@
 - **One process** total. Qt event loop on the main thread.
 - **ffmpeg = child process** spawned by `snapforge-encode::record::ffmpeg`. Frames piped over stdin.
 - **Capture worker = dedicated thread** inside the encode-layer `RecordingHandle`. Pulls frames from ScreenCaptureKit, pushes to ffmpeg stdin.
-- **Click event tap = dedicated CFRunLoop thread** (Rust impl in `snapforge-capture::clicks`) plus a **forwarder thread** in `snapforge-app::clicks` that polls the tracker at ~60Hz (16ms sleep) and invokes the user-supplied callback.
+- **Click event tap = dedicated CFRunLoop thread** (Rust impl in `snapforge-capture::clicks`) plus a **forwarder thread** in `snapforge-app::clicks` that blocks on an mpsc channel fed by the tracker (event-driven, no polling) and invokes the user-supplied callback.
 - **GUI work always on main thread.** FFI click callbacks fire on the forwarder thread; the Qt-side `ClickTap` re-dispatches via `QMetaObject::invokeMethod` (QueuedConnection semantics) before emitting `clicked()`.
 
 ## Data flow — screenshot
@@ -75,7 +75,7 @@ See [recording-pipeline.md](recording-pipeline.md) for the full sequence.
 | ffmpeg stdin writes | Record worker |
 | `snapforge_capture_*` FFI calls | Caller thread (Qt main usually) — blocking, fast |
 | `snapforge_record_start` | Caller thread — blocks until ffmpeg spawned |
-| `snapforge_clicks_*` callback | Rust forwarder thread (~60Hz poll) — Qt wrapper re-dispatches to main |
+| `snapforge_clicks_*` callback | Rust forwarder thread (blocks on channel) — Qt wrapper re-dispatches to main |
 
 ## Why Qt + Rust split
 

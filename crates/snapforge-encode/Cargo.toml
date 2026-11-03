@@ -13,6 +13,10 @@ rayon = { workspace = true }
 thiserror = "2"
 tracing = { workspace = true }
 
+# F_SETNOSIGPIPE on ffmpeg's stdin pipe (see record/ffmpeg.rs).
+[target.'cfg(target_os = "macos")'.dependencies]
+libc = "0.2"
+
 [lints]
 workspace = true
 

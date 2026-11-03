@@ -61,8 +61,10 @@ int snapforge_history_delete(const char *path);
 /* Clear all history. Returns 0 on success, -1 on error. */
 int snapforge_history_clear(void);
 
-/* Returns 1 if the given path is an incomplete mp4 (zero-byte or no moov atom),
- * 0 otherwise. Returns -1 on null/invalid input. Non-mp4 paths return 0. */
+/* Returns 1 if the given .mp4 path is an incomplete recording (missing,
+ * under 16 bytes, or an ftyp file without a complete top-level moov box),
+ * 0 otherwise. Returns -1 on null/invalid input. Non-mp4 paths return 0.
+ * A fragmented MP4 (early moov + moof/mdat) counts as complete. */
 int snapforge_is_incomplete_mp4(const char *path);
 
 /* --- Config --- */
@@ -84,15 +86,18 @@ int snapforge_config_save(const char *json);
  * are kept because they are either raw building blocks the use-case layer
  * cannot subsume (capture, free) or read-only metadata helpers. */
 
-/* Last use-case error, or NULL if none. Caller frees via snapforge_free_string.
- * Covers screenshot, recording, and click tracking use cases. */
+/* Last error recorded ON THE CALLING THREAD, or NULL if the last snapforge_*
+ * call on this thread succeeded (errno-style, thread-local). Read it on the
+ * same thread that made the failing call. Caller frees via
+ * snapforge_free_string. */
 char *snapforge_app_last_error(void);
 
-/* Stable category of the last use-case error, alongside the human-readable
- * string from snapforge_app_last_error. Values mirror Rust's
+/* Stable category of the last error on the calling thread, alongside the
+ * human-readable string from snapforge_app_last_error. Values mirror Rust's
  * SnapforgeErrorCode; only ever appended to, never renumbered. Returns
- * SNAPFORGE_ERR_NONE (0) when the last call succeeded, or
- * SNAPFORGE_ERR_INTERNAL if the internal error-state lock is poisoned. */
+ * SNAPFORGE_ERR_NONE (0) when the last call on this thread succeeded.
+ * SNAPFORGE_ERR_PERMISSION_DENIED is reported e.g. when the click tap cannot
+ * start for lack of Accessibility permission. */
 typedef enum {
     SNAPFORGE_ERR_NONE              = 0,
     SNAPFORGE_ERR_INVALID_INPUT     = 1,
@@ -139,8 +144,11 @@ void snapforge_set_log_callback(SnapforgeLogCallback callback);
  *   output_path (string), format ("png"/"jpg"/"webp"),
  *   quality (u8 1..=100), copy_to_clipboard (bool), add_to_history (bool).
  * Returns a JSON string {"saved_path": "..."} on success, NULL on error
- * (call snapforge_app_last_error for details). Caller frees via
- * snapforge_free_string. */
+ * (call snapforge_app_last_error for details). saved_path is the file
+ * actually written: if output_path already exists, "-1", "-2", ... is
+ * appended before the extension, so use saved_path, not output_path.
+ * Clipboard copy and history indexing are best-effort (logged, never fail
+ * the call). Caller frees via snapforge_free_string. */
 char *snapforge_screenshot(const char *req_json);
 
 /* Save (and optionally clipboard / index) a caller-supplied RGBA bitmap.
@@ -157,7 +165,10 @@ char *snapforge_screenshot(const char *req_json);
  *   add_to_history (bool, default false; ignored when no path).
  *
  * Returns a JSON string {"saved_path": "..." | null} on success, NULL on
- * error (call snapforge_app_last_error). Caller frees via
+ * error (call snapforge_app_last_error). saved_path is the file actually
+ * written ("-N"-suffixed if output_path already existed). With a path,
+ * clipboard copy and history indexing are best-effort; for a clipboard-only
+ * request a clipboard failure returns NULL. Caller frees via
  * snapforge_free_string. */
 char *snapforge_save_prerendered(const uint8_t *rgba, size_t rgba_len,
                                  uint32_t width, uint32_t height,
@@ -173,14 +184,32 @@ char *snapforge_save_prerendered(const uint8_t *rgba, size_t rgba_len,
  *   add_to_history_on_stop (bool, default false),
  *   show_clicks (bool, default false).
  *
+ * If output_path already exists, a "-N" suffix is added before the extension
+ * (ffmpeg never overwrites an existing file); query the real path with
+ * snapforge_record_output_path.
+ *
  * Returns an opaque handle, or NULL on error (call snapforge_app_last_error).
  * The handle must be stopped via snapforge_record_stop and freed via
  * snapforge_record_free_handle. */
 void *snapforge_record_start(const char *req_json);
 
 /* Stop a use-case recording. Returns 0 on success, -1 on error
- * (call snapforge_app_last_error for details). */
+ * (call snapforge_app_last_error for details). With add_to_history_on_stop,
+ * an empty or incomplete output is not indexed; indexing failures are
+ * logged only. */
 int snapforge_record_stop(void *handle);
+
+/* Report whether the recording's encode worker is still running.
+ * Returns 1 while running or paused; 0 once the worker has exited (e.g.
+ * ffmpeg died or capture failed -- snapforge_record_stop will then return -1
+ * with that error) or after the handle was stopped; -1 for an invalid /
+ * unknown handle (see snapforge_app_last_error). Cheap; safe to poll. */
+int snapforge_record_is_alive(void *handle);
+
+/* The path the recording is actually writing (may carry a "-N" suffix, see
+ * snapforge_record_start). Caller frees via snapforge_free_string. Returns
+ * NULL for an invalid handle or after snapforge_record_stop. */
+char *snapforge_record_output_path(void *handle);
 
 /* Pause a use-case recording. Returns 0 on success, -1 on error. */
 int snapforge_record_pause(void *handle);
