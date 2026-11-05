@@ -135,6 +135,7 @@ pub struct HotkeyBindings {
     pub action_undo: String,
     pub action_redo: String,
     pub action_cancel: String,
+    pub action_forcequit: String,
 }
 
 impl Default for HotkeyBindings {
@@ -166,6 +167,7 @@ impl Default for HotkeyBindings {
             action_undo: "CmdOrCtrl+Z".to_string(),
             action_redo: "CmdOrCtrl+Shift+Z".to_string(),
             action_cancel: "Escape".to_string(),
+            action_forcequit: "Cmd+Shift+C".to_string(),
         }
     }
 }

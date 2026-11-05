@@ -21,7 +21,6 @@ public:
 
 signals:
     void saveRequested();
-    void copyRequested();
     void cancelRequested();
 
 protected:
@@ -36,7 +35,6 @@ private:
     void updateUndoRedo();
     void updateColorSwatches();
     void onColorSwatchClicked(const QColor &color);
-    void onCustomColorClicked();
     void onStrokeWidthClicked(int width);
 
     AnnotationState *m_state;
@@ -46,7 +44,6 @@ private:
 
     // Color swatch buttons
     QList<QPushButton *> m_colorSwatches;
-    QPushButton *m_customColorBtn = nullptr;
     static const QList<QColor> k_presetColors;
 
     // Stroke width buttons

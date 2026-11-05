@@ -120,7 +120,8 @@ void OverlayWindow::reloadKeyBindings() {
     m_bindCopy   = bindingFor(cfg, "actions", "copy",   "Cmd+C");
     m_bindUndo   = bindingFor(cfg, "actions", "undo",   "Cmd+Z");
     m_bindRedo   = bindingFor(cfg, "actions", "redo",   "Cmd+Shift+Z");
-    m_bindCancel = bindingFor(cfg, "actions", "cancel", "Escape");
+    m_bindCancel   = bindingFor(cfg, "actions", "cancel",     "Escape");
+    m_bindForceQuit = bindingFor(cfg, "actions", "forcequit",  "Cmd+Shift+C");
 }
 
 // --- OverlayWindow ---
@@ -197,6 +198,7 @@ void OverlayWindow::onScreenConfigChanged() {
 }
 
 void OverlayWindow::cancelSession() {
+    setCursor(Qt::ArrowCursor);
     if (m_canvas) m_canvas->cancelTextInput();
     m_annotationState.clearAnnotations();
     m_resizing = false;
@@ -474,6 +476,33 @@ void OverlayWindow::setLastRegion(const QRect &region) {
     }
 }
 
+void OverlayWindow::handleSystemWake() {
+    // A session left open across sleep is anchored to a display layout (and a
+    // capture) that no longer exists. Worse, the in-flight SCK completion or
+    // its watchdog may never fire once the process has been suspended, so
+    // isBusy() would stay true forever and the next hotkey would be silently
+    // swallowed as "Capture in progress". Tear everything down here; the next
+    // activation captures fresh.
+    const bool hadSession = isVisible() || m_captureInFlight || m_hasRegion;
+    m_captureInFlight = false;
+    m_screenshot = QImage();
+    m_drawing = false;
+    m_hasRegion = false;
+    m_resizing = false;
+    m_activeResize = EdgeNone;
+    exitAnnotateMode();
+    exitRecordSelectMode();
+    m_mode = Select;
+    hideOverlay();
+
+    // Re-anchor the long-lived native window now that displays are back. A
+    // no-op when hidden, but it keeps the next activation off a stale screen.
+    QScreen *screen = QGuiApplication::screenAt(QCursor::pos());
+    if (screen) repositionToScreen(screen);
+
+    if (hadSession) qInfo("Overlay: dropped pre-sleep session after wake");
+}
+
 QRect OverlayWindow::selectedRect() const {
     return QRect(m_startPos, m_endPos).normalized();
 }
@@ -620,6 +649,11 @@ void OverlayWindow::enterAnnotateMode() {
     }
     m_canvas->setRegion(sel.x(), sel.y(), sel.width(), sel.height());
     m_canvas->setGeometry(sel);
+    // Child widgets inherit the overlay's cursor. The overlay stops receiving
+    // mouse moves once a child is under the pointer, so without an explicit
+    // arrow here, moving straight from a resize handle into the canvas leaves
+    // the resize cursor stuck until the pointer leaves the selection again.
+    m_canvas->setCursor(Qt::ArrowCursor);
     m_canvas->show();
     m_canvas->raise();
 
@@ -627,11 +661,11 @@ void OverlayWindow::enterAnnotateMode() {
     if (!m_toolbar) {
         m_toolbar = new AnnotationToolbar(&m_annotationState, this);
         connect(m_toolbar, &AnnotationToolbar::saveRequested, this, &OverlayWindow::handleSaveAndCopy);
-        connect(m_toolbar, &AnnotationToolbar::copyRequested, this, &OverlayWindow::handleCopy);
         connect(m_toolbar, &AnnotationToolbar::cancelRequested,
                 this, &OverlayWindow::cancelSession);
     }
     m_toolbar->positionRelativeTo(sel.x(), sel.y(), sel.width(), sel.height());
+    m_toolbar->setCursor(Qt::ArrowCursor);
     m_toolbar->show();
     m_toolbar->raise();
 
@@ -714,6 +748,13 @@ void OverlayWindow::enterRecordSelectMode() {
         connect(m_btnRecordCancel, &QPushButton::clicked,
                 this, &OverlayWindow::cancelSession);
     }
+
+    // Same inherited-cursor issue as the annotate canvas: these buttons sit
+    // right below the region's bottom edge, so leaving a resize handle must
+    // not leave the resize cursor stuck over them.
+    m_btnRecordRegion->setCursor(Qt::ArrowCursor);
+    m_btnRecordFullscreen->setCursor(Qt::ArrowCursor);
+    m_btnRecordCancel->setCursor(Qt::ArrowCursor);
 
     positionRecordButtons(sel);
 
@@ -1180,6 +1221,11 @@ void OverlayWindow::keyPressEvent(QKeyEvent *event) {
     // universal way out of a full-screen overlay. (While a text label is
     // being typed the canvas consumes Escape to discard the label first.)
     const bool isCancel = event->key() == Qt::Key_Escape || m_bindCancel.matches(event);
+    const bool isForceQuit = m_bindForceQuit.matches(event);
+    if (isForceQuit) {
+        QCoreApplication::quit();
+        return;
+    }
 
     if (m_mode == Annotate) {
         // If text input is active in the canvas, let it handle keys (Save /

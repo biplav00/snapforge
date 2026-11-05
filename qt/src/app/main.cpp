@@ -54,6 +54,15 @@ static const UInt32 kHotkeyIDPreferences = 5;
 // Previously we only kept the last one, so two were leaked on app exit.
 static std::array<EventHotKeyRef, 5> g_hotkeys = { nullptr, nullptr, nullptr, nullptr, nullptr };
 
+// Installed Carbon handler. Kept so a wake can remove/reinstall it: macOS can
+// drop the application event handler across sleep, leaving hotkeys dead even
+// though RegisterEventHotKey still reports success.
+static EventHandlerRef g_hotkeyHandler = nullptr;
+
+// True while Preferences is recording a new chord; the global chords are
+// deliberately released then, so a wake must not steal them back mid-capture.
+static bool g_hotkeyCaptureActive = false;
+
 static const OSType kHotkeySignature = 'SNPF';
 
 OSStatus hotkeyHandler(EventHandlerCallRef, EventRef event, void *) {
@@ -269,30 +278,8 @@ static void reportHotkeyFailures(const QStringList &failed) {
     }
 }
 
-void registerGlobalHotkey() {
-    EventTypeSpec eventType;
-    eventType.eventClass = kEventClassKeyboard;
-    eventType.eventKind  = kEventHotKeyPressed;
-
-    // Install the dispatch handler exactly once; chords are (re)bound separately.
-    const OSStatus st = InstallApplicationEventHandler(&hotkeyHandler, 1, &eventType,
-                                                       nullptr, nullptr);
-    if (st != noErr) {
-        qCritical("InstallApplicationEventHandler failed (status=%d) — global hotkeys disabled",
-                  static_cast<int>(st));
-        auto *tray = qobject_cast<QSystemTrayIcon *>(
-            qApp->property("systemTray").value<QObject *>());
-        if (tray) {
-            tray->showMessage("Snapforge — Hotkeys unavailable",
-                              "Global hotkeys could not be installed; use the menu bar icon.",
-                              QSystemTrayIcon::Warning, 6000);
-        }
-        return;
-    }
-
-    reportHotkeyFailures(registerAllChords());
-}
-
+// Remove every registered chord. The dispatch handler stays installed (it's
+// cheap and reused); used when Preferences records a chord and on reload.
 void unregisterGlobalHotkeys() {
     for (auto &ref : g_hotkeys) {
         if (ref) {
@@ -300,6 +287,78 @@ void unregisterGlobalHotkeys() {
             ref = nullptr;
         }
     }
+}
+
+// (Re)install the Carbon dispatch handler and bind every configured chord.
+// Always removes a previous handler first: after sleep macOS can silently
+// drop it, and reinstalling is the only way to make hotkeys dispatch again.
+// Returns a list of chords that failed to register (empty = all good).
+static QStringList installAndRegisterGlobalHotkeys() {
+    if (g_hotkeyHandler) {
+        RemoveEventHandler(g_hotkeyHandler);
+        g_hotkeyHandler = nullptr;
+    }
+
+    EventTypeSpec eventType;
+    eventType.eventClass = kEventClassKeyboard;
+    eventType.eventKind  = kEventHotKeyPressed;
+
+    const OSStatus st = InstallApplicationEventHandler(&hotkeyHandler, 1, &eventType,
+                                                       nullptr, &g_hotkeyHandler);
+    if (st != noErr || !g_hotkeyHandler) {
+        qCritical("InstallApplicationEventHandler failed (status=%d) — global hotkeys disabled",
+                  static_cast<int>(st));
+        return { QStringLiteral("global hotkey handler") };
+    }
+
+    return registerAllChords();
+}
+
+void registerGlobalHotkey() {
+    QStringList failed = installAndRegisterGlobalHotkeys();
+    if (failed.removeAll(QStringLiteral("global hotkey handler")) > 0) {
+        auto *tray = qobject_cast<QSystemTrayIcon *>(
+            qApp->property("systemTray").value<QObject *>());
+        if (tray) {
+            tray->showMessage("Snapforge — Hotkeys unavailable",
+                              "Global hotkeys could not be installed; use the menu bar icon.",
+                              QSystemTrayIcon::Warning, 6000);
+        }
+    }
+    reportHotkeyFailures(failed);
+}
+
+// Re-arm global hotkeys after sleep / a user-session switch. The OS can drop
+// both the Carbon EventHandlerRef and the registrations while the process is
+// suspended; the app keeps running, but every shortcut silently dies until
+// restart. Reinstalling + rebinding fixes that. The WindowServer/SCK daemons
+// can still be settling right after wake, so a failed attempt gets one
+// delayed retry before we surface it to the user.
+void reregisterGlobalHotkeys() {
+    if (g_hotkeyCaptureActive) {
+        qInfo("System wake: hotkey re-registration skipped (Preferences is recording a chord)");
+        return;
+    }
+
+    unregisterGlobalHotkeys();
+    QStringList failed = installAndRegisterGlobalHotkeys();
+    if (failed.isEmpty()) {
+        qInfo("System wake: global hotkeys re-registered");
+        return;
+    }
+
+    qWarning("System wake: hotkey registration incomplete (%s) — retrying in 750 ms",
+             qPrintable(failed.join(QStringLiteral(", "))));
+    QTimer::singleShot(750, qApp, []() {
+        if (g_hotkeyCaptureActive) return;
+        unregisterGlobalHotkeys();
+        const QStringList second = installAndRegisterGlobalHotkeys();
+        reportHotkeyFailures(second);
+        if (second.isEmpty())
+            qInfo("System wake: global hotkeys re-registered on retry");
+        else
+            qWarning("System wake: hotkey re-registration failed after retry");
+    });
 }
 
 // Re-read chords from config and rebind. Called after Preferences saves new
@@ -656,6 +715,7 @@ int main(int argc, char *argv[]) {
     // instead of reaching the recorder. Re-register (from saved config) when
     // capture ends, whether accepted or cancelled.
     QObject::connect(&prefs, &PreferencesWindow::hotkeyCaptureActive, &tray, [](bool active) {
+        g_hotkeyCaptureActive = active;
         if (active) {
             unregisterGlobalHotkeys();
         } else {
@@ -731,6 +791,17 @@ int main(int argc, char *argv[]) {
 
 #ifdef Q_OS_MACOS
     registerGlobalHotkey();
+
+    // Sleep/wake recovery. macOS can drop Carbon hotkey bindings and leave a
+    // capture from before sleep unresolved, which makes every later hotkey look
+    // dead. Reset the overlay first, then re-install/rebind the global chords.
+    QObject::connect(&sleepObserver, &WorkspaceSleepObserver::systemDidWake,
+                     &app, [&overlay]() {
+        qInfo("System woke — resetting overlay and re-registering global hotkeys");
+        overlay.handleSystemWake();
+        reregisterGlobalHotkeys();
+    });
+
     QObject::connect(&app, &QCoreApplication::aboutToQuit, []() {
         // Zero globals BEFORE tearing down the Carbon hotkey registration so
         // any handler invocation racing with shutdown sees null pointers
@@ -741,6 +812,10 @@ int main(int argc, char *argv[]) {
         g_history = nullptr;
         g_prefsRef = nullptr;
         unregisterGlobalHotkeys();
+        if (g_hotkeyHandler) {
+            RemoveEventHandler(g_hotkeyHandler);
+            g_hotkeyHandler = nullptr;
+        }
     });
 #endif
 

@@ -672,6 +672,7 @@ const HotkeyDef kHotkeyDefs[] = {
     {"actions", "undo",       "Undo",           "Cmd+Z"},
     {"actions", "redo",       "Redo",           "Cmd+Shift+Z"},
     {"actions", "cancel",     "Cancel",         "Escape"},
+    {"actions", "forcequit",  "Force Quit",     "Cmd+Shift+C"},
 };
 
 QString defaultShortcutFor(const QString &section, const QString &actionKey)
