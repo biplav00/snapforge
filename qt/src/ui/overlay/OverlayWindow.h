@@ -26,6 +26,12 @@ public:
     // coords of the display it was captured on.
     void setLastRegion(const QRect &region);
 
+    // Drop any capture/session that was live when the Mac went to sleep. The
+    // ScreenCaptureKit completion (or its watchdog) may never arrive after a
+    // wake, which would leave isBusy() stuck and every hotkey silently gated.
+    // Also re-anchors the reusable window to the current cursor screen.
+    void handleSystemWake();
+
     // Re-read the overlay-local shortcuts (hotkeys.tools/sizes/actions in the
     // shared config) and re-parse them into matchable chords. Called at
     // construction and after every Preferences save (see main.cpp).
@@ -132,7 +138,7 @@ private:
 
     QList<QPair<KeyBinding, ToolType>> m_toolBindings;
     KeyBinding m_bindSizeSmall, m_bindSizeMedium, m_bindSizeLarge;
-    KeyBinding m_bindSave, m_bindCopy, m_bindUndo, m_bindRedo, m_bindCancel;
+    KeyBinding m_bindSave, m_bindCopy, m_bindUndo, m_bindRedo, m_bindCancel, m_bindForceQuit;
 
     QPoint m_startPos;
     QPoint m_endPos;

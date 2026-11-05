@@ -115,6 +115,7 @@ A global shortcut must include Cmd, Ctrl or Option, so it can't take over normal
 | Undo | `Cmd+Z` |
 | Redo | `Cmd+Shift+Z` |
 | Cancel | `Escape` |
+| Force Quit (exits app) | `Cmd+Shift+C` |
 
 All shortcuts are customizable via Preferences.
 

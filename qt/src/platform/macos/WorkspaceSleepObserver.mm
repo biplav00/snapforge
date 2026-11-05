@@ -30,6 +30,9 @@ WorkspaceSleepObserver::WorkspaceSleepObserver(RecordingManager *rec, QObject *p
                     // actually happened.
                     m->handleSystemSleep();
                 }];
+    // QPointer-to-self guards the notification blocks: a block queued just
+    // before destruction must not emit through a dangling observer.
+    QPointer<WorkspaceSleepObserver> self(this);
     id wakeToken = [center
         addObserverForName:NSWorkspaceDidWakeNotification
                     object:nil
@@ -40,11 +43,27 @@ WorkspaceSleepObserver::WorkspaceSleepObserver(RecordingManager *rec, QObject *p
                     // handleSystemWake resumes only if the sleep handler's
                     // auto-pause is what paused the recording.
                     m->handleSystemWake();
+                    // Let main.cpp re-arm the global hotkeys and clear any
+                    // overlay session that was live when the lid closed.
+                    if (self) emit self->systemDidWake();
+                }];
+
+    // Fast user switching / logout+login tears down the process's Carbon
+    // hotkey bindings on some macOS versions. Treat session activation like a
+    // wake for re-arming purposes (but don't touch recording: it was not
+    // necessarily paused by sleep).
+    id sessionToken = [center
+        addObserverForName:NSWorkspaceSessionDidBecomeActiveNotification
+                    object:nil
+                     queue:[NSOperationQueue mainQueue]
+                usingBlock:^(NSNotification *) {
+                    if (self) emit self->systemDidWake();
                 }];
 
     // Retain the observer tokens so we can remove them later.
-    m_sleepToken = (__bridge_retained void *)sleepToken;
-    m_wakeToken  = (__bridge_retained void *)wakeToken;
+    m_sleepToken   = (__bridge_retained void *)sleepToken;
+    m_wakeToken    = (__bridge_retained void *)wakeToken;
+    m_sessionToken = (__bridge_retained void *)sessionToken;
 }
 
 WorkspaceSleepObserver::~WorkspaceSleepObserver()
@@ -59,5 +78,10 @@ WorkspaceSleepObserver::~WorkspaceSleepObserver()
         id token = (__bridge_transfer id)m_wakeToken;
         [center removeObserver:token];
         m_wakeToken = nullptr;
+    }
+    if (m_sessionToken) {
+        id token = (__bridge_transfer id)m_sessionToken;
+        [center removeObserver:token];
+        m_sessionToken = nullptr;
     }
 }
