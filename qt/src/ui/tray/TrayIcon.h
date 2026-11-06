@@ -92,7 +92,6 @@ private:
     QMenu           *m_menu = nullptr;
     QTimer          *m_pulseTimer = nullptr;
     QIcon            m_idleIcon;
-    QIcon            m_stopIcon;
 
     bool m_inRecordingState = false;
     bool m_paused           = false;

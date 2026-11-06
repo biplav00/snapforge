@@ -76,8 +76,7 @@ void TrayIcon::initialize() {
     m_tray->setToolTip("Snapforge");
 
     // Stop button starts hidden; only shown while recording (enterRecordingState).
-    m_stopIcon = makeStopIcon();
-    m_stopTray->setIcon(m_stopIcon);
+    m_stopTray->setIcon(makeStopIcon());
     m_stopTray->setToolTip("Stop Recording");
     m_stopTray->hide();
 
@@ -168,7 +167,10 @@ void TrayIcon::showMessage(const QString &title,
                            const QString &body,
                            QSystemTrayIcon::MessageIcon icon,
                            int msTimeout) {
-    m_tray->showMessage(title, body, icon, msTimeout);
+    // While recording the idle item is hidden; post through whichever item is
+    // actually in the menu bar so the banner still has a live host.
+    QSystemTrayIcon *target = m_stopTray->isVisible() ? m_stopTray : m_tray;
+    target->showMessage(title, body, icon, msTimeout);
 }
 
 void TrayIcon::refreshStopIcon() {
