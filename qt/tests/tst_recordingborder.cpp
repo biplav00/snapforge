@@ -26,8 +26,9 @@ void TestRecordingBorder::emptyRegionClears() {
 void TestRecordingBorder::expandsRegionForStroke() {
     RecordingBorderWindow w;
     w.setRegion(QRect(100, 200, 300, 400));
-    // 3px outward on each side, so the 2px stroke lands outside the region.
-    QCOMPARE(w.geometry(), QRect(97, 197, 306, 406));
+    // 8px outward on each side, so the hairline and its glow land outside the
+    // captured region.
+    QCOMPARE(w.geometry(), QRect(92, 192, 316, 416));
 }
 
 void TestRecordingBorder::showsOnlyWhenPrepared() {

@@ -1,0 +1,953 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Snapforge — Stop-Only Menu Bar Mock</title>
+<style>
+  :root {
+    --bar-h: 26px;
+    --ink: #ffffff;
+    --muted: #9a9aa0;
+    --rec: #ff4646;
+    --panel: #232325;
+    --line: #34343a;
+    --blue: rgba(120, 160, 255, .9);
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; }
+  body {
+    font-family: -apple-system, "SF Pro Text", "Helvetica Neue", Arial, sans-serif;
+    background:
+      radial-gradient(900px 500px at 85% -10%, rgba(96, 70, 160, .22), transparent 60%),
+      #161618;
+    color: #e8e8ea;
+    padding: 44px 32px 72px;
+  }
+  .wrap { max-width: 1080px; margin: 0 auto; }
+
+  .eyebrow {
+    font-size: 11px; font-weight: 600; letter-spacing: .14em;
+    text-transform: uppercase; color: #7d7d86; margin-bottom: 10px;
+  }
+  h1 { font-size: 30px; line-height: 1.15; letter-spacing: -.02em; margin: 0 0 10px; }
+  p.sub { margin: 0; max-width: 720px; color: var(--muted); font-size: 14px; line-height: 1.6; }
+
+  /* ---------- Hero menu bar ---------- */
+  .hero { margin-top: 30px; }
+  .wallpaper {
+    position: relative;
+    border-radius: 12px;
+    overflow: hidden;
+    background:
+      radial-gradient(ellipse 60% 90% at 12% 112%, rgba(255, 122, 89, .55), transparent 58%),
+      radial-gradient(ellipse 55% 80% at 78% -18%, rgba(122, 92, 255, .60), transparent 60%),
+      radial-gradient(ellipse 45% 65% at 96% 85%, rgba(0, 178, 255, .35), transparent 60%),
+      linear-gradient(135deg, #1a1e38 0%, #2a1b3d 46%, #3c1f2e 100%);
+    box-shadow: 0 18px 50px rgba(0, 0, 0, .55);
+  }
+  .wallpaper::after {
+    content: "";
+    position: absolute; inset: 0;
+    background: radial-gradient(ellipse at 50% 0%, rgba(255,255,255,.06), transparent 55%);
+    pointer-events: none;
+  }
+  .menubar {
+    position: relative; z-index: 2;
+    height: var(--bar-h);
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 0 8px;
+    background: rgba(20, 20, 22, .44);
+    backdrop-filter: blur(22px) saturate(150%);
+    -webkit-backdrop-filter: blur(22px) saturate(150%);
+    border-bottom: .5px solid rgba(255,255,255,.10);
+  }
+  .menubar-left, .menubar-right { display: flex; align-items: center; height: 100%; }
+  .menubar-left { gap: 1px; }
+  .menubar-right { gap: 0; }
+
+  .item {
+    height: 100%;
+    display: inline-flex; align-items: center; justify-content: center;
+    padding: 0 7px;
+    border-radius: 4px;
+    color: var(--ink);
+    font-size: 12.5px;
+    user-select: none;
+  }
+  .menubar-left .item { padding: 0 9px; font-weight: 500; }
+  .menubar-left .apple { padding: 0 10px; }
+  .menubar-left .appname { font-weight: 700; }
+  .item.hover, .item.active { background: rgba(120, 160, 255, .28); }
+
+  .clock { font-size: 12.5px; font-weight: 500; letter-spacing: .2px; padding: 0 9px; }
+  .glyph { display: inline-flex; opacity: .92; }
+
+  /* The stop control — matches the app's 20x20 icon with a 13px red square. */
+  .stop-slot {
+    width: 20px; height: 20px;
+    display: inline-flex; align-items: center; justify-content: center;
+  }
+  .stop-sq {
+    width: 13px; height: 13px;
+    border-radius: 2.6px;
+    background: var(--rec);
+    box-shadow: 0 0 0 1px rgba(255, 255, 255, .06);
+  }
+  /* Gentle recording pulse: the square stays solid, a soft red halo breathes
+     out to 4px and fades. 1.2s loop, ease-in-out. */
+  .stop-sq.pulse {
+    animation: stopPulse 1.2s ease-in-out infinite;
+  }
+  @keyframes stopPulse {
+    0%, 100% {
+      box-shadow:
+        0 0 0 1px rgba(255, 255, 255, .06),
+        0 0 0 0 rgba(255, 70, 70, 0);
+    }
+    50% {
+      box-shadow:
+        0 0 0 1px rgba(255, 255, 255, .06),
+        0 0 0 4px rgba(255, 70, 70, .32),
+        0 0 12px 3px rgba(255, 70, 70, .22);
+    }
+  }
+  /* Static frames for the mock sheet (animation still runs live in a browser). */
+  .stop-sq.halo-0 { box-shadow: 0 0 0 1px rgba(255,255,255,.06), 0 0 0 0 rgba(255,70,70,0); }
+  .stop-sq.halo-1 { box-shadow: 0 0 0 1px rgba(255,255,255,.06), 0 0 0 2px rgba(255,70,70,.20); }
+  .stop-sq.halo-2 { box-shadow: 0 0 0 1px rgba(255,255,255,.06), 0 0 0 4px rgba(255,70,70,.32), 0 0 12px 3px rgba(255,70,70,.22); }
+  .stop-item.spotlight {
+    position: relative;
+    background: rgba(120, 160, 255, .20);
+    box-shadow: inset 0 0 0 1px rgba(120, 160, 255, .55);
+    overflow: visible;
+  }
+  .spot-label {
+    position: absolute; top: calc(var(--bar-h) + 9px); right: -6px;
+    width: 168px;
+    padding: 9px 11px 10px;
+    border-radius: 8px;
+    background: rgba(24, 24, 28, .92);
+    border: 1px solid rgba(120, 160, 255, .38);
+    box-shadow: 0 10px 26px rgba(0, 0, 0, .45);
+    font-size: 12px; font-weight: 600; line-height: 1.25;
+    color: #fff;
+    white-space: normal;
+  }
+  .spot-label::before {
+    content: "";
+    position: absolute; top: -10px; right: 14px;
+    width: 1px; height: 9px;
+    background: rgba(120, 160, 255, .55);
+  }
+  .spot-label small {
+    display: block; margin-top: 2px;
+    font-size: 11px; font-weight: 400; color: #9d9da7;
+  }
+
+  .desktop { position: relative; z-index: 1; height: 178px; }
+  .desktop-note {
+    position: absolute; left: 22px; bottom: 18px;
+    font-size: 11px; letter-spacing: .02em; color: rgba(255,255,255,.34);
+  }
+  .rec-dot-live {
+    display: inline-block; width: 7px; height: 7px; border-radius: 50%;
+    background: var(--rec); margin-right: 7px;
+    box-shadow: 0 0 0 3px rgba(255, 70, 70, .20);
+    animation: pulse 1.1s ease-in-out infinite;
+  }
+  @keyframes pulse { 0%, 100% { opacity: 1 } 50% { opacity: .35 } }
+
+  /* ---------- State cards ---------- */
+  .states {
+    display: grid; grid-template-columns: repeat(3, 1fr);
+    gap: 14px; margin-top: 22px;
+  }
+  .card {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 11px;
+    padding: 16px 18px 15px;
+  }
+  .card.after { border-color: rgba(255, 70, 70, .38); }
+  .card-label {
+    font-size: 10.5px; font-weight: 700; letter-spacing: .12em;
+    text-transform: uppercase; color: #7e7e88; margin-bottom: 12px;
+  }
+  .card.after .card-label { color: #ff8a8a; }
+  .card p { margin: 12px 0 0; font-size: 12px; line-height: 1.55; color: #8e8e96; }
+  .card p strong { color: #d8d8de; font-weight: 600; }
+
+  .mini-bar {
+    height: 28px;
+    display: inline-flex; align-items: center; gap: 0;
+    padding: 0 4px;
+    border-radius: 6px;
+    background: rgba(8, 8, 10, .88);
+    border: 1px solid rgba(255,255,255,.06);
+  }
+  .mini-bar .item { height: 26px; }
+  .pill {
+    display: inline-flex; align-items: center; gap: 5px;
+    padding: 0 5px;
+  }
+  .dot {
+    width: 11px; height: 11px; border-radius: 50%;
+    background: var(--rec);
+    box-shadow: 0 0 0 3px rgba(255, 70, 70, .22);
+  }
+  .timer {
+    font: 700 16px/1 Menlo, "SF Mono", monospace;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: .01em;
+    color: #fff;
+  }
+  .removed { position: relative; opacity: .48; }
+  .removed::after {
+    content: "";
+    position: absolute; left: -3px; right: -3px; top: 50%;
+    height: 1.5px; background: #ff6b6b; transform: rotate(-7deg);
+    border-radius: 2px;
+  }
+  .tag {
+    display: inline-block; margin-left: 8px; padding: 2px 6px;
+    border-radius: 4px; font-size: 9.5px; font-weight: 700;
+    letter-spacing: .08em; text-transform: uppercase;
+    color: #ff9a9a; background: rgba(255, 70, 70, .12);
+    border: 1px solid rgba(255, 70, 70, .22);
+    vertical-align: middle;
+  }
+  .tag.neutral { color: #a9a9b3; background: rgba(255,255,255,.05); border-color: rgba(255,255,255,.09); }
+
+  .pulse-strip {
+    display: flex; align-items: center; justify-content: space-between; gap: 26px;
+    margin-top: 14px; padding: 14px 18px;
+    background: rgba(255,255,255,.025);
+    border: 1px solid rgba(255,255,255,.06);
+    border-radius: 11px;
+  }
+  .pulse-copy { max-width: 570px; }
+  .pulse-copy p { margin: 0; font-size: 12px; line-height: 1.55; color: #8e8e96; }
+  .pulse-frames { display: flex; gap: 20px; align-items: center; padding-right: 4px; }
+  .pulse-frame { display: flex; flex-direction: column; align-items: center; gap: 7px; }
+  .pulse-frame .stop-sq { width: 16px; height: 16px; border-radius: 3.2px; }
+  .pulse-frame span:last-child { font: 10px Menlo, monospace; color: #6f6f78; }
+
+  /* Brand mark (idle) */
+  .brand { width: 18px; height: 18px; display: inline-flex; }
+
+  /* ---------- Right-click menu ---------- */
+  .menu-demo {
+    display: grid; grid-template-columns: 1fr 320px;
+    gap: 34px; align-items: start;
+    margin-top: 34px;
+    padding-top: 30px;
+    border-top: 1px solid rgba(255,255,255,.07);
+  }
+  .menu-copy h2 { font-size: 17px; letter-spacing: -.01em; margin: 0 0 8px; }
+  .menu-copy p { margin: 0 0 14px; color: var(--muted); font-size: 13px; line-height: 1.6; }
+  .menu-copy ul { margin: 0; padding: 0; list-style: none; display: grid; gap: 9px; }
+  .menu-copy li { display: flex; gap: 10px; font-size: 12.5px; color: #b9b9c1; line-height: 1.45; }
+  .menu-copy li b { color: #ededf0; font-weight: 600; }
+  .kbd {
+    display: inline-flex; align-items: center; justify-content: center;
+    min-width: 18px; height: 18px; padding: 0 4px;
+    border-radius: 4px; background: rgba(255,255,255,.07);
+    border: 1px solid rgba(255,255,255,.10);
+    font-size: 10.5px; color: #cfcfd6;
+  }
+
+  .menu-stage {
+    position: relative;
+    height: 292px;
+    display: flex; flex-direction: column; align-items: flex-end;
+    padding: 18px 16px 0 0;
+    border-radius: 11px;
+    background:
+      radial-gradient(ellipse at 80% 0%, rgba(122, 92, 255, .18), transparent 55%),
+      #1d1d20;
+    border: 1px solid var(--line);
+  }
+  .menu-stage .mini-bar { margin-right: 4px; }
+  .menu-stage .stop-item { position: relative; }
+  .menu-stage .stop-item::after {
+    content: "";
+    position: absolute; inset: 0;
+    border-radius: 4px;
+    background: rgba(120, 160, 255, .22);
+    box-shadow: inset 0 0 0 1px rgba(120, 160, 255, .5);
+    pointer-events: none;
+  }
+  .dropdown {
+    position: absolute; top: 56px; right: 12px;
+    width: 218px;
+    padding: 5px;
+    border-radius: 9px;
+    background: rgba(38, 38, 42, .97);
+    border: 1px solid rgba(255,255,255,.10);
+    box-shadow: 0 18px 44px rgba(0,0,0,.6);
+    font-size: 12.5px;
+  }
+  .dropdown .row {
+    display: flex; align-items: center; justify-content: space-between;
+    height: 25px; padding: 0 9px;
+    border-radius: 5px;
+    color: #e9e9ee;
+  }
+  .dropdown .row.disabled { color: #86868f; }
+  .dropdown .row.active { background: rgba(120, 160, 255, .75); color: #fff; }
+  .dropdown .row .shortcut { color: #9c9ca5; font-size: 12px; }
+  .dropdown .row.active .shortcut { color: rgba(255,255,255,.85); }
+  .dropdown .sep { height: 1px; margin: 4px 7px; background: rgba(255,255,255,.10); }
+  .dropdown .stop-row { color: #ff9a9a; }
+  .dropdown .stop-row .shortcut { color: #b98a8a; }
+
+  /* ---------- Spec strip ---------- */
+  .specs {
+    display: grid; grid-template-columns: repeat(4, 1fr);
+    gap: 12px; margin-top: 30px;
+  }
+  .spec {
+    padding: 13px 15px;
+    border-radius: 9px;
+    background: rgba(255,255,255,.025);
+    border: 1px solid rgba(255,255,255,.06);
+  }
+  .spec .k { font-size: 10px; letter-spacing: .1em; text-transform: uppercase; color: #74747d; margin-bottom: 5px; }
+  .spec .v { font-size: 12.5px; color: #d6d6dc; line-height: 1.4; }
+  .spec .v code { font: 11.5px Menlo, monospace; color: #ffb4b4; }
+
+  /* ---------- Recording region border ---------- */
+  .region-section {
+    margin-top: 44px; padding-top: 32px;
+    border-top: 1px solid rgba(255,255,255,.07);
+  }
+  .section-head h2 { font-size: 22px; letter-spacing: -.02em; margin: 0 0 8px; }
+  .section-head p { max-width: 780px; margin: 0; color: var(--muted); font-size: 13.5px; line-height: 1.6; }
+
+  .scene {
+    position: relative;
+    height: 330px;
+    margin-top: 22px;
+    border-radius: 12px;
+    overflow: hidden;
+    background:
+      radial-gradient(ellipse 55% 90% at 15% 105%, rgba(255, 122, 89, .50), transparent 60%),
+      radial-gradient(ellipse 55% 80% at 82% -15%, rgba(122, 92, 255, .55), transparent 60%),
+      linear-gradient(135deg, #1a1e38 0%, #2a1b3d 48%, #3c1f2e 100%);
+    box-shadow: 0 18px 50px rgba(0, 0, 0, .50);
+  }
+  .scene-window {
+    position: absolute; left: 9%; top: 12%; width: 82%; height: 78%;
+    border-radius: 9px; overflow: hidden;
+    background: #1f1f24;
+    border: 1px solid rgba(255,255,255,.10);
+    box-shadow: 0 24px 60px rgba(0,0,0,.45);
+  }
+  .titlebar {
+    height: 30px; display: flex; align-items: center; gap: 6px;
+    padding: 0 11px; background: #2a2a30;
+    border-bottom: 1px solid rgba(255,255,255,.06);
+  }
+  .traffic { width: 9px; height: 9px; border-radius: 50%; }
+  .traffic.r { background: #ff5f57; } .traffic.y { background: #febc2e; } .traffic.g { background: #28c840; }
+  .titlebar .name { margin-left: 8px; font-size: 11px; color: #9b9ba4; }
+  .window-body { display: flex; height: calc(100% - 30px); }
+  .sidebar {
+    width: 22%; background: #232329;
+    border-right: 1px solid rgba(255,255,255,.05);
+    padding: 12px 10px; display: grid; gap: 8px; align-content: start;
+  }
+  .side-line { height: 7px; border-radius: 3px; background: rgba(255,255,255,.09); }
+  .side-line.short { width: 62%; }
+  .content { flex: 1; padding: 16px 20px; display: grid; gap: 10px; align-content: start; }
+  .content h3 { margin: 0 0 4px; font-size: 13px; color: #e6e6eb; font-weight: 600; }
+  .content .line { height: 8px; border-radius: 4px; background: rgba(255,255,255,.10); }
+  .content .line.w80 { width: 80%; } .content .line.w60 { width: 60%; } .content .line.w70 { width: 70%; }
+  .content .code-row { display: flex; gap: 8px; align-items: center; }
+  .content .num { font: 10px Menlo, monospace; color: #5f5f6a; width: 14px; text-align: right; }
+  .content .code { height: 7px; border-radius: 3px; }
+  .c1 { background: rgba(122,92,255,.55); width: 38%; }
+  .c2 { background: rgba(0,178,255,.45); width: 52%; }
+  .c3 { background: rgba(255,122,89,.55); width: 30%; }
+  .c4 { background: rgba(255,255,255,.14); width: 44%; }
+
+  .region-box { position: absolute; }
+  /* Recommended: 1px translucent red hairline, 4px corners, at most a faint
+     glow. No fill and no screen dimming — the content underneath stays
+     untouched. */
+  .region-box.soft {
+    border-radius: 4px;
+    box-shadow:
+      0 0 0 1px rgba(255, 70, 70, .50),
+      0 0 10px 1px rgba(255, 70, 70, .14);
+  }
+  .region-box.line {
+    border-radius: 4px;
+    box-shadow: 0 0 0 1px rgba(255, 70, 70, .45);
+  }
+  .region-box.current {
+    border-radius: 0;
+    box-shadow: 0 0 0 2px #ff4646;
+  }
+  .region-box.paused {
+    border: 1px dashed rgba(255, 170, 170, .45);
+    border-radius: 4px;
+  }
+
+  .region-tag {
+    position: absolute; top: -24px; right: -1px;
+    display: inline-flex; align-items: center; gap: 4px;
+    height: 16px; padding: 0 6px;
+    border-radius: 4px;
+    background: rgba(255, 70, 70, .55);
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
+    color: #fff;
+    font-size: 9px; font-weight: 700; letter-spacing: .08em;
+    box-shadow: 0 2px 8px rgba(0,0,0,.22);
+  }
+  .region-tag::before {
+    content: ""; width: 4px; height: 4px; border-radius: 50%;
+    background: #fff; opacity: .85;
+  }
+  .region-hero { left: 17%; top: 22%; width: 62%; height: 56%; }
+
+  .border-variants {
+    display: grid; grid-template-columns: repeat(4, 1fr);
+    gap: 14px; margin-top: 16px;
+  }
+  .border-card {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 11px;
+    padding: 14px 15px 15px;
+  }
+  .border-card.recommended { border-color: rgba(255, 70, 70, .38); }
+  .border-card h3 {
+    font-size: 12px; font-weight: 700; margin: 0 0 2px; color: #e6e6eb;
+    display: flex; align-items: center; gap: 7px;
+  }
+  .border-card h3 .tag { margin-left: 0; }
+  .border-card p { margin: 0; font-size: 11.5px; line-height: 1.5; color: #8e8e96; }
+  .mini-scene {
+    position: relative;
+    height: 128px;
+    margin: 11px 0 12px;
+    border-radius: 7px;
+    overflow: hidden;
+    background:
+      radial-gradient(ellipse 55% 90% at 15% 105%, rgba(255,122,89,.45), transparent 60%),
+      radial-gradient(ellipse 55% 80% at 82% -15%, rgba(122,92,255,.5), transparent 60%),
+      linear-gradient(135deg, #1a1e38, #2a1b3d 48%, #3c1f2e);
+  }
+  .mini-window {
+    position: absolute; inset: 12% 8%;
+    border-radius: 5px;
+    background: #232329;
+    border: 1px solid rgba(255,255,255,.08);
+  }
+  .mini-region { left: 20%; top: 24%; width: 60%; height: 52%; }
+
+  /* ---------- Click effect (recorded ripple) ---------- */
+  .click-section {
+    margin-top: 44px; padding-top: 32px;
+    border-top: 1px solid rgba(255,255,255,.07);
+  }
+  .click-live {
+    position: relative;
+    height: 220px;
+    margin-top: 22px;
+    border-radius: 11px;
+    overflow: hidden;
+    background:
+      radial-gradient(ellipse 70% 110% at 18% 110%, rgba(255,122,89,.30), transparent 60%),
+      radial-gradient(ellipse 60% 90% at 85% -20%, rgba(122,92,255,.36), transparent 60%),
+      #202026;
+    border: 1px solid var(--line);
+    cursor: crosshair;
+  }
+  .live-window {
+    position: absolute; inset: 24px 60px;
+    border-radius: 9px;
+    background: #1f1f24;
+    border: 1px solid rgba(255,255,255,.10);
+    box-shadow: 0 18px 40px rgba(0,0,0,.35);
+    overflow: hidden;
+  }
+  .live-titlebar {
+    height: 28px; display: flex; align-items: center; gap: 6px;
+    padding: 0 10px; background: #2a2a30;
+    border-bottom: 1px solid rgba(255,255,255,.06);
+  }
+  .live-titlebar .name { margin-left: 8px; font-size: 10.5px; color: #9b9ba4; }
+  .live-body {
+    position: relative; height: calc(100% - 28px);
+    display: flex; align-items: center; justify-content: center;
+  }
+  .demo-btn {
+    height: 34px; padding: 0 18px;
+    border-radius: 8px;
+    background: #33333c;
+    border: 1px solid rgba(255,255,255,.14);
+    color: #e8e8ee;
+    font: 500 12px -apple-system, "SF Pro Text", "Helvetica Neue", Arial, sans-serif;
+    cursor: pointer;
+    box-shadow: 0 4px 14px rgba(0,0,0,.25);
+    transition: background .12s, transform .08s;
+  }
+  .demo-btn:hover { background: #3d3d47; }
+  .demo-btn:active { transform: scale(.96); }
+  .click-live-hint {
+    position: absolute; top: 12px; left: 16px;
+    font-size: 11px; color: rgba(255,255,255,.38);
+    pointer-events: none;
+  }
+  .ripple-layer { position: absolute; inset: 0; pointer-events: none; }
+  .ripple { position: absolute; width: 0; height: 0; }
+  .ripple .dot {
+    position: absolute; left: 0; top: 0;
+    width: 8px; height: 8px;
+    margin-left: -4px; margin-top: -4px;
+    border-radius: 50%;
+    background: #ff4646;
+    animation: dotFade 700ms ease-out forwards;
+  }
+  .ripple .dot::after {
+    content: ""; position: absolute; left: 50%; top: 50%;
+    transform: translate(-50%, -50%);
+    width: 2.5px; height: 2.5px; border-radius: 50%;
+    background: #fff; opacity: .90;
+  }
+  .ripple .ring {
+    position: absolute; left: 0; top: 0;
+    width: 12px; height: 12px;
+    margin-left: -6px; margin-top: -6px;
+    border: 2px solid #ff4646;
+    border-radius: 50%;
+    animation: ringExpand 700ms ease-out forwards;
+  }
+  @keyframes ringExpand {
+    from { width: 12px; height: 12px; margin-left: -6px; margin-top: -6px; opacity: .60; }
+    to { width: 44px; height: 44px; margin-left: -22px; margin-top: -22px; opacity: 0; }
+  }
+  @keyframes dotFade {
+    0% { opacity: .90; }
+    55% { opacity: .55; }
+    100% { opacity: 0; }
+  }
+
+  .click-timeline {
+    display: grid; grid-template-columns: repeat(4, 1fr);
+    gap: 14px; margin-top: 14px;
+  }
+  .click-frame {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 11px;
+    padding: 12px;
+  }
+  .click-stage {
+    position: relative;
+    height: 150px;
+    border-radius: 7px;
+    overflow: hidden;
+    background:
+      radial-gradient(ellipse 70% 100% at 20% 110%, rgba(255,122,89,.28), transparent 60%),
+      radial-gradient(ellipse 60% 90% at 85% -20%, rgba(122,92,255,.34), transparent 60%),
+      #202026;
+  }
+  .mock-btn {
+    position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
+    width: 118px; height: 30px;
+    display: flex; align-items: center; justify-content: center;
+    border-radius: 7px;
+    background: #2f2f37;
+    border: 1px solid rgba(255,255,255,.12);
+    color: #d5d5dd; font-size: 10.5px; font-weight: 500;
+    box-shadow: 0 3px 10px rgba(0,0,0,.25);
+  }
+  .click-marker {
+    position: absolute; left: 50%; top: 50%;
+    transform: translate(-50%, -50%);
+    width: 0; height: 0;
+  }
+  .click-dot, .click-ring {
+    position: absolute; left: 50%; top: 50%;
+    transform: translate(-50%, -50%);
+    border-radius: 50%;
+  }
+  .click-dot { background: #ff4646; }
+  .click-dot::after {
+    content: ""; position: absolute; left: 50%; top: 50%;
+    transform: translate(-50%, -50%);
+    width: 2.5px; height: 2.5px; border-radius: 50%;
+    background: #fff; opacity: .90;
+  }
+  .click-ring { border: 2px solid #ff4646; }
+
+  /* One ring, ease-out expansion: 12 -> 44px over 700ms. The dot keeps its
+     size while the ring travels, then fades. */
+  .s0 .click-dot { width: 8px; height: 8px; opacity: .90; }
+  .s0 .r1 { width: 12px; height: 12px; opacity: .60; }
+
+  .s1 .click-dot { width: 8px; height: 8px; opacity: .82; }
+  .s1 .r1 { width: 26px; height: 26px; opacity: .45; }
+
+  .s2 .click-dot { width: 7px; height: 7px; opacity: .55; }
+  .s2 .r1 { width: 36px; height: 36px; opacity: .30; }
+
+  .s3 .click-dot { width: 0; height: 0; opacity: 0; }
+  .s3 .r1 { width: 44px; height: 44px; opacity: .08; }
+
+  .click-label {
+    display: flex; align-items: baseline; justify-content: space-between;
+    gap: 8px; margin-top: 10px;
+  }
+  .click-label b { font: 10px Menlo, monospace; color: #b9b9c1; font-weight: 700; }
+  .click-label span { font-size: 10.5px; color: #74747d; }
+  .click-note {
+    margin-top: 14px; padding: 13px 16px;
+    border-radius: 9px;
+    background: rgba(255,255,255,.025);
+    border: 1px solid rgba(255,255,255,.06);
+    font-size: 11.5px; line-height: 1.55; color: #8e8e96;
+  }
+  .click-note b { color: #d8d8de; font-weight: 600; }
+
+  @media (max-width: 980px) {
+    .border-variants { grid-template-columns: 1fr 1fr; }
+  }
+  @media (max-width: 860px) {
+    .states { grid-template-columns: 1fr; }
+    .menu-demo { grid-template-columns: 1fr; }
+    .specs { grid-template-columns: 1fr 1fr; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="eyebrow">Menu bar + recording region · recording state</div>
+  <h1>Just the stop button. A softer red box.</h1>
+  <p class="sub">
+    Remove the elapsed-time pill from the tray. While a recording is running, Snapforge keeps a single
+    menu-bar slot — the red stop square. Left-click stops immediately; right-click opens the recording
+    menu so Pause, History, Preferences and Quit stay reachable. The region outline gets the same
+    treatment: a 1px translucent red hairline with soft corners and no fill, instead of a hard square box.
+    The recorded click ripple follows: an 8px dot with a small white center and one thin ring, not a heavy 52px halo.
+  </p>
+
+  <section class="hero">
+    <div class="wallpaper">
+      <div class="menubar">
+        <div class="menubar-left">
+          <span class="item apple">
+            <svg width="14" height="16" viewBox="0 0 14 16" fill="none" aria-hidden="true">
+              <path d="M11.2 8.45c0-1.6 1.3-2.37 1.36-2.41-.74-1.08-1.9-1.23-2.31-1.25-1.02-.1-1.99.6-2.5.6-.52 0-1.31-.58-2.16-.56-1.1.02-2.12.64-2.69 1.63-1.15 2-.29 4.96.82 6.58.55.79 1.2 1.68 2.06 1.65.83-.03 1.15-.54 2.16-.54 1 0 1.29.54 2.17.52.9-.02 1.47-.81 2.02-1.61.64-.92.9-1.81.91-1.86-.02-.01-1.75-.67-1.78-2.75Z" fill="#fff"/>
+              <path d="M9.6 3.72c.45-.55.75-1.31.67-2.07-.65.03-1.44.43-1.9.98-.42.48-.78 1.25-.68 1.99.72.06 1.46-.37 1.91-.9Z" fill="#fff"/>
+            </svg>
+          </span>
+          <span class="item appname">Finder</span>
+          <span class="item">File</span>
+          <span class="item">Edit</span>
+          <span class="item">View</span>
+          <span class="item">Go</span>
+          <span class="item">Window</span>
+          <span class="item">Help</span>
+        </div>
+        <div class="menubar-right">
+          <span class="item stop-item spotlight" title="Stop Recording">
+            <span class="stop-slot"><span class="stop-sq pulse"></span></span>
+            <span class="spot-label">Stop recording<small>Only Snapforge item in the bar</small></span>
+          </span>
+          <span class="item" title="Control Center">
+            <span class="glyph">
+              <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                <rect x="2" y="2" width="5" height="5" rx="1.4" stroke="#fff" stroke-width="1.2"/>
+                <rect x="9" y="2" width="5" height="5" rx="1.4" stroke="#fff" stroke-width="1.2"/>
+                <rect x="2" y="9" width="5" height="5" rx="1.4" stroke="#fff" stroke-width="1.2"/>
+                <rect x="9" y="9" width="5" height="5" rx="1.4" stroke="#fff" stroke-width="1.2"/>
+              </svg>
+            </span>
+          </span>
+          <span class="item" title="Wi-Fi">
+            <span class="glyph">
+              <svg width="16" height="13" viewBox="0 0 16 13" fill="none" aria-hidden="true">
+                <path d="M1.2 4.1a10.6 10.6 0 0 1 13.6 0" stroke="#fff" stroke-width="1.3" stroke-linecap="round"/>
+                <path d="M3.6 6.8a7 7 0 0 1 8.8 0" stroke="#fff" stroke-width="1.3" stroke-linecap="round"/>
+                <path d="M6 9.4a3.4 3.4 0 0 1 4 0" stroke="#fff" stroke-width="1.3" stroke-linecap="round"/>
+                <circle cx="8" cy="11.5" r="1" fill="#fff"/>
+              </svg>
+            </span>
+          </span>
+          <span class="item" title="Battery">
+            <span class="glyph">
+              <svg width="22" height="11" viewBox="0 0 22 11" fill="none" aria-hidden="true">
+                <rect x=".7" y=".7" width="18.6" height="9.6" rx="2.4" stroke="#fff" stroke-opacity=".65" stroke-width="1.2"/>
+                <rect x="2.4" y="2.4" width="12.5" height="6.2" rx="1.2" fill="#fff"/>
+                <path d="M20.7 3.8v3.4c.9-.25 1.4-.9 1.4-1.7s-.5-1.45-1.4-1.7Z" fill="#fff" fill-opacity=".65"/>
+              </svg>
+            </span>
+          </span>
+          <span class="item clock">Fri 9:41 AM</span>
+        </div>
+      </div>
+      <div class="desktop">
+        <div class="desktop-note"><span class="rec-dot-live"></span>Recording a region · stop lives in the menu bar</div>
+      </div>
+    </div>
+  </section>
+
+  <section class="states">
+    <article class="card">
+      <div class="card-label">Before</div>
+      <div class="mini-bar">
+        <span class="pill removed"><span class="dot"></span><span class="timer">00:42</span></span>
+        <span class="item"><span class="stop-slot"><span class="stop-sq"></span></span></span>
+      </div>
+      <p><span class="tag">remove</span> Two slots. The timer competes with system items and shifts width as it grows.</p>
+    </article>
+
+    <article class="card after">
+      <div class="card-label">After · recording</div>
+      <div class="mini-bar">
+        <span class="item"><span class="stop-slot"><span class="stop-sq pulse"></span></span></span>
+      </div>
+      <p><strong>One slot.</strong> The red square pulses gently as the recording indicator, and stops on click.</p>
+    </article>
+
+    <article class="card">
+      <div class="card-label">Idle</div>
+      <div class="mini-bar">
+        <span class="item">
+          <span class="brand">
+            <svg width="18" height="18" viewBox="0 0 18 18" fill="none" aria-hidden="true">
+              <rect x="1.5" y="1.5" width="15" height="15" rx="3.5" stroke="#fff" stroke-width="1.2"/>
+              <path d="M9 4.4 13 6.7v4.6L9 13.6 5 11.3V6.7L9 4.4Z" stroke="#fff" stroke-width="1.1" stroke-linejoin="round"/>
+              <path d="M9 4.4v1.4M13 6.7l-1.2.7M13 11.3l-1.2-.7M9 13.6v-1.4M5 11.3l1.2-.7M5 6.7l1.2.7" stroke="#fff" stroke-width="1.1" stroke-linecap="round"/>
+              <rect x="13.4" y="1.3" width="2.4" height="2.4" rx=".6" fill="#fff"/>
+            </svg>
+          </span>
+        </span>
+      </div>
+      <p><span class="tag neutral">returns</span> The normal Snapforge icon comes back when the file is saved.</p>
+    </article>
+  </section>
+
+  <section class="pulse-strip">
+    <div class="pulse-copy">
+      <div class="card-label">Stop button · pulse</div>
+      <p>A soft red halo breathes from 0 to 4px every 1.2s. The square itself stays solid, so it always reads as “recording”, never as “off”.</p>
+    </div>
+    <div class="pulse-frames">
+      <div class="pulse-frame"><span class="stop-sq halo-0"></span><span>0 ms</span></div>
+      <div class="pulse-frame"><span class="stop-sq halo-1"></span><span>300 ms</span></div>
+      <div class="pulse-frame"><span class="stop-sq halo-2"></span><span>600 ms</span></div>
+      <div class="pulse-frame"><span class="stop-sq halo-1"></span><span>900 ms</span></div>
+    </div>
+  </section>
+
+  <section class="region-section">
+    <div class="section-head">
+      <div class="eyebrow">Recording region · on-screen border</div>
+      <h2>Update the red box too.</h2>
+      <p>Keep it barely there: a 1px translucent red hairline (about 50%), 4px rounded corners, and no fill or screen dimming. It marks the boundary without boxing in the content. Paused recordings switch to an even fainter dashed line.</p>
+    </div>
+
+    <div class="scene">
+      <div class="scene-window">
+        <div class="titlebar">
+          <span class="traffic r"></span><span class="traffic y"></span><span class="traffic g"></span>
+          <span class="name">Recording demo — Notes</span>
+        </div>
+        <div class="window-body">
+          <div class="sidebar">
+            <div class="side-line"></div>
+            <div class="side-line short"></div>
+            <div class="side-line"></div>
+            <div class="side-line short"></div>
+            <div class="side-line"></div>
+          </div>
+          <div class="content">
+            <h3>Q4 launch notes</h3>
+            <div class="line w80"></div>
+            <div class="line w60"></div>
+            <div class="line w70"></div>
+            <div class="code-row"><span class="num">1</span><span class="code c1"></span></div>
+            <div class="code-row"><span class="num">2</span><span class="code c2"></span></div>
+            <div class="code-row"><span class="num">3</span><span class="code c3"></span></div>
+            <div class="code-row"><span class="num">4</span><span class="code c4"></span></div>
+          </div>
+        </div>
+      </div>
+      <div class="region-box soft region-hero">
+        <span class="region-tag">REC</span>
+      </div>
+    </div>
+
+    <div class="border-variants">
+      <article class="border-card">
+        <h3>A · Current</h3>
+        <div class="mini-scene">
+          <div class="mini-window"></div>
+          <div class="region-box current mini-region"></div>
+        </div>
+        <p>2px solid red, square corners. Functional, but reads as a hard box around the content.</p>
+      </article>
+      <article class="border-card recommended">
+        <h3>B · Hairline <span class="tag">pick</span></h3>
+        <div class="mini-scene">
+          <div class="mini-window"></div>
+          <div class="region-box soft mini-region"></div>
+        </div>
+        <p>1px translucent red (50%), 4px corners, a faint 10px glow. No fill — content stays readable.</p>
+      </article>
+      <article class="border-card">
+        <h3>C · Hairline, no glow</h3>
+        <div class="mini-scene">
+          <div class="mini-window"></div>
+          <div class="region-box line mini-region"></div>
+        </div>
+        <p>Same 1px translucent line with no glow. The lightest touch; visibility depends on the content behind it.</p>
+      </article>
+      <article class="border-card">
+        <h3>D · Paused</h3>
+        <div class="mini-scene">
+          <div class="mini-window"></div>
+          <div class="region-box paused mini-region"></div>
+        </div>
+        <p>1px dashed, 45% red, no glow. Clearly distinct from a live recording without adding weight.</p>
+      </article>
+    </div>
+  </section>
+
+  <section class="click-section">
+    <div class="section-head">
+      <div class="eyebrow">Click effect · recorded ripple</div>
+      <h2>Soften the click ripple too.</h2>
+      <p>The current marker is a heavy 52px ring with a solid red dot and a white core. Keep the same red dot, shrink the white center, and use one thin ring that expands with an ease-out curve. Visible in the recording, quiet over the content.</p>
+    </div>
+
+    <div class="click-live" id="clickLive">
+      <div class="click-live-hint">Click anywhere to preview the ripple</div>
+      <div class="live-window">
+        <div class="live-titlebar">
+          <span class="traffic r"></span><span class="traffic y"></span><span class="traffic g"></span>
+          <span class="name">Demo window</span>
+        </div>
+        <div class="live-body">
+          <button class="demo-btn" type="button">Click me</button>
+        </div>
+      </div>
+      <div class="ripple-layer" id="rippleLayer"></div>
+    </div>
+
+    <div class="click-timeline">
+      <div class="click-frame">
+        <div class="click-stage s0">
+          <div class="mock-btn">Click me</div>
+          <div class="click-marker">
+            <span class="click-dot"></span>
+            <span class="click-ring r1"></span>
+          </div>
+        </div>
+        <div class="click-label"><b>0 ms</b><span>dot + rings start</span></div>
+      </div>
+      <div class="click-frame">
+        <div class="click-stage s1">
+          <div class="mock-btn">Click me</div>
+          <div class="click-marker">
+            <span class="click-dot"></span>
+            <span class="click-ring r1"></span>
+          </div>
+        </div>
+        <div class="click-label"><b>150 ms</b><span>rings expand</span></div>
+      </div>
+      <div class="click-frame">
+        <div class="click-stage s2">
+          <div class="mock-btn">Click me</div>
+          <div class="click-marker">
+            <span class="click-dot"></span>
+            <span class="click-ring r1"></span>
+          </div>
+        </div>
+        <div class="click-label"><b>350 ms</b><span>dot fades</span></div>
+      </div>
+      <div class="click-frame">
+        <div class="click-stage s3">
+          <div class="mock-btn">Click me</div>
+          <div class="click-marker">
+            <span class="click-dot"></span>
+            <span class="click-ring r1"></span>
+          </div>
+        </div>
+        <div class="click-label"><b>650 ms</b><span>fades out</span></div>
+      </div>
+    </div>
+
+    <div class="click-note">
+      <b>Current:</b> 8px dot + white core · 12→52px ring · 3.5px thick · 1s.
+      <b>Proposed:</b> 6px translucent dot (no white core) · two rings 8→40px · 2px→1px · 700ms · peaks at ~45% opacity.
+    </div>
+  </section>
+
+  <section class="menu-demo">
+    <div class="menu-copy">
+      <h2>Right-click keeps every control reachable</h2>
+      <p>
+        Hiding the main tray item during recording removes the only way to pause or quit. The stop
+        button keeps that path: a plain click stops, a right-click pops the recording menu.
+      </p>
+      <ul>
+        <li><b>Left-click</b><span>Stop the recording immediately.</span></li>
+        <li><b>Right-click</b><span>Pause / resume, stop, history, preferences, quit.</span></li>
+        <li><b>Hover</b><span>Tooltip reads “Stop Recording”.</span></li>
+      </ul>
+    </div>
+    <div class="menu-stage">
+      <div class="mini-bar">
+        <span class="item stop-item" title="Stop Recording"><span class="stop-slot"><span class="stop-sq pulse"></span></span></span>
+      </div>
+      <div class="dropdown">
+        <div class="row disabled"><span>● Recording…</span></div>
+        <div class="row"><span>⏸ Pause Recording</span></div>
+        <div class="row stop-row"><span>■ Stop Recording</span><span class="shortcut">⌘⇧R</span></div>
+        <div class="sep"></div>
+        <div class="row"><span>History</span><span class="shortcut">⌘⇧H</span></div>
+        <div class="row"><span>Preferences</span><span class="shortcut">⌘,</span></div>
+        <div class="sep"></div>
+        <div class="row"><span>Quit</span><span class="shortcut">⌘Q</span></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="specs">
+    <div class="spec"><div class="k">Stop icon</div><div class="v"><code>20×20</code> logical · 13px square · 2.6px radius</div></div>
+    <div class="spec"><div class="k">Pulse</div><div class="v">Halo <code>0→4px</code> · 1.2s ease-in-out · square stays solid</div></div>
+    <div class="spec"><div class="k">Region border</div><div class="v"><code>1px</code> · 50% red · 4px radius · no fill</div></div>
+    <div class="spec"><div class="k">Click ripple</div><div class="v"><code>44px</code> max · one 2px ring · 2.5px white center · 700ms</div></div>
+  </section>
+
+</div>
+
+<script>
+  (() => {
+    const live = document.getElementById('clickLive');
+    const layer = document.getElementById('rippleLayer');
+    if (!live || !layer) return;
+
+    live.addEventListener('click', (event) => {
+      const rect = live.getBoundingClientRect();
+      const ripple = document.createElement('div');
+      ripple.className = 'ripple';
+      ripple.style.left = `${event.clientX - rect.left}px`;
+      ripple.style.top = `${event.clientY - rect.top}px`;
+      ripple.innerHTML = '<span class="dot"></span><span class="ring"></span>';
+      layer.appendChild(ripple);
+      window.setTimeout(() => ripple.remove(), 750);
+    });
+  })();
+</script>
+</body>
+</html>

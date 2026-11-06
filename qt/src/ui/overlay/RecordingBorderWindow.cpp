@@ -11,9 +11,13 @@
 
 namespace {
 // The window is expanded by this many logical pixels on each side so the
-// stroke can sit just outside the captured region instead of covering its
-// edge pixels. Keep in sync with paintEvent's inset.
-constexpr int kBorderInset = 3;
+// hairline and its faint glow sit just outside the captured region instead of
+// covering its edge pixels. Keep in sync with paintEvent's insets.
+constexpr int kBorderInset = 8;
+// 1px pen centred half a pixel inside the region boundary: it spans the last
+// pixel before the captured area, so no recorded pixel is touched.
+constexpr qreal kLineInset = kBorderInset - 0.5;
+constexpr qreal kCornerRadius = 4.0;
 } // namespace
 
 RecordingBorderWindow::RecordingBorderWindow(QWidget *parent)
@@ -80,21 +84,47 @@ void RecordingBorderWindow::paintEvent(QPaintEvent * /*event*/) {
     p.setRenderHint(QPainter::Antialiasing);
     p.setBrush(Qt::NoBrush);
 
-    // Thin dark outer line for contrast against light content.
-    p.setPen(QPen(QColor(0, 0, 0, 130), 1.0));
-    p.drawRect(QRectF(rect()).adjusted(0.5, 0.5, -0.5, -0.5));
+    // Faint glow: a few wide strokes layered outward from the hairline. They
+    // stay between the widget edge and the captured region, so the effect is
+    // only ever seen on screen — never baked into the recording.
+    if (!m_paused) {
+        struct GlowPass {
+            qreal inset;
+            qreal width;
+            int alpha;
+        };
+        static constexpr GlowPass kGlow[] = {
+            {6.5, 3.0, 18},
+            {5.5, 5.0, 11},
+            {4.5, 7.0, 7},
+            {3.5, 9.0, 4},
+        };
+        for (const auto &pass : kGlow) {
+            QPen glow(QColor(255, 70, 70, pass.alpha), pass.width);
+            glow.setJoinStyle(Qt::RoundJoin);
+            p.setPen(glow);
+            const qreal radius = kCornerRadius + (kLineInset - pass.inset);
+            p.drawRoundedRect(QRectF(rect()).adjusted(pass.inset, pass.inset,
+                                                      -pass.inset, -pass.inset),
+                              radius, radius);
+        }
+    }
 
-    // Colored line straddling the captured region's boundary: a 2px pen
-    // centered at 2px from the widget edge spans 1..3px, and the region starts
-    // at 3px. Nothing is drawn over the recorded pixels.
-    QPen pen(m_paused ? QColor(255, 170, 170) : QColor(255, 70, 70), 2.0);
-    pen.setJoinStyle(Qt::MiterJoin);
+    // 1px translucent hairline with soft corners. Paused switches to an even
+    // fainter dashed line and drops the glow.
+    QPen pen(m_paused ? QColor(255, 170, 170, 115)
+                      : QColor(255, 70, 70, 128),
+             1.0);
+    pen.setJoinStyle(Qt::RoundJoin);
+    pen.setCapStyle(Qt::FlatCap);
     if (m_paused) {
         pen.setStyle(Qt::CustomDashLine);
         pen.setDashPattern({4.0, 3.0});
     }
     p.setPen(pen);
-    p.drawRect(QRectF(rect()).adjusted(2.0, 2.0, -2.0, -2.0));
+    p.drawRoundedRect(QRectF(rect()).adjusted(kLineInset, kLineInset,
+                                              -kLineInset, -kLineInset),
+                      kCornerRadius, kCornerRadius);
 }
 
 void RecordingBorderWindow::applyNativeWindowStyle() {

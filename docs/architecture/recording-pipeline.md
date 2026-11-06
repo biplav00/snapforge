@@ -21,7 +21,7 @@ User                Qt main thread          RecordingManager       FFI          
  │                       │                       │                  │◄──── RecordingHandle ─│                      │
  │                       │                       │◄── opaque handle─│                       │                      │
  │                       │◄── recordingStarted ──│                  │                       │                      │
- │                       │── show tray pill ─────│                  │                       │                      │
+ │                       │── show stop button ───│                  │                       │                      │
  │                       │── show region border (click-through, excluded from capture)        │                      │
  │                       │── (pref) start click overlay + tap       │                       │                      │
  │                       │                       │                  │                       │  ┌──── frames ─────► │
@@ -92,7 +92,7 @@ The worker creates a `RecordingSource` (in `crates/snapforge-capture/src/capture
 
 ## Pause / resume
 
-`snapforge_record_pause` / `snapforge_record_resume` atomically switch the handle between RUNNING and PAUSED (compare-and-swap; they never overwrite STOPPED and report failure once the recording has ended). While paused the worker captures and writes nothing **and freezes its frame clock**, so the output has no gap and no frozen-frame stretch: the video simply continues from the resume point at a constant frame rate. The tray pill swaps the dot for two short bars.
+`snapforge_record_pause` / `snapforge_record_resume` atomically switch the handle between RUNNING and PAUSED (compare-and-swap; they never overwrite STOPPED and report failure once the recording has ended). While paused the worker captures and writes nothing **and freezes its frame clock**, so the output has no gap and no frozen-frame stretch: the video simply continues from the resume point at a constant frame rate. The menu-bar stop button stops pulsing while paused.
 
 ## Liveness, failures and stop
 
@@ -123,4 +123,4 @@ All paths go through the `recordingError` signal in `RecordingManager`, handled 
 
 ## Click visualizer integration (when "Show clicks while recording" is enabled)
 
-The Rust encoder draws the clicks itself. With `show_clicks: true`, `start_recording` starts a `ClickTracker` CGEventTap (needs Accessibility permission; without it the tap no-ops and no ripples are drawn). For each captured frame the worker takes a snapshot of recent clicks, converts their global desktop points into scaled-frame pixels of the target display, and composites a ripple (dot plus two expanding rings, about 1 s lifetime) into a scratch copy of the frame before writing it. Catch-up copies reuse the already-composed frame. With clicks off, frames are written straight through with no overlay work.
+The Rust encoder draws the clicks itself. With `show_clicks: true`, `start_recording` starts a `ClickTracker` CGEventTap (needs Accessibility permission; without it the tap no-ops and no ripples are drawn). For each captured frame the worker takes a snapshot of recent clicks, converts their global desktop points into scaled-frame pixels of the target display, and composites a soft ripple (small dot with a tiny white highlight plus one thin ring, 700ms ease-out) into a scratch copy of the frame before writing it. Catch-up copies reuse the already-composed frame. With clicks off, frames are written straight through with no overlay work.

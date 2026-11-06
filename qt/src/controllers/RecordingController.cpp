@@ -39,8 +39,6 @@ RecordingController::RecordingController(RecordingManager  *recording,
                      this, &RecordingController::onError);
     QObject::connect(m_recording, &RecordingManager::recordingWarning,
                      this, &RecordingController::onWarning);
-    QObject::connect(m_recording, &RecordingManager::elapsedChanged,
-                     this, &RecordingController::onElapsedChanged);
 }
 
 void RecordingController::onStarted(const QString & /*path*/) {
@@ -130,10 +128,4 @@ void RecordingController::onWarning(const QString &message) {
     qWarning("Recording warning: %s", qPrintable(message));
     m_tray->showMessage("Snapforge — Recording", message,
                         QSystemTrayIcon::Warning, 5000);
-}
-
-void RecordingController::onElapsedChanged(int seconds) {
-    if (m_recording->isRecording() || m_recording->isPaused()) {
-        m_tray->updateElapsed(seconds);
-    }
 }

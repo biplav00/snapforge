@@ -28,7 +28,7 @@ public:
     // Show the prepared outline. No-op when no region was prepared.
     void showForPreparedRegion();
 
-    // Dashed/dimmed outline while the recording is paused.
+    // Dashed/fainter outline while the recording is paused.
     void setPaused(bool paused);
 
     // Drop the prepared region and hide the outline.
