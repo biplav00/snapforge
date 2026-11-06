@@ -16,6 +16,30 @@
 #include <QVariant>
 #include <cmath>
 
+namespace {
+// Qt's Cocoa tray implementation selects a pixmap by its PHYSICAL height and
+// caps it at (menu-bar thickness - 4) * qApp->devicePixelRatio(). Rendering at
+// a fixed 3x on a 2x display made the icon taller than that cap, so AppKit
+// scaled the whole pill down (shrinking the timer text by a third). Match the
+// same DPR Qt uses so the pixmap is used at its intended size.
+qreal trayDevicePixelRatio() {
+    const qreal dpr = qApp ? qApp->devicePixelRatio() : 1.0;
+    return qMax(1.0, dpr);
+}
+
+QString formatElapsed(int seconds) {
+    if (seconds >= 3600) {
+        return QStringLiteral("%1:%2:%3")
+            .arg(seconds / 3600, 1, 10, QLatin1Char('0'))
+            .arg((seconds / 60) % 60, 2, 10, QLatin1Char('0'))
+            .arg(seconds % 60, 2, 10, QLatin1Char('0'));
+    }
+    return QStringLiteral("%1:%2")
+        .arg(seconds / 60, 2, 10, QLatin1Char('0'))
+        .arg(seconds % 60, 2, 10, QLatin1Char('0'));
+}
+} // namespace
+
 TrayIcon::TrayIcon(QObject *parent)
     : QObject(parent),
       m_tray(new QSystemTrayIcon(this)),
@@ -78,7 +102,8 @@ void TrayIcon::enterRecordingState(bool paused) {
     m_finalizing = false;
     m_paused = paused;
     scheduleMenuRebuild();
-    m_tray->setToolTip(paused ? "Snapforge — Paused" : "Snapforge — Recording");
+    m_tray->setToolTip(paused ? "Snapforge — Paused · 00:00"
+                              : "Snapforge — Recording · 00:00");
     refreshPill(1.0);
     if (paused) {
         m_pulseTimer->stop();
@@ -127,18 +152,25 @@ void TrayIcon::updateElapsed(int seconds) {
     m_elapsedSeconds = seconds;
     if (m_inRecordingState) {
         refreshPill(1.0);
+        if (!m_finalizing) {
+            const QString time = formatElapsed(seconds);
+            m_tray->setToolTip(m_paused
+                ? QStringLiteral("Snapforge — Paused · %1").arg(time)
+                : QStringLiteral("Snapforge — Recording · %1").arg(time));
+        }
     }
 }
 
 void TrayIcon::setPaused(bool paused) {
     if (!m_inRecordingState || m_finalizing) return;
     m_paused = paused;
+    const QString time = formatElapsed(m_elapsedSeconds);
     if (paused) {
         m_pulseTimer->stop();
-        m_tray->setToolTip("Snapforge — Paused");
+        m_tray->setToolTip(QStringLiteral("Snapforge — Paused · %1").arg(time));
     } else {
         m_pulseTimer->start();
-        m_tray->setToolTip("Snapforge — Recording");
+        m_tray->setToolTip(QStringLiteral("Snapforge — Recording · %1").arg(time));
     }
     refreshPill(1.0);
     scheduleMenuRebuild();
@@ -161,9 +193,9 @@ void TrayIcon::refreshPill(double alpha) {
 // capture/record motif at menu-bar size.
 QIcon TrayIcon::makeIdleIcon() const {
     const qreal logicalSz = 18.0;
-    // Match the pill/stop icons' 3.0 DPR so all three tray glyphs render at the
-    // same crispness on a Retina menu bar.
-    const qreal dpr = 3.0;
+    // Same DPR as the pill/stop icons so all three tray glyphs stay crisp and
+    // avoid the Cocoa tray's downscaling path.
+    const qreal dpr = trayDevicePixelRatio();
     const int sz = static_cast<int>(logicalSz * dpr);
     QPixmap pm(sz, sz);
     pm.setDevicePixelRatio(dpr);
@@ -227,32 +259,22 @@ QIcon TrayIcon::makeIdleIcon() const {
 // timer, no background pill, no REC label, no inline controls. All
 // pause/stop actions live in the tray's context menu.
 QIcon TrayIcon::makeRecordingPillIcon(double alpha, bool paused, int seconds) const {
-    QString timeStr;
-    if (seconds >= 3600) {
-        timeStr = QStringLiteral("%1:%2:%3")
-            .arg(seconds / 3600, 1, 10, QLatin1Char('0'))
-            .arg((seconds / 60) % 60, 2, 10, QLatin1Char('0'))
-            .arg(seconds % 60, 2, 10, QLatin1Char('0'));
-    } else {
-        timeStr = QStringLiteral("%1:%2")
-            .arg(seconds / 60, 2, 10, QLatin1Char('0'))
-            .arg(seconds % 60, 2, 10, QLatin1Char('0'));
-    }
+    const QString timeStr = formatElapsed(seconds);
 
     QFont timeFont(QStringLiteral("Menlo"));
-    timeFont.setPixelSize(15);
+    timeFont.setPixelSize(16);
     timeFont.setWeight(QFont::Bold);
     QFontMetrics tfm(timeFont);
     const qreal timeW = tfm.horizontalAdvance(timeStr);
 
     const qreal padX = 4.0;
-    const qreal dotR = 5.5;
+    const qreal dotR = 6.0;
     const qreal gap = 6.0;
-    const int logicalH = 18;
+    const int logicalH = 20;
     const int logicalW = static_cast<int>(std::ceil(
         padX + dotR * 2.0 + gap + timeW + padX));
 
-    const qreal dpr = 3.0;
+    const qreal dpr = trayDevicePixelRatio();
     QPixmap pm(static_cast<int>(logicalW * dpr),
                static_cast<int>(logicalH * dpr));
     pm.setDevicePixelRatio(dpr);
@@ -305,8 +327,10 @@ QIcon TrayIcon::makeRecordingPillIcon(double alpha, bool paused, int seconds) co
 // tinted to match the recording dot so the pair reads as "recording / stop".
 // Multi-color against the bar tint, so rendered as a regular (non-mask) icon.
 QIcon TrayIcon::makeStopIcon() const {
-    const qreal logicalSz = 18.0;
-    const qreal dpr = 3.0;
+    // Match the recording pill's 20px height so the pair stays visually
+    // balanced after the timer text was enlarged.
+    const qreal logicalSz = 20.0;
+    const qreal dpr = trayDevicePixelRatio();
     const int sz = static_cast<int>(logicalSz * dpr);
     QPixmap pm(sz, sz);
     pm.setDevicePixelRatio(dpr);
@@ -317,7 +341,7 @@ QIcon TrayIcon::makeStopIcon() const {
     p.setPen(Qt::NoPen);
     p.setBrush(QColor(255, 70, 70, 255));
 
-    const qreal side = 12.0;
+    const qreal side = 13.0;
     const qreal off = (logicalSz - side) / 2.0;
     p.drawRoundedRect(QRectF(off, off, side, side), 2.6, 2.6);
 

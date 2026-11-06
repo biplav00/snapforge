@@ -22,6 +22,7 @@ User                Qt main thread          RecordingManager       FFI          
  │                       │                       │◄── opaque handle─│                       │                      │
  │                       │◄── recordingStarted ──│                  │                       │                      │
  │                       │── show tray pill ─────│                  │                       │                      │
+ │                       │── show region border (click-through, excluded from capture)        │                      │
  │                       │── (pref) start click overlay + tap       │                       │                      │
  │                       │                       │                  │                       │  ┌──── frames ─────► │
  │                       │                       │                  │                       │  │  via stdin        │
@@ -32,6 +33,7 @@ User                Qt main thread          RecordingManager       FFI          
  │                       │                       │                  │                       │                      │
  │                       │                       │◄── 0/-1 ─────────│                       │                      │
  │                       │◄── recordingStopped(path) ──             │                       │                      │
+ │                       │── hide region border                     │                       │                      │
  │                       │── tray banner + copy URL to clipboard    │                       │                      │
  │                       │── hide click overlay + stop tap          │                       │                      │
 ```

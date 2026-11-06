@@ -14,6 +14,7 @@
 #include <csignal>
 #include <cstdio>
 #include "OverlayWindow.h"
+#include "RecordingBorderWindow.h"
 #include "RecordingManager.h"
 #include "HistoryWindow.h"
 #include "PreferencesWindow.h"
@@ -628,6 +629,10 @@ int main(int argc, char *argv[]) {
 
     // Create manager/window instances
     RecordingManager recording;
+    // Persistent outline around a region recording. Prepared when the overlay
+    // commits a region, shown only once the recording actually starts, and
+    // excluded from the capture itself (NSWindowSharingNone).
+    RecordingBorderWindow recordingBorder;
 
 #ifdef Q_OS_MACOS
     // Fix #10: auto-pause/resume around system sleep.
@@ -641,12 +646,37 @@ int main(int argc, char *argv[]) {
 
     // Connect recording requested from overlay
     QObject::connect(&overlay, &OverlayWindow::recordingRequested,
-                     [&](int display, QRect region) {
+                     [&](int display, QRect region, QRect globalRegion) {
+        // Prepare the outline now; show it from recordingStarted so a failed
+        // start never leaves a border on screen.
+        recordingBorder.setRegion(globalRegion);
         const QString saveDir = sf::defaultSavePath();
         QString dir = !saveDir.isEmpty() ? saveDir : QDir::homePath() + "/Movies/Snapforge";
         recording.startRecording(display, region, dir);
     });
     g_recording = &recording;
+
+    // Keep the border in sync with the recording lifecycle.
+    QObject::connect(&recording, &RecordingManager::recordingStarted,
+                     &recordingBorder, &RecordingBorderWindow::showForPreparedRegion);
+    QObject::connect(&recording, &RecordingManager::recordingFinalizing,
+                     &recordingBorder, &RecordingBorderWindow::clear);
+    QObject::connect(&recording, &RecordingManager::recordingStopped,
+                     &recordingBorder, [&recordingBorder](const QString &) {
+        recordingBorder.clear();
+    });
+    QObject::connect(&recording, &RecordingManager::recordingError,
+                     &recordingBorder, [&recordingBorder](const QString &) {
+        recordingBorder.clear();
+    });
+    QObject::connect(&recording, &RecordingManager::recordingPaused,
+                     &recordingBorder, [&recordingBorder]() {
+        recordingBorder.setPaused(true);
+    });
+    QObject::connect(&recording, &RecordingManager::recordingResumed,
+                     &recordingBorder, [&recordingBorder]() {
+        recordingBorder.setPaused(false);
+    });
 
     HistoryWindow history;
     g_history = &history;
