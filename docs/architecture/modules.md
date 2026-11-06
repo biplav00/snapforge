@@ -121,4 +121,4 @@ The click tap that feeds this overlay is `controllers/ClickTap.{h,cpp}` (listed 
 | `Cargo.toml`, `Cargo.lock` | Rust workspace |
 | `target/` | Rust build output (gitignored) |
 | `qt/build/` | CMake build output (gitignored) |
-| `docs/` | Architecture docs (this folder) + UI mocks |
+| `docs/` | Architecture docs (this folder) |
