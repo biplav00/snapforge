@@ -72,6 +72,7 @@ set(SNAPFORGE_SOURCES
     src/infra/Shortcuts.cpp
     src/infra/SnapforgeClient.cpp
     src/ui/overlay/OverlayWindow.cpp
+    src/ui/overlay/RecordingBorderWindow.cpp
     src/ui/annotation/AnnotationState.cpp
     src/ui/annotation/AnnotationRenderer.cpp
     src/ui/annotation/AnnotationCanvas.cpp
@@ -378,6 +379,19 @@ if(BUILD_TESTING)
     target_include_directories(tst_annotation PRIVATE src/ui/annotation)
     target_link_libraries(tst_annotation PRIVATE Qt6::Widgets)
     set_tests_properties(tst_annotation PROPERTIES
+        ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
+    # Recording-border geometry/state (widget, offscreen). The macOS
+    # NSWindowSharingNone exclusion itself is exercised only in the app.
+    add_executable(tst_recordingborder
+        tests/tst_recordingborder.cpp
+        src/ui/overlay/RecordingBorderWindow.cpp
+    )
+    target_include_directories(tst_recordingborder PRIVATE src/ui/overlay)
+    target_link_libraries(tst_recordingborder PRIVATE
+        Qt6::Test Qt6::Widgets Qt6::Gui)
+    add_test(NAME tst_recordingborder COMMAND tst_recordingborder)
+    set_tests_properties(tst_recordingborder PROPERTIES
         ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 
     # Probe/regression for the compositeImage double-DPR bug (pure QPainter,

@@ -853,11 +853,17 @@ void OverlayWindow::emitRecordRegion() {
         static_cast<int>(sel.width()  * dpr),
         static_cast<int>(sel.height() * dpr)
     );
+    // Global logical rect for the persistent recording border. sel is local
+    // to this overlay, which spans exactly one display.
+    QRect globalRegion = sel;
+    if (QScreen *s = screen())
+        globalRegion.translate(s->geometry().topLeft());
+
     exitRecordSelectMode();
     m_hasRegion = false;
     m_drawing   = false;
     hideOverlay();
-    emit recordingRequested(m_displayIndex, pixelRegion);
+    emit recordingRequested(m_displayIndex, pixelRegion, globalRegion);
 }
 
 void OverlayWindow::emitRecordFullscreen() {
@@ -865,7 +871,7 @@ void OverlayWindow::emitRecordFullscreen() {
     m_hasRegion = false;
     m_drawing   = false;
     hideOverlay();
-    emit recordingRequested(m_displayIndex, QRect());
+    emit recordingRequested(m_displayIndex, QRect(), QRect());
 }
 
 // ---- end record-select ----

@@ -8,13 +8,17 @@
 class QMenu;
 class QTimer;
 
-// Owns the QSystemTrayIcon, its menu (rebuilt on state change), the idle and
-// recording-pill icon factories, and the pulse timer that animates the pill.
+// Owns the two menu-bar items: the idle Snapforge icon (with the normal menu)
+// and the dedicated stop button shown only while recording. During a
+// recording the idle item is hidden and the stop button is the sole menu-bar
+// presence; it pulses gently and a left-click stops the capture. Right-click
+// opens the recording menu (pause/resume, history, preferences, quit) so those
+// actions stay reachable without a second menu-bar slot.
 //
 // Knows nothing about RecordingManager, overlays, or windows directly — main
 // (and RecordingController) drive it through enterRecordingState/leaveRecordingState/
-// setPaused/updateElapsed/showMessage, and react to the action* signals it
-// emits when a menu item is triggered.
+// setPaused/enterFinalizingState/showMessage, and react to the action* signals
+// it emits when a menu item is triggered.
 class TrayIcon : public QObject {
     Q_OBJECT
 public:
@@ -25,24 +29,20 @@ public:
     void initialize();
 
 public slots:
-    // Swap to the pulsing-pill icon, switch menu to recording layout, start
-    // the pulse timer, update tooltip.
+    // Hide the idle item, show the pulsing stop button, switch to the
+    // recording menu, and start the pulse.
     void enterRecordingState(bool paused);
 
-    // Swap back to the idle icon, stop the pulse, restore the normal menu.
+    // Stop the pulse, hide the stop button, restore the idle icon/menu.
     void leaveRecordingState();
 
-    // Re-render the pill so its MM:SS text reflects the new elapsed count.
-    // Safe to call only while in the recording state.
-    void updateElapsed(int seconds);
-
-    // Toggle the pause appearance (bars vs dot) and rebuild the recording
-    // menu so Pause ↔ Resume swap.
-    void setPaused(bool paused);
-
-    // Stop was requested and the file is being finalized: show "Finalizing…",
-    // disable Pause/Stop, hide the stop button. Cleared by leaveRecordingState.
+    // Stop was requested and the file is being finalized: show the idle item
+    // again with a "Finalizing…" menu, hide the stop button.
     void enterFinalizingState();
+
+    // Toggle the pulse (paused = static stop button) and rebuild the
+    // recording menu so Pause ↔ Resume swap.
+    void setPaused(bool paused);
 
     // Pass-through to QSystemTrayIcon::showMessage so callers don't need to
     // reach the underlying object directly.
@@ -70,8 +70,7 @@ signals:
 
 private:
     QIcon makeIdleIcon() const;
-    QIcon makeRecordingPillIcon(double alpha, bool paused, int seconds) const;
-    QIcon makeStopIcon() const;
+    QIcon makeStopIcon(double pulse = 0.0) const;
 
     void buildNormalMenu();
     void buildRecordingMenu();
@@ -83,23 +82,20 @@ private:
     void scheduleMenuRebuild();
     void rebuildMenuNow();
 
-    void refreshPill(double alpha);
+    // Re-render the stop icon at the current pulse phase.
+    void refreshStopIcon();
 
     QSystemTrayIcon *m_tray = nullptr;
     // Dedicated menu-bar stop button shown only while recording: a single
-    // click stops the capture without opening the main tray's context menu.
-    // Has no context menu of its own, so activation fires actionStopRecording
-    // directly.
+    // click stops the capture; right-click opens the recording menu.
     QSystemTrayIcon *m_stopTray = nullptr;
     QMenu           *m_menu = nullptr;
     QTimer          *m_pulseTimer = nullptr;
     QIcon            m_idleIcon;
-    QIcon            m_stopIcon;
 
     bool m_inRecordingState = false;
     bool m_paused           = false;
     bool m_finalizing       = false;
     bool m_rebuildPending   = false;
-    int  m_elapsedSeconds   = 0;
-    bool m_pulseHigh        = true;
+    int  m_pulsePhase       = 0;
 };

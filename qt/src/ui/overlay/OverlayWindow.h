@@ -52,7 +52,10 @@ signals:
     void screenshotReady(QImage composited, int w, int h);
     void clipboardReady(QImage composited, int w, int h);
     void cancelled();
-    void recordingRequested(int display, QRect region);
+    // region is in display-native pixels (what the encoder crops to);
+    // globalRegion is the same selection in global logical coordinates, used
+    // by the on-screen recording border. Empty globalRegion = fullscreen.
+    void recordingRequested(int display, QRect region, QRect globalRegion);
     void regionInvalid(QString reason);
     // Emitted whenever a capture commits while "remember region" is on, so the
     // region can be persisted to config and survive a restart.

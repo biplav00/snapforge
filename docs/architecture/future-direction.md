@@ -144,7 +144,7 @@ SNAPFORGE_UNIVERSAL=1 ./packaging/macos/build_dmg.sh
   rustup target and an x86_64 Homebrew ffmpeg install. Neither is fabricated.
 - CI does not yet provision the x86_64 toolchain, so released DMGs stay
   arm64-only until a universal CI runner is added.
-- Qt itself must be universal for a fully universal app; Homebrew's `qt` is
+- Qt itself must be universal for a fully universal app; Homebrew's `qtbase` is
   arm64-only on Apple Silicon. A universal app therefore also needs a universal
   Qt (e.g. the official Qt installer's universal build) — out of scope for this
   scaffolding, which only makes Snapforge's own code + ffmpeg universal-ready.

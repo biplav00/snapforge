@@ -22,7 +22,7 @@ Fast, lightweight macOS screenshot and screen recording tool with annotation sup
 
 Requires **macOS 14 (Sonoma) or later** on Apple silicon (the default build is arm64-only).
 
-Download the latest `Snapforge-vX.Y.Z.dmg` from the [Releases page](https://github.com/biplav00/snapforge/releases), open it, and drag `Snapforge.app` to `/Applications`.
+Download the latest `Snapforge-X.Y.Z.dmg` from the [Releases page](https://github.com/biplav00/snapforge/releases), open it, and drag `Snapforge.app` to `/Applications`.
 
 The `.dmg` is **unsigned** (no Apple Developer ID), so on first launch macOS will block it. Either:
 
@@ -42,7 +42,7 @@ On first screenshot/recording, macOS will prompt for **Screen Recording** permis
 Prerequisites:
 
 - [Rust](https://rustup.rs/) (1.70+)
-- [Qt 6](https://www.qt.io/) — `brew install qt`
+- [Qt 6](https://www.qt.io/) — `brew install qtbase` (only QtBase is needed)
 - [CMake](https://cmake.org/) (3.20+) — `brew install cmake`
 - [FFmpeg](https://ffmpeg.org/) (for screen recording) — `brew install ffmpeg`
 
@@ -55,7 +55,7 @@ bash qt/build.sh
 # Or manually (dev build: runs against Homebrew Qt/ffmpeg, also builds the tests)
 export MACOSX_DEPLOYMENT_TARGET=14.0
 cargo build --release -p snapforge-ffi
-cmake -S qt -B qt/build -DCMAKE_PREFIX_PATH="$(brew --prefix qt)"
+cmake -S qt -B qt/build -DCMAKE_PREFIX_PATH="$(brew --prefix qtbase)"
 cmake --build qt/build --parallel
 (cd qt/build && QT_QPA_PLATFORM=offscreen ctest --output-on-failure)
 
@@ -126,18 +126,49 @@ cargo build              # build the workspace
 cargo test               # run tests
 cargo clippy --workspace # lint
 cargo fmt --all          # format
+packaging/ci/tests/run.sh  # release versioning/changelog tests
 ```
 
-### Releases
+### Branch model
 
-Releases are automated, and only commits that passed CI are released. When the `CI` workflow succeeds for a push to `main` (except the workflow's own `chore(release):` auto-commit), `release.yml` runs on that exact commit:
+- `main` is the staging branch and the default branch. All changes land there through a pull request.
+- `production` is the release branch. It only receives merges from `main` through the promotion PR that `promote.yml` creates (or refreshes) after every push to `main`.
+- CI runs on every pull request and on every push to `main` and `production`.
+- `release.yml` runs only after CI succeeds for a push to `production`, so a release is cut only after the promotion PR is merged and the merged commit passes CI.
 
-1. Computes the next patch version from the latest `v*` tag
-2. Builds and verifies `Snapforge-X.Y.Z.dmg` on macOS with the bumped version
-3. Collects the third-party sources archive (`packaging/macos/collect-sources.sh`, below)
-4. Only if both built: patch-bumps `qt/CMakeLists.txt`, commits as `chore(release): vX.Y.Z`, tags `vX.Y.Z`, and creates the GitHub Release with auto-generated notes and the `.dmg` plus `Snapforge-X.Y.Z-third-party-sources.tar.gz` attached
+The promotion PR is created with the repository's `GITHUB_TOKEN`; the checks from the `main` push cover the same commit. This requires **Settings → Actions → General → Allow GitHub Actions to create and approve pull requests**. If you want the promotion PR to run its own `pull_request` CI run as well, add a `PROMOTE_TOKEN` secret (a fine-grained PAT with `contents: read` and `pull-requests: write`) and use it for `GH_TOKEN` in `promote.yml`.
 
-To land changes without releasing, include the literal opt-out tag in the commit subject (square-bracketed `skip release`). Major/minor bumps need to be done by hand: tag the commit you want to release from with the desired `vX.Y.Z` *minus one patch* (the workflow bumps from the latest tag), then push.
+### Versioning
+
+Versions follow [Semantic Versioning](https://semver.org/). The next version is computed from the highest `vX.Y.Z` tag and the conventional commits since that tag:
+
+- a breaking change (`type!:`, `type(scope)!:`, or a `BREAKING CHANGE:` footer) bumps the major version;
+- a `feat:` commit bumps the minor version;
+- everything else bumps the patch version.
+
+Add `[release:major]`, `[release:minor]`, or `[release:patch]` to any commit subject to force the bump for that release. Add `[skip release]` to the head commit of a production push to skip the release entirely. Preview the next version locally with:
+
+```bash
+packaging/ci/next-version.sh
+```
+
+### Release pipeline
+
+When CI succeeds on `production`, `release.yml` runs on that exact commit:
+
+1. Computes the next semantic version from the latest tag and the commits since it.
+2. Bumps the version in `qt/CMakeLists.txt`, regenerates `CHANGELOG.md`, and builds/verifies `Snapforge-X.Y.Z.dmg` on macOS.
+3. Collects the third-party sources archive (`packaging/macos/collect-sources.sh`, below) and creates `Snapforge-X.Y.Z-source.zip` from the release commit.
+4. Only if all assets exist: commits `chore(release): vX.Y.Z`, tags `vX.Y.Z`, pushes the tag and `production` atomically, and fast-forwards `main` when it hasn't moved during the build.
+5. Creates the GitHub Release with the `.dmg` file, `Snapforge-X.Y.Z-third-party-sources.tar.gz`, and `Snapforge-X.Y.Z-source.zip`; the release notes are the new `CHANGELOG.md` section.
+
+`CHANGELOG.md` is generated by `packaging/ci/update-changelog.sh`; don't edit generated sections by hand. To regenerate it locally:
+
+```bash
+packaging/ci/update-changelog.sh X.Y.Z vPREV
+```
+
+**Branch protection.** Require pull requests and CI on both `main` and `production`. The release job pushes the `chore(release):` commit to `production` (and best-effort to `main`), so allow the GitHub Actions app to bypass the PR requirement for those branches, or provide a PAT with bypass. If the release commit can't be pushed to `main` because `main` moved during the build, the release still publishes; the next promotion/release fast-forwards `main` over the release commit.
 
 ## Third-party licences
 
@@ -146,7 +177,7 @@ The macOS app bundles third-party software, and their licence texts ship inside 
 - **FFmpeg** (GPLv3+; Homebrew's build includes libx264 and libx265, both GPLv2+), plus the codec libraries it depends on. Snapforge runs `ffmpeg` as a **separate process** and sends it frames over a pipe; it doesn't link FFmpeg into the app. The exact bundled version and build configuration are recorded in `Licenses/ffmpeg/VERSION.txt`.
 - **Qt 6** (LGPLv3), dynamically linked frameworks in `Contents/Frameworks`.
 
-**Source code.** Every release attaches `Snapforge-X.Y.Z-third-party-sources.tar.gz` next to the `.dmg`: the exact upstream source archives of FFmpeg and every bundled GPL/LGPL library, Homebrew's build recipe (`<formula>.rb`) and patches for each, and a `MANIFEST.tsv` of every bundled library with its version, licence and source checksum. Qt's source (~1 GB) isn't included; the archive records the exact Qt version and upstream URL, and `THIRD_PARTY_NOTICES.md` carries a three-year written offer for it.
+**Source code.** Every release attaches `Snapforge-X.Y.Z-third-party-sources.tar.gz` next to the `.dmg`: the exact upstream source archives of FFmpeg and every bundled GPL/LGPL library, Homebrew's build recipe (`<formula>.rb`) and patches for each, and a `MANIFEST.tsv` of every bundled library with its version, licence and source checksum. Qt's source (~1 GB) isn't included; the archive records the exact Qt version and upstream URL, and `THIRD_PARTY_NOTICES.md` carries a three-year written offer for it. The release also attaches `Snapforge-X.Y.Z-source.zip`, a clean archive of the tagged project source including that release's version bump and `CHANGELOG.md` section.
 
 To build the archive locally (output in the gitignored `qt/build/dist/`; downloads ~80 MB):
 
