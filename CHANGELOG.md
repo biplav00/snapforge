@@ -4,6 +4,14 @@ All notable changes to Snapforge are documented here. This file is updated
 by `packaging/ci/update-changelog.sh` during releases; generated sections
 should not be edited by hand.
 
+## [1.4.2] - 2026-11-10
+
+### Maintenance
+
+- exclude promotion PRs at the event level ([4e7161f](https://github.com/biplav00/snapforge/commit/4e7161fc7ee0cf38a998a5d460da281a4e84551f))
+- **release:** stop attaching third-party sources ([17a3669](https://github.com/biplav00/snapforge/commit/17a3669b921d99bb6c1a49fd68f3fc44212d320c))
+- skip redundant runs on promotion pull requests ([a4b1414](https://github.com/biplav00/snapforge/commit/a4b141464b6f1b575b6d630f3461c108a7587e93))
+
 ## [1.4.1] - 2026-11-10
 
 ### Maintenance
