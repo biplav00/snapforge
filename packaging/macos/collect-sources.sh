@@ -2,9 +2,10 @@
 # Collect the complete corresponding source for the GPL/LGPL components
 # bundled in Snapforge.app and pack it as
 #   <out-dir>/Snapforge-<version>-third-party-sources.tar.gz
-# for attaching to the GitHub release next to the DMG (so we SHIP the source
-# alongside the binary — GPLv3 §6(a)/(d), GPLv2 §3(a) — rather than relying on
-# a written offer alone).
+#
+# The release workflow does NOT run this: releases rely on the three-year
+# written offer in THIRD_PARTY_NOTICES.md. Run it when fulfilling a source
+# request, or for a local compliance check.
 #
 # Which formulae: bundled-formulae.sh (ffmpeg + the Homebrew formula behind
 # every dylib in Contents/Frameworks), filtered to those whose Homebrew licence

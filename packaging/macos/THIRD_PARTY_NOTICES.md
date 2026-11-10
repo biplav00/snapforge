@@ -40,38 +40,34 @@ library's own licence files are in a folder named after its Homebrew formula
 
 ## Source code
 
-### FFmpeg and the bundled GPL/LGPL libraries: shipped with every release
+### Written offer
 
-Each Snapforge release on GitHub has a
-`Snapforge-<version>-third-party-sources.tar.gz` file next to the `.dmg`. It
-contains the complete corresponding source for FFmpeg and every bundled
-library whose licence is GPL or LGPL (including x264, x265, LAME, mpg123,
-gettext/libintl, GLib, xz, zstd, graphite2 and D-Bus):
+Snapforge does not attach a source archive to its releases. For **three
+years** from the date we distribute a given Snapforge release, we will give
+anyone who asks a complete machine-readable copy of the source code for
+FFmpeg, Qt, and every other GPL/LGPL component shipped in that release — at no
+more than our cost of physically distributing it.
+
+For FFmpeg and the bundled GPL/LGPL libraries (including x264, x265, LAME,
+mpg123, gettext/libintl, GLib, xz, zstd, graphite2 and D-Bus) that source
+comprises:
 
 - the exact upstream source archive each bundled binary was built from,
 - Homebrew's build recipe (`<formula>.rb`: configure flags, dependencies,
   inline patches) and any external patches it applies, and
-- `MANIFEST.tsv`, listing every bundled Homebrew library with its version,
-  licence and the SHA-256 of the included source archive.
+- a manifest listing every bundled Homebrew library with its version, licence
+  and the SHA-256 of the corresponding source archive.
 
-Get it from the same release page as the `.dmg`
-(<https://github.com/biplav00/snapforge/releases>).
+For Qt it is the upstream source at the exact bundled version. The version is
+recorded in `qt/README.txt`; the source is available upstream at
+<https://download.qt.io/archive/qt/> — use
+`<major.minor>/<version>/single/qt-everywhere-src-<version>.tar.xz` — and
+Homebrew's build recipe is the `qtbase` formula
+(<https://formulae.brew.sh/formula/qtbase>).
 
-### Qt: written offer
-
-Qt's source (about 1 GB) is not in that archive. The exact Qt version is in
-`qt/README.txt` (and in `qt/SOURCE.txt` in the sources archive), and its source
-is available upstream at <https://download.qt.io/archive/qt/> — use
-`<major.minor>/<version>/single/qt-everywhere-src-<version>.tar.xz`. Homebrew's
-Qt build recipe is included in the sources archive as `qt/qtbase.rb`.
-
-In addition, for **three years** from the date we distribute a given
-Snapforge release, we will give anyone who asks a complete machine-readable
-copy of the source code for Qt — or for any other GPL/LGPL component shipped
-in that release, should the sources archive ever be unavailable — at no more
-than our cost of physically distributing it. Ask by opening an issue on the
-Snapforge GitHub repository and including the Snapforge version and the
-contents of `ffmpeg/VERSION.txt` and `qt/README.txt`.
+Ask for the source by opening an issue on the Snapforge GitHub repository and
+including the Snapforge version and the contents of `ffmpeg/VERSION.txt` and
+`qt/README.txt`.
 
 Upstream project pages, for reference:
 
