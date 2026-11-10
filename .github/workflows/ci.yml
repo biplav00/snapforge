@@ -1,7 +1,12 @@
 name: CI
 
 on:
+  # Promotion PRs target production and point at a commit that already ran CI
+  # on the main push. Exclude them at the event level: a job-level skip still
+  # creates a run that waits in "action required" (GITHUB_TOKEN opens the PR)
+  # and shows a red X. The production push run after the merge is the gate.
   pull_request:
+    branches-ignore: [production]
   push:
     branches: [main, production]
 
