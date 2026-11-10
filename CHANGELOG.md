@@ -4,6 +4,12 @@ All notable changes to Snapforge are documented here. This file is updated
 by `packaging/ci/update-changelog.sh` during releases; generated sections
 should not be edited by hand.
 
+## [1.4.1] - 2026-11-10
+
+### Maintenance
+
+- **release:** stop attaching a project source zip ([292da56](https://github.com/biplav00/snapforge/commit/292da5684a08cfe934c8da7ebfa7090b572defb2))
+
 ## [1.4.0] - 2026-11-10
 
 ### Features
