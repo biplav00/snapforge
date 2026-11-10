@@ -16,7 +16,9 @@ jobs:
   build:
     name: Build & test (macOS)
     if: ${{ github.event_name == 'pull_request' || !startsWith(github.event.head_commit.message, 'chore(release):') }}
-    runs-on: macos-14
+    # macos-15 is the current arm64 GitHub-hosted image; macos-14 was retired
+    # on 2026-11-02. The deployment target stays 14.0 below.
+    runs-on: macos-15
     env:
       # Keep in sync with CMAKE_OSX_DEPLOYMENT_TARGET / LSMinimumSystemVersion.
       MACOSX_DEPLOYMENT_TARGET: "14.0"

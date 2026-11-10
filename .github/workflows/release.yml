@@ -88,7 +88,9 @@ jobs:
     name: Build .dmg
     needs: version
     if: ${{ needs.version.outputs.stale == 'false' }}
-    runs-on: macos-14
+    # macos-15 is the current arm64 GitHub-hosted image; macos-14 was retired
+    # on 2026-11-02. The deployment target stays 14.0 below.
+    runs-on: macos-15
     env:
       MACOSX_DEPLOYMENT_TARGET: "14.0"
     steps:
