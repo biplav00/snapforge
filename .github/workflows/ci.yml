@@ -3,7 +3,7 @@ name: CI
 on:
   pull_request:
   push:
-    branches: [main]
+    branches: [main, production]
 
 permissions:
   contents: read
@@ -15,13 +15,18 @@ concurrency:
 jobs:
   build:
     name: Build & test (macOS)
-    if: ${{ !startsWith(github.event.head_commit.message, 'chore(release):') }}
+    if: ${{ github.event_name == 'pull_request' || !startsWith(github.event.head_commit.message, 'chore(release):') }}
     runs-on: macos-14
     env:
       # Keep in sync with CMAKE_OSX_DEPLOYMENT_TARGET / LSMinimumSystemVersion.
       MACOSX_DEPLOYMENT_TARGET: "14.0"
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      # Cheap, dependency-free checks for the scripts that drive versioning
+      # and CHANGELOG.md generation.
+      - name: Release tooling tests
+        run: packaging/ci/tests/run.sh
 
       - name: Install Qt6 + bundling deps
         run: brew install qt dylibbundler ffmpeg

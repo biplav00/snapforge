@@ -1,14 +1,15 @@
 name: release
 
-# Release only commits that passed CI: this runs when the CI workflow finishes
-# for a push to main, and only if it succeeded. Everything below builds and
-# tags the exact commit CI tested (workflow_run.head_sha), not whatever main
+# A release is cut only after a push to production passed CI. production only
+# receives merges from main through the promotion PR, so this is the final gate
+# between staging and a published release. Everything below builds and tags
+# the exact commit CI tested (workflow_run.head_sha), not whatever production
 # points at by the time this job starts.
 on:
   workflow_run:
     workflows: [CI]
     types: [completed]
-    branches: [main]
+    branches: [production]
 
 # Default to read-only; only the job that pushes the tag and creates the
 # GitHub release gets contents: write.
@@ -25,6 +26,7 @@ jobs:
     if: >-
       ${{ github.event.workflow_run.conclusion == 'success' &&
           github.event.workflow_run.event == 'push' &&
+          github.event.workflow_run.head_branch == 'production' &&
           !contains(github.event.workflow_run.head_commit.message, '[skip release]') &&
           !startsWith(github.event.workflow_run.head_commit.message, 'chore(release):') }}
     runs-on: ubuntu-latest
@@ -32,36 +34,60 @@ jobs:
       next: ${{ steps.ver.outputs.next }}
       tag: ${{ steps.ver.outputs.tag }}
       prev_tag: ${{ steps.ver.outputs.prev_tag }}
+      bump: ${{ steps.ver.outputs.bump }}
+      stale: ${{ steps.current.outputs.stale }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           ref: ${{ github.event.workflow_run.head_sha }}
           fetch-depth: 0
 
-      - name: Compute next version (patch bump)
-        id: ver
+      - name: Check production still points at the tested commit
+        id: current
         run: |
           set -euo pipefail
-          # Anchor on the HIGHEST release tag in the repo — the source of truth
-          # for the shipped version. Deliberately not `git describe`: that only
-          # sees tags reachable from head_sha, so if an earlier run's bump
-          # commit never reached main (main moved on), describe would recompute
-          # an already-published version and `git tag` would fail forever.
-          # fetch-depth: 0 above brings all tags; the workflow-level
-          # concurrency group serialises runs so two can't pick the same NEXT.
-          PREV_TAG=$(git tag -l 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -n1)
-          CURRENT=${PREV_TAG#v}
-          CURRENT=${CURRENT:-0.0.0}
-          IFS='.' read -r MAJOR MINOR PATCH <<<"$CURRENT"
-          NEXT="$MAJOR.$MINOR.$((PATCH + 1))"
-          echo "prev_tag=$PREV_TAG" >>"$GITHUB_OUTPUT"
-          echo "next=$NEXT" >>"$GITHUB_OUTPUT"
-          echo "tag=v$NEXT" >>"$GITHUB_OUTPUT"
-          echo "Bumping ${CURRENT} -> ${NEXT} (previous tag: ${PREV_TAG:-none})"
+          git fetch --no-tags origin production
+          if [ "$(git rev-parse origin/production)" != "${{ github.event.workflow_run.head_sha }}" ]; then
+            echo "stale=true" >> "$GITHUB_OUTPUT"
+            echo "::warning::production moved past the tested commit; skipping this release run"
+          else
+            echo "stale=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Compute next semantic version
+        id: ver
+        if: steps.current.outputs.stale == 'false'
+        run: |
+          set -euo pipefail
+          packaging/ci/next-version.sh | tee version.env
+
+          prev_tag=""
+          bump=""
+          next=""
+          tag=""
+          while IFS='=' read -r key value; do
+            case "$key" in
+              prev_tag) prev_tag="$value" ;;
+              bump) bump="$value" ;;
+              next) next="$value" ;;
+              tag) tag="$value" ;;
+            esac
+          done < version.env
+
+          {
+            echo "prev_tag=$prev_tag"
+            echo "bump=$bump"
+            echo "next=$next"
+            echo "tag=$tag"
+          } >> "$GITHUB_OUTPUT"
+
+          echo "### Release $tag ($bump bump)" >> "$GITHUB_STEP_SUMMARY"
+          echo "Previous tag: ${prev_tag:-none}" >> "$GITHUB_STEP_SUMMARY"
 
   dmg:
     name: Build .dmg
     needs: version
+    if: ${{ needs.version.outputs.stale == 'false' }}
     runs-on: macos-14
     env:
       MACOSX_DEPLOYMENT_TARGET: "14.0"
@@ -105,7 +131,7 @@ jobs:
       - name: Collect third-party sources
         run: packaging/macos/collect-sources.sh qt/build/Snapforge.app qt/build/dist
 
-      - name: Upload .dmg + sources artifact
+      - name: Upload .dmg + third-party sources artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: snapforge-dmg
@@ -119,6 +145,7 @@ jobs:
     # Only after the DMG built and verified: a failed build leaves no tag and
     # no empty release behind.
     needs: [version, dmg]
+    if: ${{ needs.version.outputs.stale == 'false' }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -129,28 +156,38 @@ jobs:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Re-check production before tagging
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin production
+          if [ "$(git rev-parse origin/production)" != "$(git rev-parse HEAD)" ]; then
+            echo "::error::production moved during the build; aborting this release run"
+            exit 1
+          fi
+
       - name: Bump version in CMakeLists.txt
         env:
           NEXT: ${{ needs.version.outputs.next }}
         run: packaging/ci/bump-version.sh "$NEXT"
 
-      - name: Commit, tag, push
+      - name: Update CHANGELOG.md
+        env:
+          NEXT: ${{ needs.version.outputs.next }}
+          PREV_TAG: ${{ needs.version.outputs.prev_tag }}
+        run: packaging/ci/update-changelog.sh "$NEXT" "$PREV_TAG"
+
+      - name: Commit the release changes
         env:
           NEXT: ${{ needs.version.outputs.next }}
         run: |
           set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add qt/CMakeLists.txt
-          git commit -m "chore(release): v$NEXT"
-          git tag "v$NEXT"
-          git push origin "v$NEXT"
-          # Fast-forward main to the bump commit. If main moved on since CI
-          # tested head_sha, the tag/release still point at the tested commit;
-          # the next release computes its version from the highest tag (not
-          # from main's CMakeLists), so a skipped bump on main is cosmetic.
-          if ! git push origin "HEAD:main"; then
-            echo "::warning::main advanced since the tested commit; version bump not pushed to main (tag v$NEXT still published)"
+          git add qt/CMakeLists.txt CHANGELOG.md
+          if git diff --cached --quiet; then
+            echo "No version/changelog changes to commit; tagging the current commit."
+          else
+            git commit -m "chore(release): v$NEXT"
           fi
 
       - name: Download .dmg artifact
@@ -159,27 +196,85 @@ jobs:
           name: snapforge-dmg
           path: dist
 
-      - name: Create GitHub Release with .dmg + third-party sources
+      - name: Create source archive
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NEXT: ${{ needs.version.outputs.next }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          git archive \
+            --format=zip \
+            --prefix="Snapforge-$NEXT/" \
+            -o "dist/Snapforge-$NEXT-source.zip" \
+            HEAD
+          ls -lh "dist/Snapforge-$NEXT-source.zip"
+
+      - name: Verify release assets
+        env:
+          NEXT: ${{ needs.version.outputs.next }}
+        run: |
+          set -euo pipefail
+          ls -lh \
+            "dist/Snapforge-$NEXT.dmg" \
+            "dist/Snapforge-$NEXT-third-party-sources.tar.gz" \
+            "dist/Snapforge-$NEXT-source.zip"
+
+      - name: Build release notes from CHANGELOG.md
+        env:
           NEXT: ${{ needs.version.outputs.next }}
           PREV_TAG: ${{ needs.version.outputs.prev_tag }}
         run: |
           set -euo pipefail
-          # --notes-start-tag only when there IS a previous release; on the
-          # first release generate notes from the whole history.
-          START_TAG_ARGS=()
-          if [ -n "$PREV_TAG" ]; then
-            START_TAG_ARGS=(--notes-start-tag "$PREV_TAG")
+          awk -v marker="## [$NEXT]" '
+            index($0, marker) == 1 { found = 1; next }
+            found && /^## \[/ { exit }
+            found { print }
+          ' CHANGELOG.md > release-notes.md
+
+          {
+            echo
+            echo "**Full changelog:** [\`CHANGELOG.md\`](https://github.com/$GITHUB_REPOSITORY/blob/v$NEXT/CHANGELOG.md)"
+            if [ -n "$PREV_TAG" ]; then
+              echo
+              echo "**Compare:** https://github.com/$GITHUB_REPOSITORY/compare/$PREV_TAG...v$NEXT"
+            fi
+          } >> release-notes.md
+          cat release-notes.md
+
+      - name: Tag and push the release
+        env:
+          NEXT: ${{ needs.version.outputs.next }}
+        run: |
+          set -euo pipefail
+          if git rev-parse -q --verify "refs/tags/v$NEXT" >/dev/null; then
+            echo "::error::tag v$NEXT already exists; refusing to reuse it"
+            exit 1
           fi
-          # Both assets must be present: never publish a GPL binary without
-          # its source archive.
-          ls dist/Snapforge-"$NEXT".dmg dist/Snapforge-"$NEXT"-third-party-sources.tar.gz
+          git tag "v$NEXT"
+
+          # Move production to the tagged release commit and publish the tag in
+          # one atomic push: either both happen or neither does. production is
+          # a fast-forward from the CI-tested merge commit.
+          git push --atomic origin "HEAD:production" "refs/tags/v$NEXT"
+
+          # Keep main (staging) in sync when it hasn't moved since the
+          # promotion. If it has, the release still publishes; the next
+          # promotion/release will fast-forward main over the release commit.
+          if ! git push origin "HEAD:main"; then
+            echo "::warning::main advanced since the promoted commit; release commit not pushed to main (tag v$NEXT still published)"
+          fi
+
+      - name: Create GitHub Release with .dmg, sources, and source zip
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NEXT: ${{ needs.version.outputs.next }}
+        run: |
+          set -euo pipefail
           gh release create "v$NEXT" \
-            dist/Snapforge-"$NEXT".dmg \
-            dist/Snapforge-"$NEXT"-third-party-sources.tar.gz \
+            "dist/Snapforge-$NEXT.dmg" \
+            "dist/Snapforge-$NEXT-third-party-sources.tar.gz" \
+            "dist/Snapforge-$NEXT-source.zip" \
             --repo "$GITHUB_REPOSITORY" \
             --title "v$NEXT" \
-            --verify-tag \
-            --generate-notes \
-            "${START_TAG_ARGS[@]}"
+            --notes-file release-notes.md \
+            --verify-tag

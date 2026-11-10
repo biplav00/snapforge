@@ -1,0 +1,85 @@
+name: promote
+
+# Keep a pull request from main (staging) to production (release) open and up
+# to date. Merging that PR is what triggers CI on production and, if CI passes,
+# the release workflow.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: promote
+  cancel-in-progress: false
+
+jobs:
+  promote:
+    name: Open or refresh the production PR
+    if: ${{ github.event_name == 'workflow_dispatch' || !startsWith(github.event.head_commit.message, 'chore(release):') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+
+      - name: Create or update the main -> production PR
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          if ! git fetch --no-tags origin production main; then
+            echo "::error::could not fetch production; create it from main first"
+            exit 1
+          fi
+
+          count="$(git rev-list --count origin/production..origin/main)"
+          if [ "$count" -eq 0 ]; then
+            echo "main has no commits that are not already in production; nothing to promote."
+            exit 0
+          fi
+
+          body="$(mktemp)"
+          {
+            echo "Promote \`main\` (staging) to \`production\` for release."
+            echo
+            echo "This PR is created and refreshed automatically by \`.github/workflows/promote.yml\`."
+            echo
+            echo "### Commits to promote ($count)"
+            echo
+            git log -n 50 --no-merges --pretty='- `%h` %s' origin/production..origin/main
+            if [ "$count" -gt 50 ]; then
+              echo
+              echo "_...and $((count - 50)) more._"
+            fi
+            echo
+            echo "Merging this PR runs CI on \`production\`; if CI passes, \`release.yml\` tags and publishes the next semantic version."
+            echo
+            echo "> Prefer a **merge commit** (not squash/rebase) so the release workflow can fast-forward \`main\` after tagging. Squash and rebase still release, but \`main\` may lag until the next promotion."
+          } >"$body"
+
+          existing="$(gh pr list \
+            --repo "$GITHUB_REPOSITORY" \
+            --base production \
+            --head "${GITHUB_REPOSITORY_OWNER}:main" \
+            --state open \
+            --json number \
+            --jq '.[0].number // empty')"
+
+          if [ -n "$existing" ]; then
+            gh pr edit "$existing" \
+              --repo "$GITHUB_REPOSITORY" \
+              --body-file "$body"
+            echo "Updated promotion PR #$existing."
+          else
+            gh pr create \
+              --repo "$GITHUB_REPOSITORY" \
+              --base production \
+              --head main \
+              --title "chore(release): promote main to production" \
+              --body-file "$body"
+          fi
