@@ -4,6 +4,25 @@ All notable changes to Snapforge are documented here. This file is updated
 by `packaging/ci/update-changelog.sh` during releases; generated sections
 should not be edited by hand.
 
+## [1.4.0] - 2026-11-10
+
+### Features
+
+- soften recording UI with stop-only tray and hairline border ([a5bda5a](https://github.com/biplav00/snapforge/commit/a5bda5a01234b115ec247ca61b18bfcc30af4d16))
+
+### Fixes
+
+- route tray banners through the visible menu-bar item ([b4ef7f3](https://github.com/biplav00/snapforge/commit/b4ef7f3517e9caeff77f23496189c6b4094008d3))
+- show recording region border and enlarge tray timer ([04cfa89](https://github.com/biplav00/snapforge/commit/04cfa899a83c0ce2d0f345eefbd91e32ca269c78))
+
+### Maintenance
+
+- use Homebrew qtbase instead of the full qt meta-formula ([ee48778](https://github.com/biplav00/snapforge/commit/ee48778367cb42fb0d99ead756a18f4bf8452f88))
+- parallelize policy checks and trim macOS build time ([f7f8a55](https://github.com/biplav00/snapforge/commit/f7f8a5532cfde2f3ef7577e2961c7b6c537677f3))
+- move macOS runners from retired macos-14 to macos-15 ([f7550d8](https://github.com/biplav00/snapforge/commit/f7550d809f02fb21b72bc426b05c10b975e4e34a))
+- **release:** add production branch, promotion, versioning, and changelog ([89f4acb](https://github.com/biplav00/snapforge/commit/89f4acb859ae375328e1f2ef44d8a24f47617b52))
+- remove design mock files ([75b08c9](https://github.com/biplav00/snapforge/commit/75b08c9e9b74b2fc9730302335de3a13c7827929))
+
 ## [1.3.21] - 2026-11-05
 
 ### Fixes
