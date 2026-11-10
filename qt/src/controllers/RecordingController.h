@@ -9,8 +9,8 @@ class ClickTap;
 class PreferencesWindow;
 
 // Wires RecordingManager's lifecycle signals (started/stopped/paused/resumed/
-// error/elapsedChanged) to the user-visible feedback they trigger:
-//   * tray pill state + tooltip + menu swap (TrayIcon)
+// error) to the user-visible feedback they trigger:
+//   * stop-button state + recording-menu swap (TrayIcon)
 //   * global click-tap permission probe (ClickTap, all platforms)
 //   * clipboard-copy-on-stop of the finished file URL
 //   * history.add (currently implicit via the recording pipeline)
@@ -39,5 +39,4 @@ private:
     void onResumed();
     void onError(const QString &message);
     void onWarning(const QString &message);
-    void onElapsedChanged(int seconds);
 };

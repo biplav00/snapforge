@@ -1144,11 +1144,11 @@ fn crop_bgra_to_region_into(
 /// Lifetime in ms of a click marker on the recorded video. Promoted to a
 /// crate-level constant so the recording loop and `draw_clicks_bgra` agree.
 #[cfg(target_os = "macos")]
-const CLICK_LIFETIME_MS: u64 = 1000;
+const CLICK_LIFETIME_MS: u64 = 700;
 
 /// Draw click markers onto a BGRA buffer (in-place).
-/// Each click produces a ripple animation: a filled dot at the click point
-/// plus two expanding rings that fade out over the lifetime.
+/// Each click produces a soft ripple: a small dot with a tiny white highlight
+/// plus a single thin ring that expands with an ease-out curve and fades.
 #[cfg(target_os = "macos")]
 #[allow(
     clippy::too_many_arguments,
@@ -1169,9 +1169,12 @@ fn draw_clicks_bgra(
     scale_y: f64,
 ) {
     const DOT_RADIUS: f64 = 8.0;
+    const DOT_HIGHLIGHT_RADIUS: f64 = 2.5;
     const RING_START_RADIUS: f64 = 12.0;
-    const RING_END_RADIUS: f64 = 52.0;
-    const RING_THICKNESS: f64 = 3.5;
+    const RING_END_RADIUS: f64 = 44.0;
+    const RING_THICKNESS: f64 = 2.0;
+    // ~60% peak opacity: present in the recording without shouting over it.
+    const RING_PEAK_ALPHA: f64 = 153.0;
 
     if clicks.is_empty() {
         return;
@@ -1193,48 +1196,40 @@ fn draw_clicks_bgra(
         let px = (click.x - origin_x) * scale_x - f64::from(region_x);
         let py = (click.y - origin_y) * scale_y - f64::from(region_y);
 
-        // --- Filled center dot: visible for the first half, fades out ---
+        // --- Center dot: a small white highlight keeps it legible on light
+        // and busy content, then the whole dot fades out. ---
         let dot_alpha = ((1.0 - t).powf(0.6) * 230.0) as u8;
         if dot_alpha > 0 {
             fill_circle_bgra(buf, width, height, px, py, DOT_RADIUS, red, dot_alpha);
-            // White inner highlight
             fill_circle_bgra(
                 buf,
                 width,
                 height,
                 px,
                 py,
-                DOT_RADIUS * 0.45,
+                DOT_HIGHLIGHT_RADIUS,
                 white,
                 dot_alpha,
             );
         }
 
-        // --- Primary ring: expands and fades ---
-        let r1 = RING_START_RADIUS + t * (RING_END_RADIUS - RING_START_RADIUS);
-        let a1 = ((1.0 - t) * 220.0) as u8;
-        if a1 > 0 {
-            draw_ring_bgra(buf, width, height, px, py, r1, RING_THICKNESS, red, a1);
-        }
-
-        // --- Secondary ring: delayed expand for a ripple effect ---
-        let t2 = ((t - 0.2) / 0.8).clamp(0.0, 1.0);
-        if t2 > 0.0 {
-            let r2 = RING_START_RADIUS + t2 * (RING_END_RADIUS - RING_START_RADIUS);
-            let a2 = ((1.0 - t2) * 140.0) as u8;
-            if a2 > 0 {
-                draw_ring_bgra(
-                    buf,
-                    width,
-                    height,
-                    px,
-                    py,
-                    r2,
-                    RING_THICKNESS - 1.0,
-                    red,
-                    a2,
-                );
-            }
+        // --- Single ring: ease-out expansion reads as a ripple rather than a
+        // mechanical grow, and fades to nothing over the lifetime. ---
+        let eased = 1.0 - (1.0 - t).powi(3);
+        let radius = RING_START_RADIUS + eased * (RING_END_RADIUS - RING_START_RADIUS);
+        let ring_alpha = ((1.0 - t) * RING_PEAK_ALPHA) as u8;
+        if ring_alpha > 0 {
+            draw_ring_bgra(
+                buf,
+                width,
+                height,
+                px,
+                py,
+                radius,
+                RING_THICKNESS,
+                red,
+                ring_alpha,
+            );
         }
     }
 }
@@ -2219,5 +2214,33 @@ mod tests {
         let before = buf.clone();
         draw_clicks_bgra(&mut buf, 8, 8, &[], None, 0.0, 0.0, 1.0, 1.0);
         assert_eq!(buf, before, "no clicks should leave the frame untouched");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn draw_clicks_fresh_click_draws_dot_and_ring() {
+        let mut buf = solid_bgra(40, 40, 0x00);
+        let click = snapforge_capture::clicks::ClickEvent {
+            x: 20.0,
+            y: 20.0,
+            right_click: false,
+            timestamp: Instant::now(),
+        };
+        draw_clicks_bgra(&mut buf, 40, 40, &[click], None, 0.0, 0.0, 1.0, 1.0);
+
+        let stride = 40 * 4;
+        // Small white highlight at the click point (BGRA, so all channels).
+        let center = 20 * stride + 20 * 4;
+        assert!(
+            buf[center] > 150 && buf[center + 1] > 150 && buf[center + 2] > 150,
+            "expected a bright center highlight"
+        );
+
+        // The ring starts at a 12px radius and is red-tinted.
+        let ring = 20 * stride + 32 * 4;
+        assert!(
+            buf[ring + 2] > 40,
+            "expected a red-tinted ring pixel at the starting radius"
+        );
     }
 }

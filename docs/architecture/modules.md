@@ -47,6 +47,7 @@ Grouped subfolders. Restructure Phase 1 + Phase 1 part 2 (tray + recording contr
 | File | Purpose |
 |------|---------|
 | `ui/overlay/OverlayWindow.{h,cpp}` | Region picker — full-screen translucent window with drag-to-select. Also entry for fullscreen capture and recording start. |
+| `ui/overlay/RecordingBorderWindow.{h,cpp}` | Click-through hairline outline around a region recording: 1px translucent red, 4px corners, faint outer glow, no fill. Prepared from the overlay's global selection, shown on `recordingStarted`, switches to a fainter dashed line while paused, cleared on finalize/stop/error. On macOS the native window uses `NSWindowSharingNone`, so it is excluded from the capture. |
 | `capture/RecordingManager.{h,cpp}` | Wraps the `snapforge_record_*` use-case FFI (start/stop/pause/resume/free_handle). Emits Qt signals (`recordingStarted/Stopped/Paused/Resumed/Error/elapsedChanged`). Reads prefs via `reloadPrefs()`. Passes `add_to_history_on_stop=true` so the Rust side indexes the finished file. |
 
 ### Windows (`src/ui/windows/`)
@@ -72,16 +73,16 @@ Self-contained. Used after a screenshot before save.
 
 | File | Purpose |
 |------|---------|
-| `ui/tray/TrayIcon.{h,cpp}` | Owns `QSystemTrayIcon`, idle + recording-pill icon factories, pulse `QTimer`, context menu and its idle/recording layouts. Public slots: `enterRecordingState`, `leaveRecordingState`, `updateElapsed`, `setPaused`, `showMessage`. Emits `actionScreenshot/Fullscreen/RecordToggle/History/Preferences/Quit/PauseRecording/ResumeRecording/StopRecording` so main can wire menu items to callers without TrayIcon knowing about them. |
+| `ui/tray/TrayIcon.{h,cpp}` | Owns two `QSystemTrayIcon`s: the idle icon (with the normal menu) and a dedicated stop button shown only while recording. During a recording the idle item is hidden, making the pulsing stop button the sole menu-bar item; left-click stops, right-click opens the recording menu. Public slots: `enterRecordingState`, `leaveRecordingState`, `enterFinalizingState`, `setPaused`, `showMessage`, `refreshMenu`. Emits `actionScreenshot/Fullscreen/RecordToggle/History/Preferences/Quit/PauseRecording/ResumeRecording/StopRecording` so main can wire menu items to callers without TrayIcon knowing about them. |
 
 - Idle icon = 18pt aperture+shutter glyph (rendered procedurally).
-- Recording icon = pulsing red dot + `MM:SS` timer. Rebuilt every second by the internal `QTimer`.
+- Stop button = 13px red rounded square in a 20px pixmap. While recording it breathes through a soft halo (six steps over 1.2s); paused stops the pulse. Rendered at the app's device pixel ratio so Cocoa's status-bar sizing doesn't downscale it.
 
 ### Controllers (`src/controllers/`)
 
 | File | Purpose |
 |------|---------|
-| `controllers/RecordingController.{h,cpp}` | Wires `RecordingManager`'s `recordingStarted/Stopped/Paused/Resumed/Error/elapsedChanged` signals to tray state, click overlay + click-tap toggling, clipboard-copy-on-stop of the finished file URL, and the deferred `QMessageBox` error modal. Constructed in main with refs to `RecordingManager`, `TrayIcon`, `ClickIndicatorOverlay`, `ClickTap` (all platforms), and `PreferencesWindow`. |
+| `controllers/RecordingController.{h,cpp}` | Wires `RecordingManager`'s `recordingStarted/Stopped/Paused/Resumed/Error` signals to tray state, click-tap permission probing, clipboard-copy-on-stop of the finished file URL, and the deferred `QMessageBox` error modal. Constructed in main with refs to `RecordingManager`, `TrayIcon`, `ClickTap` (all platforms), and `PreferencesWindow`. |
 | `controllers/ClickTap.{h,cpp}` | Platform-agnostic global mouse-down listener. Calls the clicks use case through `SnapforgeClient` (`sf::clicksStart/Stop/FreeHandle`) rather than raw FFI — so it's unit-testable against the fake (`tst_clicktap`) — the platform tap lives in `snapforge-capture::clicks`. Re-dispatches the FFI callback (Rust-owned thread) to the Qt main thread via `QMetaObject::invokeMethod`. Emits `clicked(QPoint, bool rightClick)`. Replaces the previous macOS-only `ClickEventTap.{h,mm}` (Phase 2C). |
 
 ### Click visualizer (`src/ui/overlay/`)
@@ -120,4 +121,4 @@ The click tap that feeds this overlay is `controllers/ClickTap.{h,cpp}` (listed 
 | `Cargo.toml`, `Cargo.lock` | Rust workspace |
 | `target/` | Rust build output (gitignored) |
 | `qt/build/` | CMake build output (gitignored) |
-| `docs/` | Architecture docs (this folder) + UI mocks |
+| `docs/` | Architecture docs (this folder) |
