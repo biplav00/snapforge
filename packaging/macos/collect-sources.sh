@@ -160,7 +160,7 @@ fi
 # --- Qt: version + upstream location (written offer covers the rest) ---------
 QT_VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' \
     "$APP/Contents/Frameworks/QtCore.framework/Resources/Info.plist" 2>/dev/null \
-    || brew list --versions qt | awk '{print $2}')"
+    || brew list --versions qtbase | awk '{print $2}')"
 QT_MM="${QT_VERSION%.*}"
 mkdir -p "$ROOT/qt"
 cat >"$ROOT/qt/SOURCE.txt" <<EOF
@@ -169,13 +169,13 @@ Qt $QT_VERSION (LGPL-3.0-only), dynamically linked into Snapforge $VERSION.
 The Qt source is not included in this archive because of its size (~1 GB).
 The exact upstream source is:
   https://download.qt.io/archive/qt/$QT_MM/$QT_VERSION/single/qt-everywhere-src-$QT_VERSION.tar.xz
-built by Homebrew's "qt" formula (included here as qt.rb).
+built by Homebrew's "qtbase" formula (included here as qtbase.rb).
 
 The written offer in Snapforge.app/Contents/Resources/Licenses/THIRD_PARTY_NOTICES.md
 also covers Qt: for three years from the release date we will provide this
 source on request.
 EOF
-brew cat --formula qt >"$ROOT/qt/qt.rb" 2>/dev/null || true
+brew cat --formula qtbase >"$ROOT/qt/qtbase.rb" 2>/dev/null || true
 
 cat >"$ROOT/README.txt" <<EOF
 Third-party sources for Snapforge $VERSION (macOS)

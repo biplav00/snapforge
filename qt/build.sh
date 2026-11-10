@@ -76,7 +76,7 @@ fi
 
 echo "=== Configuring Qt project (${BUILD_TYPE}) ==="
 cd "$SCRIPT_DIR"
-QT_PREFIX="$(brew --prefix qt 2>/dev/null || echo /opt/homebrew/opt/qt)"
+QT_PREFIX="$(brew --prefix qtbase 2>/dev/null || echo /opt/homebrew/opt/qtbase)"
 # In the universal case, ask CMake to emit a fat Mach-O for the app + tests so
 # it can link the universal staticlib. SNAPFORGE_UNIVERSAL is forwarded as a
 # cache var; default builds pass nothing extra and stay host-arch (see

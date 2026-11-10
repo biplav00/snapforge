@@ -98,10 +98,13 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-
 
-      # Only Qt is needed here: ffmpeg is a runtime subprocess and dylibbundler
-      # is only used when SNAPFORGE_BUNDLE=ON (the release workflow).
+      # qtbase is all the app uses (Widgets/Gui/Concurrent/Test + macdeployqt).
+      # The `qt` formula is a meta-package that also pulls in WebEngine,
+      # Declarative, 3D, Charts, etc. — ~1 GB we never compile or link.
+      # ffmpeg is a runtime subprocess and dylibbundler is only used when
+      # SNAPFORGE_BUNDLE=ON (the release workflow).
       - name: Install Qt6
-        run: brew install qt
+        run: brew install qtbase
 
       # --- Quality gates ---------------------------------------------------
       # Formatting, dependency policy, and the Windows-target check run in the
@@ -121,7 +124,7 @@ jobs:
       # Ninja is preinstalled on the macOS runner and has less build overhead
       # than the default Makefiles generator.
       - name: Configure Qt build
-        run: cmake -S qt -B qt/build -G Ninja -DCMAKE_PREFIX_PATH="$(brew --prefix qt)" -DBUILD_TESTING=ON
+        run: cmake -S qt -B qt/build -G Ninja -DCMAKE_PREFIX_PATH="$(brew --prefix qtbase)" -DBUILD_TESTING=ON
 
       - name: Build Qt app + tests
         run: cmake --build qt/build --parallel

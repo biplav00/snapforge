@@ -63,7 +63,7 @@ Qt's source (about 1 GB) is not in that archive. The exact Qt version is in
 `qt/README.txt` (and in `qt/SOURCE.txt` in the sources archive), and its source
 is available upstream at <https://download.qt.io/archive/qt/> — use
 `<major.minor>/<version>/single/qt-everywhere-src-<version>.tar.xz`. Homebrew's
-Qt build recipe is included in the sources archive as `qt/qt.rb`.
+Qt build recipe is included in the sources archive as `qt/qtbase.rb`.
 
 In addition, for **three years** from the date we distribute a given
 Snapforge release, we will give anyone who asks a complete machine-readable

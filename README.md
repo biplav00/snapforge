@@ -42,7 +42,7 @@ On first screenshot/recording, macOS will prompt for **Screen Recording** permis
 Prerequisites:
 
 - [Rust](https://rustup.rs/) (1.70+)
-- [Qt 6](https://www.qt.io/) — `brew install qt`
+- [Qt 6](https://www.qt.io/) — `brew install qtbase` (only QtBase is needed)
 - [CMake](https://cmake.org/) (3.20+) — `brew install cmake`
 - [FFmpeg](https://ffmpeg.org/) (for screen recording) — `brew install ffmpeg`
 
@@ -55,7 +55,7 @@ bash qt/build.sh
 # Or manually (dev build: runs against Homebrew Qt/ffmpeg, also builds the tests)
 export MACOSX_DEPLOYMENT_TARGET=14.0
 cargo build --release -p snapforge-ffi
-cmake -S qt -B qt/build -DCMAKE_PREFIX_PATH="$(brew --prefix qt)"
+cmake -S qt -B qt/build -DCMAKE_PREFIX_PATH="$(brew --prefix qtbase)"
 cmake --build qt/build --parallel
 (cd qt/build && QT_QPA_PLATFORM=offscreen ctest --output-on-failure)
 
