@@ -13,13 +13,18 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # A promotion PR (main -> production) points at a commit that already ran CI
+  # on the main push. Its pull_request run would be a duplicate, and because
+  # GITHUB_TOKEN opens the PR it also waits in "action required". Skip it: the
+  # production push run after the merge is the release gate.
+  #
   # Cheap checks that don't need macOS: formatting, dependency policy, and the
   # non-macOS fallback code. This runs alongside the macOS build, so the slow
   # parts (installing cargo-deny, checking the Windows target) are off the
   # critical path.
   policy:
     name: Policy & cross-target checks
-    if: ${{ github.event_name == 'pull_request' || !startsWith(github.event.head_commit.message, 'chore(release):') }}
+    if: ${{ (github.event_name != 'pull_request' || github.head_ref != 'main') && (github.event_name == 'pull_request' || !startsWith(github.event.head_commit.message, 'chore(release):')) }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -73,7 +78,7 @@ jobs:
 
   build:
     name: Build & test (macOS)
-    if: ${{ github.event_name == 'pull_request' || !startsWith(github.event.head_commit.message, 'chore(release):') }}
+    if: ${{ (github.event_name != 'pull_request' || github.head_ref != 'main') && (github.event_name == 'pull_request' || !startsWith(github.event.head_commit.message, 'chore(release):')) }}
     # macos-15 is the current arm64 GitHub-hosted image; macos-14 was retired
     # on 2026-11-02. The deployment target stays 14.0 below.
     runs-on: macos-15

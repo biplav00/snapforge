@@ -132,22 +132,11 @@ jobs:
       - name: Build .dmg
         run: packaging/macos/build_dmg.sh
 
-      # GPL compliance: ship the exact upstream source (+ Homebrew build
-      # recipe and patches) of FFmpeg and every bundled GPL/LGPL library next
-      # to the DMG. Runs right after the build, against the same Homebrew
-      # install the bundle was made from; fails if an installed version and
-      # the fetched source disagree. Qt's source is covered by the written
-      # offer in THIRD_PARTY_NOTICES.md (see packaging/macos/collect-sources.sh).
-      - name: Collect third-party sources
-        run: packaging/macos/collect-sources.sh qt/build/Snapforge.app qt/build/dist
-
-      - name: Upload .dmg + third-party sources artifact
+      - name: Upload .dmg artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: snapforge-dmg
-          path: |
-            qt/build/dist/Snapforge-*.dmg
-            qt/build/dist/Snapforge-*-third-party-sources.tar.gz
+          path: qt/build/dist/Snapforge-*.dmg
           if-no-files-found: error
 
   release:
@@ -211,9 +200,7 @@ jobs:
           NEXT: ${{ needs.version.outputs.next }}
         run: |
           set -euo pipefail
-          ls -lh \
-            "dist/Snapforge-$NEXT.dmg" \
-            "dist/Snapforge-$NEXT-third-party-sources.tar.gz"
+          ls -lh "dist/Snapforge-$NEXT.dmg"
 
       - name: Build release notes from CHANGELOG.md
         env:
@@ -260,7 +247,7 @@ jobs:
             echo "::warning::main advanced since the promoted commit; release commit not pushed to main (tag v$NEXT still published)"
           fi
 
-      - name: Create GitHub Release with .dmg and third-party sources
+      - name: Create GitHub Release with .dmg
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           NEXT: ${{ needs.version.outputs.next }}
@@ -268,7 +255,6 @@ jobs:
           set -euo pipefail
           gh release create "v$NEXT" \
             "dist/Snapforge-$NEXT.dmg" \
-            "dist/Snapforge-$NEXT-third-party-sources.tar.gz" \
             --repo "$GITHUB_REPOSITORY" \
             --title "v$NEXT" \
             --notes-file release-notes.md \
