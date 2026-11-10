@@ -13,25 +13,79 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  build:
-    name: Build & test (macOS)
+  # Cheap checks that don't need macOS: formatting, dependency policy, and the
+  # non-macOS fallback code. This runs alongside the macOS build, so the slow
+  # parts (installing cargo-deny, checking the Windows target) are off the
+  # critical path.
+  policy:
+    name: Policy & cross-target checks
     if: ${{ github.event_name == 'pull_request' || !startsWith(github.event.head_commit.message, 'chore(release):') }}
-    # macos-15 is the current arm64 GitHub-hosted image; macos-14 was retired
-    # on 2026-11-02. The deployment target stays 14.0 below.
-    runs-on: macos-15
-    env:
-      # Keep in sync with CMAKE_OSX_DEPLOYMENT_TARGET / LSMinimumSystemVersion.
-      MACOSX_DEPLOYMENT_TARGET: "14.0"
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      # cargo-deny is a source install (~2.5 min); cache the binary so only a
+      # version bump pays that cost.
+      - name: Cache cargo-deny
+        id: cargo-deny-cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ~/.cargo/bin/cargo-deny
+          key: cargo-deny-0.20.2-${{ runner.os }}
+
+      - name: Install cargo-deny
+        if: steps.cargo-deny-cache.outputs.cache-hit != 'true'
+        # Pinned so a new cargo-deny release can't break CI unannounced.
+        run: cargo install cargo-deny --locked --version 0.20.2
+
+      - name: rustfmt (check)
+        run: cargo fmt --all --check
 
       # Cheap, dependency-free checks for the scripts that drive versioning
       # and CHANGELOG.md generation.
       - name: Release tooling tests
         run: packaging/ci/tests/run.sh
 
-      - name: Install Qt6 + bundling deps
-        run: brew install qt dylibbundler ffmpeg
+      - name: cargo-deny (advisories, licenses, bans, sources)
+        run: cargo deny check
+
+      - name: Cache cargo (Windows target)
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-windows-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-windows-
+
+      # The non-macOS fallback code (cfg(not(target_os = "macos"))) is never
+      # compiled by the macOS build above; type-check it for Windows so it
+      # can't rot. Warnings are errors, as for clippy below.
+      - name: cargo check (Windows target, non-macOS fallbacks)
+        env:
+          RUSTFLAGS: "-D warnings"
+        run: |
+          rustup target add x86_64-pc-windows-msvc
+          cargo check --workspace --target x86_64-pc-windows-msvc --all-targets
+
+  build:
+    name: Build & test (macOS)
+    if: ${{ github.event_name == 'pull_request' || !startsWith(github.event.head_commit.message, 'chore(release):') }}
+    # macos-15 is the current arm64 GitHub-hosted image; macos-14 was retired
+    # on 2026-11-02. The deployment target stays 14.0 below.
+    runs-on: macos-15
+    timeout-minutes: 30
+    env:
+      # Keep in sync with CMAKE_OSX_DEPLOYMENT_TARGET / LSMinimumSystemVersion.
+      MACOSX_DEPLOYMENT_TARGET: "14.0"
+      # Homebrew otherwise spends time on auto-update/cleanup on every run.
+      HOMEBREW_NO_AUTO_UPDATE: "1"
+      HOMEBREW_NO_INSTALL_CLEANUP: "1"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Cache cargo registry & target
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
@@ -44,31 +98,16 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-
 
-      # --- Quality gates ---------------------------------------------------
-      # Run formatting + lint checks first: they're cheap and catch the most
-      # common issues before we pay for the full test + Qt build below.
-      - name: rustfmt (check)
-        run: cargo fmt --all --check
+      # Only Qt is needed here: ffmpeg is a runtime subprocess and dylibbundler
+      # is only used when SNAPFORGE_BUNDLE=ON (the release workflow).
+      - name: Install Qt6
+        run: brew install qt
 
+      # --- Quality gates ---------------------------------------------------
+      # Formatting, dependency policy, and the Windows-target check run in the
+      # parallel `policy` job above. Keep the expensive macOS build focused.
       - name: clippy (deny warnings)
         run: cargo clippy --workspace --all-targets -- -D warnings
-
-      # The non-macOS fallback code (cfg(not(target_os = "macos"))) is never
-      # compiled by the macOS build above; type-check it for Windows so it
-      # can't rot. Warnings are errors, as for clippy above.
-      - name: cargo check (Windows target, non-macOS fallbacks)
-        env:
-          RUSTFLAGS: "-D warnings"
-        run: |
-          rustup target add x86_64-pc-windows-msvc
-          cargo check --workspace --target x86_64-pc-windows-msvc --all-targets
-
-      - name: Install cargo-deny
-        # Pinned so a new cargo-deny release can't break CI unannounced.
-        run: cargo install cargo-deny --locked --version 0.20.2
-
-      - name: cargo-deny (advisories, licenses, bans, sources)
-        run: cargo deny check
 
       # --- Build & test ----------------------------------------------------
       - name: cargo test
@@ -79,8 +118,10 @@ jobs:
 
       # BUILD_TESTING=ON builds the QTest suite; SNAPFORGE_BUNDLE stays OFF
       # (bundling/signing is exercised by the release workflow's DMG build).
+      # Ninja is preinstalled on the macOS runner and has less build overhead
+      # than the default Makefiles generator.
       - name: Configure Qt build
-        run: cmake -S qt -B qt/build -DCMAKE_PREFIX_PATH="$(brew --prefix qt)" -DBUILD_TESTING=ON
+        run: cmake -S qt -B qt/build -G Ninja -DCMAKE_PREFIX_PATH="$(brew --prefix qt)" -DBUILD_TESTING=ON
 
       - name: Build Qt app + tests
         run: cmake --build qt/build --parallel

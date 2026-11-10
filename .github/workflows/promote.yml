@@ -62,10 +62,13 @@ jobs:
             echo "> Prefer a **merge commit** (not squash/rebase) so the release workflow can fast-forward \`main\` after tagging. Squash and rebase still release, but \`main\` may lag until the next promotion."
           } >"$body"
 
+          # `--head owner:branch` does not match same-repo branches in gh, so
+          # use the plain branch name. This workflow always runs in the same
+          # repository as the PR, so there is no fork ambiguity.
           existing="$(gh pr list \
             --repo "$GITHUB_REPOSITORY" \
             --base production \
-            --head "${GITHUB_REPOSITORY_OWNER}:main" \
+            --head main \
             --state open \
             --json number \
             --jq '.[0].number // empty')"

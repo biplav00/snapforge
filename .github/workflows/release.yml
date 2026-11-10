@@ -93,6 +93,12 @@ jobs:
     runs-on: macos-15
     env:
       MACOSX_DEPLOYMENT_TARGET: "14.0"
+      # Homebrew otherwise spends time on auto-update/cleanup on every run.
+      HOMEBREW_NO_AUTO_UPDATE: "1"
+      HOMEBREW_NO_INSTALL_CLEANUP: "1"
+      # Ninja is preinstalled on the macOS runner; qt/build.sh inherits this
+      # default generator, which has less build overhead than Makefiles.
+      CMAKE_GENERATOR: Ninja
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
