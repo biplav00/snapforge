@@ -206,19 +206,6 @@ jobs:
           name: snapforge-dmg
           path: dist
 
-      - name: Create source archive
-        env:
-          NEXT: ${{ needs.version.outputs.next }}
-        run: |
-          set -euo pipefail
-          mkdir -p dist
-          git archive \
-            --format=zip \
-            --prefix="Snapforge-$NEXT/" \
-            -o "dist/Snapforge-$NEXT-source.zip" \
-            HEAD
-          ls -lh "dist/Snapforge-$NEXT-source.zip"
-
       - name: Verify release assets
         env:
           NEXT: ${{ needs.version.outputs.next }}
@@ -226,8 +213,7 @@ jobs:
           set -euo pipefail
           ls -lh \
             "dist/Snapforge-$NEXT.dmg" \
-            "dist/Snapforge-$NEXT-third-party-sources.tar.gz" \
-            "dist/Snapforge-$NEXT-source.zip"
+            "dist/Snapforge-$NEXT-third-party-sources.tar.gz"
 
       - name: Build release notes from CHANGELOG.md
         env:
@@ -274,7 +260,7 @@ jobs:
             echo "::warning::main advanced since the promoted commit; release commit not pushed to main (tag v$NEXT still published)"
           fi
 
-      - name: Create GitHub Release with .dmg, sources, and source zip
+      - name: Create GitHub Release with .dmg and third-party sources
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           NEXT: ${{ needs.version.outputs.next }}
@@ -283,7 +269,6 @@ jobs:
           gh release create "v$NEXT" \
             "dist/Snapforge-$NEXT.dmg" \
             "dist/Snapforge-$NEXT-third-party-sources.tar.gz" \
-            "dist/Snapforge-$NEXT-source.zip" \
             --repo "$GITHUB_REPOSITORY" \
             --title "v$NEXT" \
             --notes-file release-notes.md \
