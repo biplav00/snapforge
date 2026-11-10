@@ -4,6 +4,13 @@ All notable changes to Snapforge are documented here. This file is updated
 by `packaging/ci/update-changelog.sh` during releases; generated sections
 should not be edited by hand.
 
+## [1.4.3] - 2026-11-10
+
+### Maintenance
+
+- **ci:** bump actions to Node 24 releases and pin Ubuntu 24.04 ([5d557f8](https://github.com/biplav00/snapforge/commit/5d557f8e0af5dda116a47dea9dea7bc68b95a179))
+- **deps:** bump the all-cargo group across 1 directory with 9 updates ([064375e](https://github.com/biplav00/snapforge/commit/064375ecd561f00b2c58f99add7f223e6800bd33))
+
 ## [1.4.2] - 2026-11-10
 
 ### Maintenance
